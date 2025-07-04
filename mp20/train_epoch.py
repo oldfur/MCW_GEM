@@ -35,28 +35,28 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
         batch_props = data.propertys # 理化性质, a dict of lists with property's name as key
         data = reshape(data, device, dtype, include_charges=True)
-        
+
         x = data['positions'].to(device, dtype)
-        frac_coords = data['frac_coords'].to(device, dtype)
+        # frac_coords = data['frac_coords'].to(device, dtype)
+        # lattices = data['lattices'].to(device, dtype)
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
-        lattices = data['lattices'].to(device, dtype)
+        # print(f"lengths: {lengths.shape}, angles: {angles.shape}")
+        # lengths shape: torch.Size([B, 3]), angles shape: torch.Size([B, 3])
         node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
         edge_mask = data['edge_mask'].to(device, dtype)
         one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype)
         charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
-
         # print(x.shape, node_mask.shape, edge_mask.shape, one_hot.shape, charges.shape)
-        """
-        batch_size, 简写B;  num_atoms, 简写N: 1~20都有可能 
-        x shape: torch.Size([B, N, 3]), 
-        node_mask shape: torch.Size([B, N, 1]), 
-        edge_mask shape: torch.Size([B*N*N, 1]),
-        one_hot shape: torch.Size([B, N, maxnum_atom_type]),
-        charges shape: torch.Size([B, N, 1])
-        propertys : a list of dict, has length B, each dict has keys: 
-            'formation_energy_per_atom', 'band_gap', 'e_above_hull'
-        """
+        # batch_size, 简写B;  num_atoms, 简写N: 1~20都有可能 
+        # x shape: torch.Size([B, N, 3]), 
+        # node_mask shape: torch.Size([B, N, 1]), 
+        # edge_mask shape: torch.Size([B*N*N, 1]),
+        # one_hot shape: torch.Size([B, N, maxnum_atom_type]),
+        # charges shape: torch.Size([B, N, 1])
+        # propertys : a list of dict, has length B, each dict has keys: 
+        #     'formation_energy_per_atom', 'band_gap', 'e_above_hull'
+
 
         if args.bond_pred:
             edge_index = data['edge_index'].to(device, dtype)
@@ -66,7 +66,6 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             bond_info = None
 
         x = remove_mean_with_mask(x, node_mask) # erase mean value
-        frac_coords = remove_mean_with_mask(frac_coords, node_mask)
 
         if args.augment_noise > 0:
             # Add noise eps ~ N(0, augment_noise) around points.
@@ -100,12 +99,10 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         # transform batch through flow
         # 用的是model_dp
         if args.uni_diffusion:
-            # print("x shape", x.shape)
-
-
-            """由于加了分数坐标、晶胞长度、角度、lattices,需要修改loss函数"""
+            # 只需坐标、晶胞长度、角度，就可以计算晶体结构的loss
             nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
-                                                    x, h, node_mask, edge_mask, context, uni_diffusion=args.uni_diffusion, mask_indicator=mask_indicator)
+                                                    x, h, lengths, angles, node_mask, edge_mask, context, 
+                                                    uni_diffusion=args.uni_diffusion, mask_indicator=mask_indicator)
             
             if args.denoise_pretrain:
                 mask_indicator = 2
@@ -127,7 +124,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                 property_label = None
                 
             nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
-                                                                x, h, node_mask, edge_mask, context,
+                                                                x, h, lengths, angles, node_mask, edge_mask, context,
                                                                  property_label=property_label, bond_info=bond_info)
             
             if 'error' in loss_dict:
@@ -292,7 +289,8 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
         # vis.save_xyz_file(f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}/', one_hot, charges, x, dataset_info,
         #                   batch_size * counter, name='molecule', bfn_schedule=args.bfn_schedule)
         save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}/'
-
+        # 需要：分数坐标、晶胞长度、角度、样本索引
+        # 根据欧式空间的3D坐标x，晶胞长度lengths，晶胞角度angles，可以计算出分数坐标frac_coords
         """
         crys = Crystal(
             {
@@ -303,6 +301,5 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
                 "sample_idx": x["sample_idx"],
             }
         )
-
         """
         

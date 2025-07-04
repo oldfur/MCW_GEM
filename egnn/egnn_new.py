@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import math
-from qm9.utils import get_adj_matrix
+from mp20.utils import get_adj_matrix
 
 class GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, normalization_factor, aggregation_method,

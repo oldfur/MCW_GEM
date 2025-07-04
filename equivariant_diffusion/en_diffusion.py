@@ -426,7 +426,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 f'large with sigma_0 {sigma_0:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
 
-    def phi(self, x, t, node_mask, edge_mask, context, t2=None, mask_y=None):
+    def phi(self, x, lengths, angles, t, node_mask, edge_mask, context, t2=None, mask_y=None):
         # noise predict network
         # 噪声预测网络,用于diffusion的去噪过程
         # EGNN_dynamics_QM9 for diffusion
@@ -787,9 +787,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         log_p_xh_given_z = log_p_x_given_z_without_constants + log_p_h_given_z
 
         return log_p_xh_given_z
-    
-    
-    def compute_loss_exp(self, x, h, node_mask, edge_mask, context, t0_always, sigma_0=0.04):
+
+
+    def compute_loss_exp(self, x, h, lengths, angles, node_mask, edge_mask, context, t0_always, sigma_0=0.04):
         """expand frist and add guassian secondly"""
         
         # expand first
@@ -1261,8 +1261,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         return loss, loss_dict
 
-    def compute_loss_bfn_str(self, x, h, node_mask, edge_mask, context, property_label=None):
-        
+    def compute_loss_bfn_str(self, x, h, lengths, angles, node_mask, edge_mask, context, property_label=None):
+
         # self.str_loss_type = 'denoise_loss' 
         # self.str_sigma_x = 0.05
         # self.str_sigma_h = 0.05
@@ -1370,9 +1370,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         loss_dict = {'posloss': posloss, 'charge_loss': chargeloss}
         return loss, loss_dict
     
-    
-   
-    def compute_loss(self, x, h, node_mask, edge_mask, context, t0_always, mask_indicator=None,
+
+
+    def compute_loss(self, x, h, lengths, angles, node_mask, edge_mask, context, t0_always, mask_indicator=None,
                      property_label=None, time_upperbond=-1, bond_info=None):
         """
         这是整个文件最重要的函数！！！计算变分下界的估计值，或者简单的损失（均方误差）。
@@ -1482,11 +1482,19 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         # Compute gamma_s and gamma_t via the network.
         gamma_s = self.inflate_batch_array(self.gamma(s), x)
+        gamma_s_length = self.inflate_batch_array(self.gamma_length(s), lengths)
+        gamma_s_angle = self.inflate_batch_array(self.gamma_angle(s), angles)
         gamma_t = self.inflate_batch_array(self.gamma(t), x)
+        gamma_t_length = self.inflate_batch_array(self.gamma_length(t), lengths)
+        gamma_t_angle = self.inflate_batch_array(self.gamma_angle(t), angles)
 
         # Compute alpha_t and sigma_t from gamma.
         alpha_t = self.alpha(gamma_t, x)
+        alpha_t_length = self.alpha(gamma_t_length, lengths)
+        alpha_t_angle = self.alpha(gamma_t_angle, angles)
         sigma_t = self.sigma(gamma_t, x)
+        sigma_t_length = self.sigma(gamma_t_length, lengths)
+        sigma_t_angle = self.sigma(gamma_t_angle, angles)
         
         # alpha: torch.sqrt(torch.sigmoid(-gamma)
         # sigma: torch.sqrt(torch.sigmoid(gamma))
@@ -1508,6 +1516,8 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zt ~ Normal(alpha_t x, sigma_t)
         eps = self.sample_combined_position_feature_noise(
             n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
+        eps_length = self.sample_length_noise(n_samples=lengths.size(0), length_dim=lengths.size(1), device=lengths.device)
+        eps_angle = self.sample_angle_noise(n_samples=angles.size(0), angle_dim=angles.size(1), device=angles.device)
 
         # Concatenate x, h[integer] and h[categorical].
         xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
@@ -1515,10 +1525,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
-            z_t = alpha_t * x + sigma_t * eps
+            z_t = alpha_t * x + sigma_t * eps  
             z_t = torch.cat([z_t, fix_h], dim=2)
+            z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
+            z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
         else:
             z_t = alpha_t * xh + sigma_t * eps
+            z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
+            z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
 
         diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
         
@@ -1571,27 +1585,27 @@ class EnVariationalDiffusion(torch.nn.Module):
             context_t = alpha_t2 * context + sigma_t2 * eps2
             
             if self.pre_training and mask_indicator:
-                net_out, property_pred = self.phi(z_t, t, node_mask, edge_mask, context_t, t2, mask_y=mask_indicator)
+                net_out, property_pred = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context_t, t2, mask_y=mask_indicator)
                 # self.mask_indicator = False
                 # print('mask_indicator', self.mask_indicator)
             else:
                 # if self.mask_indicator is not None:
                 #     self.mask_indicator = True
                 #     print('mask_indicator', self.mask_indicator)
-                net_out, property_pred = self.phi(z_t, t, node_mask, edge_mask, context_t, t2)
+                net_out, property_pred = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context_t, t2)
         
         else:
             # print("property_pred: ", self.property_pred)
             if bond_info is not None:
-                net_out, property_pred, edge_index_knn = self.phi(z_t, t, node_mask, edge_mask, context)
+                net_out, property_pred, edge_index_knn = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context)
                 property_pred, bond_pred = property_pred
             elif self.property_pred:
-                net_out, property_pred = self.phi(z_t, t, node_mask, edge_mask, context)
+                net_out, property_pred = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context)
             else:
                 # Neural net prediction.
-                net_out = self.phi(z_t, t, node_mask, edge_mask, context)
+                net_out = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context)
             """
-            上面的phi函数是一个神经网络, 输入是z_t, t, node_mask, edge_mask, context
+            上面的phi函数是一个神经网络, 输入是z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context
             输出是net_out, property_pred(可选)
             其中net_out是神经网络的输出, property_pred是属性预测的结果
             """
@@ -1941,8 +1955,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         
         return new_context, mae
-    
-    def forward(self, x, h, node_mask=None, edge_mask=None, context=None, mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+
+    def forward(self, x, h, lengths, angles, node_mask=None, edge_mask=None, context=None, 
+                mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
         """
         Computes the loss (type l2 or NLL) if training. And if eval then always computes NLL.
         """
@@ -1981,22 +1996,22 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.training:
             # Only 1 forward pass when t0_always is False.
             if expand_diff:
-                loss, loss_dict = self.compute_loss_exp(x, h, node_mask, edge_mask, context, t0_always=False)
+                loss, loss_dict = self.compute_loss_exp(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=False)
             elif self.bfn_schedule:
                 if self.bfn_str:
-                    loss, loss_dict = self.compute_loss_bfn_str(x, h, node_mask, edge_mask, context, property_label=property_label)
+                    loss, loss_dict = self.compute_loss_bfn_str(x, h, lengths, angles, node_mask, edge_mask, context, property_label=property_label)
                 else:
-                    loss, loss_dict = self.comput_loss_bfn(x, h, node_mask, edge_mask, context, property_label=property_label)
+                    loss, loss_dict = self.compute_loss_bfn(x, h, lengths, angles, node_mask, edge_mask, context, property_label=property_label)
                 return loss, loss_dict
             else:
-                loss, loss_dict = self.compute_loss(x, h, node_mask, edge_mask, context, t0_always=False, mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
+                loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
         else:
             # Less variance in the estimator, costs two forward passes.
             if self.bfn_schedule:
-                loss, loss_dict = self.comput_loss_bfn(x, h, node_mask, edge_mask, context, property_label=property_label)
+                loss, loss_dict = self.compute_loss_bfn(x, h, lengths, angles, node_mask, edge_mask, context, property_label=property_label)
                 return loss, loss_dict
             else:
-                loss, loss_dict = self.compute_loss(x, h, node_mask, edge_mask, context, t0_always=True, mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
+                loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
 
         neg_log_pxh = loss
 
@@ -2006,10 +2021,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         return neg_log_pxh, loss_dict
         
-        if self.uni_diffusion:
-            return neg_log_pxh, loss_dict
 
-        return neg_log_pxh
 
     def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, yt=None, ys=None, force_t_zero=False, force_t2_zero=False, pesudo_context=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
@@ -2394,6 +2406,25 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
             return z_x
         return z
+
+
+    def sample_length_noise(self, n_samples, length_dim, device):
+        """
+        Samples mean-centered normal noise for lengths.
+        """
+        z_lengths = utils.sample_gaussian(
+            size=(n_samples, length_dim), device=device)
+        return z_lengths
+    
+
+    def sample_angle_noise(self, n_samples, angle_dim, device):
+        """
+        Samples mean-centered normal noise for angles.
+        """
+        z_angles = utils.sample_gaussian(
+            size=(n_samples, angle_dim), device=device)
+        return z_angles
+
 
     def sample_combined_position_noise(self, n_samples, n_nodes, node_mask):
         """

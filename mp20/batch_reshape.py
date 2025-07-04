@@ -81,7 +81,7 @@ def collate_fn(batch, load_charges=True):
     to_keep = (new_batch['charges'].sum(0) > 0)
 
     for key, prop in new_batch.items():
-        if key not in ['edge_index', 'edge_attr']:
+        if key not in ['edge_index', 'edge_attr','lengths','angles','lattices']:
             new_batch[key] = drop_zeros(prop, to_keep)
 
     atom_mask = new_batch['charges'] > 0

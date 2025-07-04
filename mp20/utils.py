@@ -164,7 +164,8 @@ def assert_correctly_masked(variable, node_mask):
     assert (variable * (1 - node_mask)).abs().sum().item() < 1e-8
 
 
-def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, node_mask, edge_mask, context, uni_diffusion=False, mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angles,
+                         node_mask, edge_mask, context, uni_diffusion=False, mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
     """
     负对数似然NLL和正则化项的计算
     Args:
@@ -196,10 +197,11 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, node_mask, ed
         # 'categorical' and 'integer'.
         
         if uni_diffusion:
-            nll, loss_dict = generative_model(x, h, node_mask, edge_mask, context, mask_indicator=mask_indicator)
+            nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator)
             # 默认的loss_dict是一个字典里面有很多个loss,此处调用了forward函数
         else:
-            nll, loss_dict = generative_model(x, h, node_mask, edge_mask, context, mask_indicator=mask_indicator, expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
+            nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
+                                              expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
 
         if args.bfn_schedule:
             return nll, torch.tensor([0], device=nll.device), torch.tensor([0], device=nll.device), loss_dict

@@ -171,7 +171,7 @@ def structure_validity(crystal, cutoff=0.5):
 
 
 def array_dict_to_crystal(
-    x: dict[str, np.ndarray],
+    x: dict,
     save: bool = False,
     save_dir_name: str = "",
 ) -> Crystal:
