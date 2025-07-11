@@ -437,8 +437,8 @@ if __name__ == '__main__':
                         help='Amount of EMA decay, 0 means off. A reasonable value'
                             ' is 0.999.')
     parser.add_argument('--augment_noise', type=float, default=0)
-    parser.add_argument('--normalize_factors', type=eval, default=[1, 4, 10],
-                        help='normalize factors for [x, categorical, integer]')
+    parser.add_argument('--normalize_factors', type=eval, default=[1, 4, 10, 1, 1],
+                        help='normalize factors for [x, categorical, integer, lengths, angles]')
     parser.add_argument('--include_charges', type=eval, default=True,
                         help='include atom charge or not')
     parser.add_argument('--visualize_every_batch', type=int, default=1e8,

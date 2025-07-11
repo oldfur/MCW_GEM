@@ -4,7 +4,7 @@ from torch.distributions.categorical import Categorical
 import numpy as np
 from egnn.models_mp20 import EGNN_dynamics_MP20
 
-from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
+from equivariant_diffusion.en_diffusion_mp20 import EnVariationalDiffusion
 from mp20.utils import extract_attribute_safe, extract_property_safe
 
 
@@ -44,7 +44,9 @@ def get_model(args, device, dataset_info, dataloader_train, uni_diffusion=False,
         act_fn=torch.nn.SiLU(), n_layers=args.n_layers,
         attention=args.attention, tanh=args.tanh, mode=args.model, norm_constant=args.norm_constant,
         inv_sublayers=args.inv_sublayers, sin_embedding=args.sin_embedding,
-        normalization_factor=args.normalization_factor, aggregation_method=args.aggregation_method, condition_decoupling=condition_decoupling, uni_diffusion=uni_diffusion, use_basis=use_basis, decoupling=decoupling, pretraining=pretrain, finetune=finetune, 
+        normalization_factor=args.normalization_factor, aggregation_method=args.aggregation_method, 
+        condition_decoupling=condition_decoupling, uni_diffusion=uni_diffusion, use_basis=use_basis, 
+        decoupling=decoupling, pretraining=pretrain, finetune=finetune, 
         property_pred=args.property_pred, prediction_threshold_t=args.prediction_threshold_t, target_property=args.target_property,
         freeze_gradient=args.freeze_gradient, basic_prob=args.basic_prob if "basic_prob" in args else False,
         atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,

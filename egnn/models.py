@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from egnn.torchmd_etf2d import TorchMD_ETF2D
 from torch_scatter import scatter
 
-class EGNN_dynamics_QM9(nn.Module):
+class EGNN_dynamics_MP20(nn.Module):
     def __init__(self, in_node_nf, context_node_nf,
                  n_dims, hidden_nf=64, device='cpu',
                  act_fn=torch.nn.SiLU(), n_layers=4, attention=False,
@@ -545,6 +545,8 @@ class EGNN_dynamics_QM9(nn.Module):
         # print("xh[0]", xh[0])
         if self.mode == 'PAT':
             return self.PAT_forward(t, xh, node_mask, edge_mask, context, t2, mask_y)
+        
+
         bs, n_nodes, dims = xh.shape
         h_dims = dims - self.n_dims
         edges = self.get_adj_matrix(n_nodes, bs, self.device)
@@ -555,6 +557,8 @@ class EGNN_dynamics_QM9(nn.Module):
         x = xh[:, 0:self.n_dims].clone()
         # if self.mode == "DGAP":
         #     assert h_dims == 6, "h_dims should be 6"
+
+
         if h_dims == 0:
             if self.atom_type_pred:
                 h = torch.ones(bs*n_nodes, self.in_node_nf - 1).to(self.device) # erase the time, self in_node_nf contains the time
@@ -619,6 +623,7 @@ class EGNN_dynamics_QM9(nn.Module):
             
                 h = torch.cat([h, context], dim=1)
         # print("h_shape: ", h.shape)
+
         if self.mode == 'egnn_dynamics':
             """
             通过 EGNN 模型处理图结构数据，更新节点特征和坐标，并在单一扩散模型的情况下生成属性预测值
@@ -658,9 +663,8 @@ class EGNN_dynamics_QM9(nn.Module):
                 h_new_final = org_h[node_mask.squeeze().to(torch.bool)]
                 pred = self.property_out(h_new_final)
                 pred = scatter_mean(pred, batch, dim=0) # batch_size * embedding_size
-                
-                
-            
+
+
         elif self.mode == 'gnn_dynamics':
             xh = torch.cat([x, h], dim=1)
             output = self.gnn(xh, edges, node_mask=node_mask)

@@ -81,66 +81,44 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
         h = {'categorical': one_hot, 'integer': charges}
 
-        if len(args.conditioning) > 0 or ('property' in data and args.uni_diffusion):
-            if 'property' in data:
-                # 从头到尾数据里也没有property这个key？不予理会这个分支
-                context = data['property']
-                context = context.unsqueeze(1)
-                context = context.repeat(1, x.shape[1], 1).to(device, dtype)
-                context = context * node_mask
-            else:
-                context = prepare_context_train(args.conditioning, data, batch_props, property_norms).to(device, dtype)
-                assert_correctly_masked(context, node_mask)
+        if len(args.conditioning) > 0 :
+            context = prepare_context_train(args.conditioning, data, batch_props, property_norms).to(device, dtype)
+            assert_correctly_masked(context, node_mask)
         else:
             context = None
 
         optim.zero_grad()
 
         # transform batch through flow
-        # 用的是model_dp
-        if args.uni_diffusion:
-            # 只需坐标、晶胞长度、角度，就可以计算晶体结构的loss
-            nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
-                                                    x, h, lengths, angles, node_mask, edge_mask, context, 
-                                                    uni_diffusion=args.uni_diffusion, mask_indicator=mask_indicator)
-            
-            if args.denoise_pretrain:
-                mask_indicator = 2
-            else:
-                mask_indicator = not mask_indicator
-            # wandb log error and error2
-            if 'denoise_error' in loss_dict:
-                wandb.log({"denoise_x": loss_dict['error'].mean().item(), "denoise_error": loss_dict['denoise_error'].mean().item()}, commit=True)
-            else:
-                wandb.log({"denoise_x": loss_dict['error'].mean().item(), "denoise_y": loss_dict['error2'].mean().item()}, commit=True)
-            
+        # use model_dp
+        if args.target_property is not None:    
+            if args.target_property in batch_props: # 暂时只预测一个属性，后续可以扩展!!!
+                property_label = batch_props[args.target_property].to(device, dtype)
+            if property_norms is not None:
+                property_label = (property_label - property_norms[args.target_property]['mean']) / property_norms[args.target_property]['mad']
         else:
-            if args.target_property is not None:    
-                if args.target_property in batch_props: # 暂时只预测一个属性，后续可以扩展!!!
-                    property_label = batch_props[args.target_property].to(device, dtype)
-                if property_norms is not None:
-                    property_label = (property_label - property_norms[args.target_property]['mean']) / property_norms[args.target_property]['mad']
-            else:
-                property_label = None
-                
-            nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
-                                                                x, h, lengths, angles, node_mask, edge_mask, context,
-                                                                 property_label=property_label, bond_info=bond_info)
-            
-            if 'error' in loss_dict:
-                wandb.log({"denoise_x": loss_dict['error'].mean().item()}, commit=True)
-            if 'pred_loss' in loss_dict:
-                if isinstance(loss_dict['pred_loss'], torch.Tensor):
-                    wandb.log({"pred_loss": loss_dict['pred_loss'].mean().item(), "pred_rate": loss_dict['pred_rate'].mean().item()}, commit=True)
-            if 'atom_type_loss' in loss_dict:
-                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
-            if 'posloss' in loss_dict:
-                wandb.log({"posloss": loss_dict['posloss'].mean().item()}, commit=True)
-            if 'charge_loss' in loss_dict:
-                wandb.log({"charge_loss": loss_dict['charge_loss'].mean().item()}, commit=True)
-            if 'bond_loss' in loss_dict:
-                wandb.log({"bond_loss": loss_dict['bond_loss'].mean().item()}, commit=True)
-                nll += loss_dict['bond_loss'].mean()
+            property_label = None
+
+        # 只需坐标、晶胞长度、角度，就可以计算晶体结构的loss
+        nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
+                                                            x, h, lengths, angles, node_mask, edge_mask, context,
+                                                            property_label=property_label, bond_info=bond_info)
+        
+        if 'error' in loss_dict:
+            wandb.log({"denoise_x": loss_dict['error'].mean().item()}, commit=True)
+        if 'pred_loss' in loss_dict:
+            if isinstance(loss_dict['pred_loss'], torch.Tensor):
+                wandb.log({"pred_loss": loss_dict['pred_loss'].mean().item(), "pred_rate": loss_dict['pred_rate'].mean().item()}, commit=True)
+        if 'atom_type_loss' in loss_dict:
+            wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
+        if 'posloss' in loss_dict:
+            wandb.log({"posloss": loss_dict['posloss'].mean().item()}, commit=True)
+        if 'charge_loss' in loss_dict:
+            wandb.log({"charge_loss": loss_dict['charge_loss'].mean().item()}, commit=True)
+        if 'bond_loss' in loss_dict:
+            wandb.log({"bond_loss": loss_dict['bond_loss'].mean().item()}, commit=True)
+            nll += loss_dict['bond_loss'].mean()
+
         # standard nll from forward KL
         loss = nll + args.ode_regularization * reg_term
         # loss.backward()
@@ -165,45 +143,29 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             ema.update_model_average(model_ema, model)
 
         if i % args.n_report_steps == 0:
-            if args.uni_diffusion:
-                if 'error2' in loss_dict:
-                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                      f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                      f"RegTerm: {reg_term.item():.1f}, "
-                      f"GradNorm: {grad_norm:.1f}, "
-                      f"denoise x: {loss_dict['error'].mean().item():.3f}",
-                      f"denoise y: {loss_dict['error2'].mean().item():.3f}")
-                else:
-                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                      f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                      f"RegTerm: {reg_term.item():.1f}, "
-                      f"GradNorm: {grad_norm:.1f}, "
-                      f"denoise x: {loss_dict['error'].mean().item():.3f}, "
-                      f"denoise only x: {loss_dict['denoise_error'].mean().item():.3f}")
-            else:
-                if 'error' in loss_dict:
-                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                        f"RegTerm: {reg_term.item():.1f}, "
-                        f"GradNorm: {grad_norm:.1f}, "
-                        f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
-                        end='' if args.property_pred or args.model == "PAT" else '\n')
-                else: # BFN
-                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                        f"RegTerm: {reg_term.item():.1f}, "
-                        f"posloss: {loss_dict['posloss'].mean().item():.3f}, "
-                        f"charge_loss: {loss_dict['charge_loss'].mean().item():.3f}, "
-                        f"GradNorm: {grad_norm:.1f}", end='' if args.property_pred or args.model == "PAT" else '\n')
-                if args.bond_pred:
-                    print(f", bond_loss: {loss_dict['bond_loss'].mean():.3f}", end='')
-                if args.property_pred:
-                    if not isinstance(loss_dict['pred_loss'], int):
-                        print(f", pred_loss: {loss_dict['pred_loss'].mean():.3f}", end='')
-                    print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
-                if args.model == "PAT":
-                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='')
-                    print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
+            if 'error' in loss_dict:
+                print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                    f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                    f"RegTerm: {reg_term.item():.1f}, "
+                    f"GradNorm: {grad_norm:.1f}, "
+                    f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
+                    end='' if args.property_pred or args.model == "PAT" else '\n')
+            else:  # BFN
+                print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                    f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                    f"RegTerm: {reg_term.item():.1f}, "
+                    f"posloss: {loss_dict['posloss'].mean().item():.3f}, "
+                    f"charge_loss: {loss_dict['charge_loss'].mean().item():.3f}, "
+                    f"GradNorm: {grad_norm:.1f}", end='' if args.property_pred or args.model == "PAT" else '\n')
+            if args.bond_pred:
+                print(f", bond_loss: {loss_dict['bond_loss'].mean():.3f}", end='')
+            if args.property_pred:
+                if not isinstance(loss_dict['pred_loss'], int):
+                    print(f", pred_loss: {loss_dict['pred_loss'].mean():.3f}", end='')
+                print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
+            if args.model == "PAT":
+                print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='')
+                print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
         nll_epoch.append(nll.item())
 
  
