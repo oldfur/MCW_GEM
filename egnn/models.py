@@ -749,8 +749,6 @@ class EGNN_dynamics_MP20(nn.Module):
                     h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
                 
                 
-                
-                
             if not self.use_get:    
                 if self.decoupling:
                     _, _, org_h = self.egnn2(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)

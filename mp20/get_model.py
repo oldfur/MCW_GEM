@@ -96,6 +96,9 @@ def get_model(args, device, dataset_info, dataloader_train, uni_diffusion=False,
             temp_index=args.temp_index if "temp_index" in args else 0,
             )
         
+        ##  在这里打印一些模型参数
+        # print("optimal_sampling:", args.optimal_sampling)
+        
         return vdm, nodes_dist, prop_dist
 
     else:

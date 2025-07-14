@@ -435,9 +435,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # noise predict network
         # 噪声预测网络,用于diffusion的去噪过程
         # EGNN_dynamics_MP20 for diffusion
-        # print(f"x.shape: {x.shape if type(x)==torch.Tensor else type(x)}, node_mask.shape: {node_mask.shape if type(node_mask)==torch.Tensor else type(node_mask)}, 
-        # edge_mask.shape: {edge_mask.shape if type(edge_mask)==torch.Tensor else type(edge_mask)}, 
-        # context.shape: {context.shape if type(context)==torch.Tensor else type(context)}, t2: {t2}, mask_y: {mask_y}")
+
         if self.relay_sampling == 0:
             net_out = self.dynamics._forward(t, x, node_mask, edge_mask, context, t2=t2, mask_y=mask_y)
             lengths = torch.cat([lengths, t], dim=1)
@@ -855,6 +853,18 @@ class EnVariationalDiffusion(torch.nn.Module):
         if eps.shape[2] != mu.shape[2]:
             print("eps: ", eps.shape)
             print("mu: ", mu.shape)
+        return mu + sigma * eps
+    
+    def sample_normal_length(self, mu, sigma, fix_noise=False):
+        bs = 1 if fix_noise else mu.size(0)
+        lengths_dim = mu.size(1)
+        eps = self.sample_length_noise(bs, lengths_dim, mu.device)
+        return mu + sigma * eps
+    
+    def sample_normal_angle(self, mu, sigma, fix_noise=False):
+        bs = 1 if fix_noise else mu.size(0)
+        angles_dim = mu.size(1)
+        eps = self.sample_angle_noise(bs, angles_dim, mu.device)
         return mu + sigma * eps
     
     def sample_normal2(self, mu, sigma, node_mask, fix_noise=False):
@@ -2031,7 +2041,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         return neg_log_pxh, loss_dict
         
 
-
     def sample_p_zs_given_zt(self, s, t, zt, zt_l, zt_a, 
                              node_mask, edge_mask, context, 
                              fix_noise=False, yt=None, ys=None, force_t_zero=False, 
@@ -2123,18 +2132,19 @@ class EnVariationalDiffusion(torch.nn.Module):
 
                     eps_tmp_l = eps_t_l.clone().detach()    
                     eps_tmp_a = eps_t_a.clone().detach()
-    #########################################################
+    
                     z0 = (zt * node_mask - sigma_t * eps_tmp) / alpha_t
                     z0 = diffusion_utils.remove_mean_with_mask(z0, node_mask)
+
+                    z0_l = (zt_l - sigma_t_length * eps_tmp_l) / alpha_t_length
+                    z0_a = (zt_a - sigma_t_angle * eps_tmp_a) / alpha_t_angle
+                    
                     t0 = torch.ones_like(t) * 0.001 
-                                        
-                    _, pred = self.phi(z0, t0, node_mask, edge_mask, context)
+                                       
+                    (_, pred), _, _ = self.phi(z0, z0_l, z0_a, t0, node_mask, edge_mask, context)
                     
                     loss = loss_fn(pred, pesudo_context)
-                    # grad_zt = torch.autograd.grad(loss, zt, create_graph=True)[0]
-                    # if zt.grad is not None:
-                    #     zt.grad.zero_()
-                    
+
                     loss.backward()
                     opt.step()
                     opt.zero_grad()
@@ -2145,36 +2155,29 @@ class EnVariationalDiffusion(torch.nn.Module):
         
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
             atom_type_pred = eps_t[:, :, 3:]
-            if self.optimal_sampling:
-                # optimal sampling with beta:
-                mu = (zt-sigma_t * eps_t[:,:,0:3]) / alpha_t_given_s 
-            else:
-                mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3]
+
+            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3]
+            mu_l = zt_l / alpha_t_given_s_length - \
+                (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
+            mu_a = zt_a / alpha_t_given_s_angle - \
+                (sigma2_t_given_s_angle / alpha_t_given_s_angle / sigma_t_angle) * eps_t_a
+            
         else:
             mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-
+            mu_l = zt_l / alpha_t_given_s_length - \
+                (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
+            mu_a = zt_a / alpha_t_given_s_angle - \
+                (sigma2_t_given_s_angle / alpha_t_given_s_angle / sigma_t_angle) * eps_t_a
+ 
         ## Compute sigma for p(zs | zt).
-        if self.optimal_sampling:
-            ## optimal sampling with beta:
-            # sigma = (2*sigma_t*sigma_s)**0.5   # delta t → 0
-            # sigma = 2*sigma_t*sigma_s # with temp "yin cha yang cuo" version
-            # accurate version
-            alpha_t_dot = -2*t[0]
-            sigma_t_dot = 2*t[0]*(1-t[0]**2)/sigma_t[0][0]
-            delta_t = t[0]-s[0]
-            sigma_square = 2*sigma_t[0]**2 *(alpha_s[0]+alpha_t_dot*delta_t)/alpha_t[0] -2*sigma_t[0]*sigma_t_dot*delta_t
-            if sigma_square>0:
-                # sigma = (2*sigma_t*sigma_s)**0.5
-                sigma = (sigma_square)**0.5
-                # print('MAE=',torch.abs(sigma[0]-((sigma_square)**0.5)[0])) # (sigma_square)**0.5
-            else:
-                sigma = (2*sigma_t*sigma_s)**0.5
-                # print('sigma=0 at time', t[0])
-        else:
-            sigma = sigma_t_given_s * sigma_s / sigma_t
-        
+        sigma = sigma_t_given_s * sigma_s / sigma_t
+        sigma_l = sigma_t_given_s_length * sigma_s_length / sigma_t_length
+        sigma_a = sigma_t_given_s_angle * sigma_s_angle / sigma_t_angle
+       
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+        zs_l = self.sample_normal_length(mu_l, sigma_l, fix_noise)
+        zs_a = self.sample_normal_angle(mu_a, sigma_a, fix_noise)
 
         # Project down to avoid numerical runaway of the center of gravity.
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
@@ -2190,7 +2193,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 zs[:, :, self.n_dims:]], dim=2
             )
         
-        return zs
+        return zs, zs_l, zs_a
 
     
     def sample_p_zs_given_zt_annel_lang(self, s, t, zt, node_mask, edge_mask, context, 
@@ -2765,20 +2768,20 @@ class EnVariationalDiffusion(torch.nn.Module):
             t_array = s_array + 1
             s_array = s_array / self.T
             t_array = t_array / self.T
-            
+                            
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
                 z[:, :, self.n_dims:] = 1 # set the atom type to 1 for PAT
-            
-            if annel_l:
-                z = self.sample_p_zs_given_zt_annel_lang(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
-            elif self.dynamics.mode == "PAT" or self.atom_type_pred:
-                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context, fix_noise=fix_noise, pesudo_context=pesudo_context)
+                z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], z_l, z_a, node_mask, edge_mask, 
+                                              context, fix_noise=fix_noise, pesudo_context=pesudo_context)
             else:
-                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
+                z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z, z_l, z_a, node_mask, edge_mask, 
+                                              context, fix_noise=fix_noise)
+                
         # Finally sample p(x, h | z_0).
         if self.property_pred:
             if self.atom_type_pred:
                 z[:,:,self.n_dims:] = 1
+                #############################################################
             x, h, pred = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
         else:
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
@@ -2824,15 +2827,12 @@ class EnVariationalDiffusion(torch.nn.Module):
             s_array = s_array / self.T
             t_array = t_array / self.T
             
-            if annel_l:
-                z = self.sample_p_zs_given_zt_annel_lang(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=False)
+
+            if self.dynamics.mode == "PAT" or self.atom_type_pred:
+                z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context)
 
             else:
-                if self.dynamics.mode == "PAT" or self.atom_type_pred:
-                    z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], node_mask, edge_mask, context)
-
-                else:
-                    z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context)
+                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context)
 
 
             diffusion_utils.assert_mean_zero_with_mask(z[:, :, :self.n_dims], node_mask)
