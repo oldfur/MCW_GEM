@@ -177,16 +177,20 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             if len(args.conditioning) > 0 and not args.uni_diffusion:
                 # 条件化采样
 
-                one_hot, charges, x = save_and_sample_conditional(args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
-                print(f"one_hot: {one_hot.shape}, charges: {charges.shape}, x: {x.shape}")
+                one_hot, charges, x, length, angle = save_and_sample_conditional(args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
+                print(f"one_hot: {one_hot.shape}, charges: {charges.shape}, x: {x.shape}, length: {length.shape}, angle: {angle.shape}")
                 """
-                打印结果(100个样本 20个原子 88种原子类型):
-                one_hot: torch.Size([100, 20, 88]), charges: torch.Size([100, 20, 1]), x: torch.Size([100, 20, 3])
+                打印结果(10个样本 20个原子 88种原子类型):
+                one_hot: torch.Size([10, 20, 88]), charges: torch.Size([10, 20, 1]), x: torch.Size([10, 20, 3]), 
+                length: torch.Size([10, 3]), angle: torch.Size([10, 3])
                 """
 
             # save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
             #                       batch_id=str(i))
 
+
+
+###########################################################################################################
             sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
                                             prop_dist, epoch=epoch)
             print(f'Sampling took {time.time() - start:.2f} seconds')
@@ -206,16 +210,16 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
 def save_and_sample_conditional(args, device, model, prop_dist, dataset_info, epoch=0, id_from=0):
     if args.property_pred:
-        one_hot, charges, x, node_mask, pred = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
+        one_hot, charges, x, node_mask, pred, length, angle = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
     else:
-        one_hot, charges, x, node_mask = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
+        one_hot, charges, x, node_mask, length, angle = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
 
-    # # Save the sampled data
+    ## Save the sampled data
     # vis.save_xyz_file(
     #     'outputs/%s/epoch_%d/conditional/' % (args.exp_name, epoch), one_hot, charges, x, dataset_info,
     #     id_from, name='conditional', node_mask=node_mask)
 
-    return one_hot, charges, x
+    return one_hot, charges, x, length, angle
 
 
 def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_info, prop_dist,
@@ -225,14 +229,14 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
     for counter in range(int(n_samples/batch_size)):
         nodesxsample = nodes_dist.sample(batch_size)
         if args.bfn_schedule:
-            theta_traj, segment_ids = sample(args, device, model, prop_dist=prop_dist,
+            theta_traj, segment_ids, length, angle = sample(args, device, model, prop_dist=prop_dist,
                                                 nodesxsample=nodesxsample, dataset_info=dataset_info)
         elif args.property_pred:
-            one_hot, charges, x, node_mask, pred = sample(args, device, model, prop_dist=prop_dist,
+            one_hot, charges, x, node_mask, pred, length, angle = sample(args, device, model, prop_dist=prop_dist,
                                                 nodesxsample=nodesxsample,
                                                 dataset_info=dataset_info)
         else:
-            one_hot, charges, x, node_mask = sample(args, device, model, prop_dist=prop_dist,
+            one_hot, charges, x, node_mask, length, angle = sample(args, device, model, prop_dist=prop_dist,
                                                 nodesxsample=nodesxsample,
                                                 dataset_info=dataset_info)
         if not args.bfn_schedule:

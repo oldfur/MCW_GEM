@@ -462,6 +462,16 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         Inflates the batch array (array) with only a single axis (i.e. shape = (batch_size,), or possibly more empty
         axes (i.e. shape (batch_size, 1, ..., 1)) to match the target shape.
+
+        解释：
+        inflate_batch_array 方法用于调整输入张量 array 的形状，使其能够与另一个张量 target 在后续操作中实现自动广播。具体来说，
+        array 通常是一维的（形状为 (batch_size,)），而 target 可能有更多的维度（如 (batch_size, num_nodes, n_dims)）。为了让
+        array 能在与 target 做逐元素运算时自动扩展到相同的 batch 维度，函数会将 array 重塑（view）为 (batch_size, 1, ..., 1)，
+        其中 1 的个数等于 target 除 batch 维外的维度数。
+
+        实现上，target_shape 通过 (array.size(0),) 加上 (1,) * (len(target.size()) - 1) 构造，确保 batch 维一致，其余
+        维度为1。最后用 array.view(target_shape) 返回调整后的张量。这样，array 在与 target 做加减乘除等操作时，会自动在非 batch 
+        维上广播，避免手动扩展维度，代码更简洁高效。这种技巧在深度学习中非常常见，尤其是在处理 batch-wise 的标量或向量与高维张量运算时。
         """
         target_shape = (array.size(0),) + (1,) * (len(target.size()) - 1)
         return array.view(target_shape)
@@ -701,21 +711,30 @@ class EnVariationalDiffusion(torch.nn.Module):
     def compute_x_pred(self, net_out, zt, gamma_t):
         # print(f"net_out.shape: {net_out.shape}, zt.shape: {zt.shape}, gamma_t.shape: {gamma_t.shape}")
         """Commputes x_pred, i.e. the most likely prediction of x."""
-        if self.parametrization == 'x':
-            x_pred = net_out
-        elif self.parametrization == 'eps':
-            # if self.dynamics.mode == "PAT":
-            #     net_out_new = net_out[:, :, :self.n_dims]
-            # else:
-            net_out_new = net_out
-            sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
-            alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
-            eps_t = net_out_new
-            x_pred = 1. / alpha_t * (zt - sigma_t * eps_t)
-        else:
-            raise ValueError(self.parametrization)
-
+        net_out_new = net_out
+        sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
+        alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
+        eps_t = net_out_new
+        x_pred = 1. / alpha_t * (zt - sigma_t * eps_t)
         return x_pred
+
+    def compute_length_pred(self, l_out, zt_l, gamma_t):
+        """Commputes length predictions."""
+        net_out_new = l_out
+        sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
+        alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
+        eps_t = net_out_new
+        length_pred = 1. / alpha_t * (zt_l - sigma_t * eps_t)
+        return length_pred
+
+    def compute_angle_pred(self, a_out, zt_a, gamma_t):
+        """Commputes angle predictions."""
+        net_out_new = a_out
+        sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
+        alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
+        eps_t = net_out_new
+        angle_pred = 1. / alpha_t * (zt_a - sigma_t * eps_t)
+        return angle_pred
 
     def compute_error(self, net_out, gamma_t, eps):
         """Computes error, i.e. the most likely prediction of x."""
@@ -842,6 +861,90 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.property_pred:
             return x, h, pred
         return x, h
+    
+    def sample_p_xh_lengths_angles_given_z0(self, z0, z0_l, z0_a, node_mask, edge_mask, context, fix_noise=False):
+        """Samples x,h,l,a ~ p(x|z0,z0_l,z0_a)."""
+        bs = z0.size(0)
+        zeros = torch.zeros(size=(bs, 1), device=z0.device)
+        gamma_0 = self.gamma(zeros)
+        # 这里的sigma计算方式与compute_loss里的不同,后续有待研究？
+        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
+        sigma_l = self.SNR(-0.5 * gamma_0)
+        sigma_a = self.SNR(-0.5 * gamma_0)
+
+        if self.bond_pred:
+            (net_out, pred, edge_index_knn), l_out, a_out = self.phi(z0, z0_l, z0_a, zeros, node_mask, edge_mask, context)
+        elif self.property_pred:
+            (net_out, pred), l_out, a_out = self.phi(z0, z0_l, z0_a, zeros, node_mask, edge_mask, context)
+        else:
+            net_out, l_out, a_out = self.phi(z0, z0_l, z0_a, zeros, node_mask, edge_mask, context)
+
+        # Compute mu for p(zs | zt).
+        mu_x = self.compute_x_pred(net_out, z0, gamma_0)
+        mu_l = self.compute_length_pred(l_out, z0_l, gamma_0)
+        mu_a = self.compute_angle_pred(a_out, z0_a, gamma_0)
+        
+        # Sample from Normal distribution
+        if self.dynamics.mode == "PAT" or self.atom_type_pred:
+            xh = self.sample_normal(mu=mu_x[:,:,:3], sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
+        else:
+            xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
+        x = xh[:, :, :self.n_dims]
+
+        h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
+        if self.dynamics.mode == "PAT" or self.atom_type_pred:
+            h_cat = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
+            h_int = net_out[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+1]
+        else:
+            x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
+
+        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        h_int = torch.round(h_int).long() * node_mask
+
+        h = {'integer': h_int, 'categorical': h_cat}
+        if self.bond_pred:
+            bond_types = torch.argmax(pred[1], dim=1)
+            
+            nonzero_mask = bond_types != 0
+            bond_types = bond_types[nonzero_mask].cpu().numpy()
+            edge_index_knn = edge_index_knn[:,nonzero_mask].cpu().numpy()
+            
+            batch_size = h_int.shape[0]
+            # parse knn_edge_index
+            atoms_nums = node_mask.sum(dim=1).squeeze().tolist()
+            acc_num_lst = []
+            acc_num = 0
+            
+            edge_bond_lst = []
+            iter_start = 0
+            for i in range(len(atoms_nums)):
+                acc_num_lst.append(acc_num)
+                acc_num += atoms_nums[i]
+                
+                c_edge_lst = []
+                c_bond_lst = []
+                while iter_start < edge_index_knn.shape[1]:
+                    if edge_index_knn[0,iter_start] >= acc_num or edge_index_knn[1,iter_start] >= acc_num:
+                        break
+                    
+                    c_bond_type = bond_types[iter_start]
+                    c_edge_index = edge_index_knn[:,iter_start] - acc_num_lst[i]
+                    
+                    if not [c_edge_index[0], c_edge_index[1]] in c_edge_lst and not [c_edge_index[1], c_edge_index[0]] in c_edge_lst:
+                        c_edge_lst.append([c_edge_index[0], c_edge_index[1]])
+                        c_bond_lst.append(c_bond_type)
+                    iter_start += 1
+                edge_bond_lst.append([c_edge_lst, c_bond_lst])
+            h = [h, edge_bond_lst]    
+        
+        # Sample lengths and angles
+        lengths = self.sample_normal_length(mu=mu_l, sigma=sigma_l, fix_noise=fix_noise)
+        angles = self.sample_normal_angle(mu=mu_a, sigma=sigma_a, fix_noise=fix_noise)
+        lengths, angles = self.unnormalize_lengths_angles(lengths, angles)
+
+        if self.property_pred:
+            return x, h, pred, lengths, angles
+        return x, h, lengths, angles
 
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False, only_coord=False):
         """Samples from a Normal distribution."""
@@ -2074,11 +2177,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             (eps_t, property_pred, edge_index_knn), eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, node_mask, edge_mask, context)
             pred = property_pred[0]
         elif self.property_pred:
-            '''
-            return in phi function
-            if self.property_pred:
-                return (torch.cat([vel, h_final], dim=2), pred)
-            '''
             # if pesudo_context is not None:
             #     zt = zt.clone().detach().requires_grad_(True)
                 # zt.requires_grad = True
@@ -2315,7 +2413,7 @@ class EnVariationalDiffusion(torch.nn.Module):
     def sample_combined_length_angle_noise(self, n_samples, length_dim, angle_dim, device):
         z_lengths = self.sample_length_noise(n_samples, length_dim, device)
         z_angles = self.sample_angle_noise(n_samples, angle_dim, device)
-        return torch.cat([z_lengths, z_angles], dim=1)
+        return z_lengths, z_angles
 
 
     def sample_length_noise(self, n_samples, length_dim, device):
@@ -2743,7 +2841,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         return theta_traj, segment_ids
 
 
-
     @torch.no_grad()
     def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
         """
@@ -2751,11 +2848,15 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
+            print("using fixed noise......")
             z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-            z_l, z_a = self.sample_combined_length_angle_noise(1, self.length_dim, self.angle_dim, z.device)
+
+            z_l, z_a = self.sample_combined_length_angle_noise(1, self.len_dim, self.angle_dim, z.device) # [1,3]
+            z_l = z_l.repeat(1, n_samples).view(n_samples, -1)
+            z_a = z_a.repeat(1, n_samples).view(n_samples, -1)
         else:
             z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
-            z_l, z_a = self.sample_combined_length_angle_noise(n_samples, self.length_dim, self.angle_dim, z.device)
+            z_l, z_a = self.sample_combined_length_angle_noise(n_samples, self.len_dim, self.angle_dim, z.device)
 
         diffusion_utils.assert_mean_zero_with_mask(z[:, :, :self.n_dims], node_mask)
 
@@ -2780,15 +2881,17 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Finally sample p(x, h | z_0).
         if self.property_pred:
             if self.atom_type_pred:
-                z[:,:,self.n_dims:] = 1
-                #############################################################
-            x, h, pred = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
+                z[:,:,self.n_dims:] = 1    
+            x, h, pred, length, angle = self.sample_p_xh_lengths_angles_given_z0(
+                z, z_l, z_a, node_mask, edge_mask, context, fix_noise=fix_noise
+                )
         else:
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
-                # print("z size after padding 1", z.size())
                 z[:,:,self.n_dims:] = 1 # set the atom type to 1 for PAT
-            x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context, fix_noise=fix_noise)
-        
+            x, h, length, angle = self.sample_p_xh_lengths_angles_given_z0(
+                z, z_l, z_a, node_mask, edge_mask, context, fix_noise=fix_noise
+            )
+
         diffusion_utils.assert_mean_zero_with_mask(x, node_mask)
 
         max_cog = torch.sum(x, dim=1, keepdim=True).abs().max().item()
@@ -2797,8 +2900,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                   f'the positions down.')
             x = diffusion_utils.remove_mean_with_mask(x, node_mask)
         if self.property_pred:
-            return x, h, pred
-        return x, h
+            return x, h, pred, length, angle
+        return x, h, length, angle
 
     @torch.no_grad()
     def sample_chain(self, n_samples, n_nodes, node_mask, edge_mask, context, keep_frames=None, annel_l=False):
