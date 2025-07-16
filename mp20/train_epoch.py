@@ -187,8 +187,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
             # save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
             #                       batch_id=str(i))
-
-
+            # chain用来可视化，目前暂时不用
 
 ###########################################################################################################
             sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
@@ -200,7 +199,6 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             # if len(args.conditioning) > 0 and not args.uni_diffusion:
             #     vis.visualize_chain("outputs/%s/epoch_%d/conditional/" % (args.exp_name, epoch), dataset_info,
             #                         wandb=wandb, mode='conditional')
-            print("应该在这里采样")
 
         wandb.log({"Batch NLL": nll.item()}, commit=True)
         if args.break_train_epoch:
