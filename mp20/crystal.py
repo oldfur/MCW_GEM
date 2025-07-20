@@ -215,6 +215,44 @@ def array_dict_to_crystal(
     return crys
 
 
+def lattice_matrix(a, b, c, alpha, beta, gamma):
+    # 角度转弧度
+    alpha = np.radians(alpha)
+    beta = np.radians(beta)
+    gamma = np.radians(gamma)
+
+    # 三角函数
+    cos_alpha = np.cos(alpha)
+    cos_beta = np.cos(beta)
+    cos_gamma = np.cos(gamma)
+    sin_gamma = np.sin(gamma)
+
+    # 基矢构造
+    a1 = [a, 0, 0]
+    a2 = [b * cos_gamma, b * sin_gamma, 0]
+
+    cx = c * cos_beta
+    cy = c * (cos_alpha - cos_beta * cos_gamma) / sin_gamma
+    cz = c * np.sqrt(
+        1 - cos_alpha**2 - cos_beta**2 - cos_gamma**2 +
+        2 * cos_alpha * cos_beta * cos_gamma
+    ) / sin_gamma
+
+    a3 = [cx, cy, cz]
+
+    return np.array([a1, a2, a3])
+
+
+# 假设 lattice 为 row-wise 格式（每行一个基矢）
+def frac_to_cart(frac_coords, lattice):
+    # lattice: 3x3 matrix, row-wise
+    return np.dot(frac_coords, lattice)
+
+def cart_to_frac(cart_coords, lattice):
+    return np.dot(cart_coords, np.linalg.inv(lattice))
+
+
+
 chemical_symbols = [
     # 0
     "X",

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import wandb
 from mp20.batch_reshape import reshape
-from mp20.crystal import array_dict_to_crystal
+from mp20.crystal import array_dict_to_crystal, lattice_matrix, cart_to_frac
 
 def check_mask_correct(variables, node_mask):
     for i, variable in enumerate(variables):
@@ -191,7 +191,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
 ###########################################################################################################
             sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
-                                            prop_dist, epoch=epoch)
+                                            prop_dist, epoch=epoch, batch_id=str(i))
             print(f'Sampling took {time.time() - start:.2f} seconds')
 
             # vis.visualize(f"outputs/{args.exp_name}/epoch_{epoch}_{i}", dataset_info=dataset_info, wandb=wandb)
@@ -237,8 +237,6 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
             one_hot, charges, x, node_mask, length, angle = sample(args, device, model, prop_dist=prop_dist,
                                                 nodesxsample=nodesxsample,
                                                 dataset_info=dataset_info)
-        if not args.bfn_schedule:
-            print(f"Generated crystal: Positions {x[:-1, :, :]}")
         
         if args.bfn_schedule:
             frame_num = len(theta_traj)
@@ -250,20 +248,37 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
                 h = theta_traj[i][1].cpu()
                 one_hot.append(charge_decode(h, dataset_info))
         
-        # vis.save_xyz_file(f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}/', one_hot, charges, x, dataset_info,
-        #                   batch_size * counter, name='molecule', bfn_schedule=args.bfn_schedule)
-        save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}/'
-        # 需要：分数坐标、晶胞长度、角度、样本索引
+        # 需要：分数坐标、晶胞长度、角度、样本索引、原子类型
         # 根据欧式空间的3D坐标x，晶胞长度lengths，晶胞角度angles，可以计算出分数坐标frac_coords
-        """
-        crys = Crystal(
-            {
-                "frac_coords": np.zeros_like(x["frac_coords"]),
-                "atom_types": np.zeros_like(x["atom_types"]),
-                "lengths": 100 * np.ones_like(x["lengths"]),
-                "angles": np.ones_like(x["angles"]) * 90,
-                "sample_idx": x["sample_idx"],
-            }
-        )
-        """
+        # print("node mask: ", node_mask) # [n,20,1]
+        # print("x: ", x) # [n,20,3]
+        # print("lengths: ", length)  # [n,3]
+        # print("angles: ", angle)    # [n,3]
+        # print("charges: ", charges) # [n, 20, 1]
+        length = length.detach().cpu().numpy()
+        angle = angle.detach().cpu().numpy()
+
+        for i in range(n_samples):
+            save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}_{i}'
+            lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+                                     angle[i, 0], angle[i, 0], angle[i, 0])
+            mask = node_mask[i].squeeze(-1).bool()
+            x_valid = x[i][mask].detach().cpu().numpy()
+            frac_coords = cart_to_frac(x_valid, lattice)
+            atom_types = charges[i][mask].detach().cpu().numpy()
+            sample_idx = f"{epoch}_{batch_id}_{i}"
+
+            crys = array_dict_to_crystal(
+                {
+                    "frac_coords": frac_coords,
+                    "atom_types": atom_types,
+                    "lengths": length[i],
+                    "angles": angle[i],
+                    "sample_idx": sample_idx,
+                },
+                save=True,
+                save_dir_name=save_file_name
+            )
+            print(f"save to{save_file_name}!!")
+
         
