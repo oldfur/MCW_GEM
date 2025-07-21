@@ -268,12 +268,12 @@ def main(args):
 
 
     # 4 Initialize parallel if enabled and possible.
-    if args.dp and torch.cuda.device_count() > 1:
-        print(f'Training using {torch.cuda.device_count()} GPUs')
-        model_dp = torch.nn.DataParallel(model.cpu())
-        model_dp = model_dp.cuda()  
-    else:
-        model_dp = model
+    # if args.dp and torch.cuda.device_count() > 1:
+    #     print(f'Training using {torch.cuda.device_count()} GPUs')
+    #     model_dp = torch.nn.DataParallel(model.cpu())
+    #     model_dp = model_dp.cuda()  
+    # else:   
+    model_dp = model
 
 
     # 5 Initialize EMA if enabled
