@@ -34,28 +34,36 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         #     break
 
         batch_props = data.propertys # 理化性质, a dict of lists with property's name as key
+        # propertys : a list of dict, has length B, each dict has keys: 
+        #     'formation_energy_per_atom', 'band_gap', 'e_above_hull'
         data = reshape(data, device, dtype, include_charges=True)
-
+        
         x = data['positions'].to(device, dtype)
+        # batch_size, 简写B;  num_atoms, 简写N: 1~20都有可能 
+        # x shape: torch.Size([B, N, 3]), 
         # frac_coords = data['frac_coords'].to(device, dtype)
         # lattices = data['lattices'].to(device, dtype)
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
-        # print(f"lengths: {lengths.shape}, angles: {angles.shape}")
+        if i == 0:
+            print("lengths for training: ", lengths[:2])
+            print("angles for training: ", angles[:2])
+            """
+            输出:
+            lengths for training:  tensor([[3.6849, 5.5324, 5.5324],
+                                        [4.9460, 4.9460, 7.4759]])
+            angles for training:  tensor([[120.0000,  90.0000,  90.0000],
+                                        [ 90.0000,  90.0000, 120.0000]])
+            """
         # lengths shape: torch.Size([B, 3]), angles shape: torch.Size([B, 3])
         node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
-        edge_mask = data['edge_mask'].to(device, dtype)
-        one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype)
-        charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
-        # print(x.shape, node_mask.shape, edge_mask.shape, one_hot.shape, charges.shape)
-        # batch_size, 简写B;  num_atoms, 简写N: 1~20都有可能 
-        # x shape: torch.Size([B, N, 3]), 
         # node_mask shape: torch.Size([B, N, 1]), 
+        edge_mask = data['edge_mask'].to(device, dtype)
         # edge_mask shape: torch.Size([B*N*N, 1]),
-        # one_hot shape: torch.Size([B, N, maxnum_atom_type]),
+        one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype)
+        # one_hot shape: torch.Size([B, N, maxnum_atom_type])
+        charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
         # charges shape: torch.Size([B, N, 1])
-        # propertys : a list of dict, has length B, each dict has keys: 
-        #     'formation_energy_per_atom', 'band_gap', 'e_above_hull'
 
 
         if args.bond_pred:
@@ -268,6 +276,11 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
             atom_types = charges[i][mask].detach().cpu().numpy()
             sample_idx = f"{epoch}_{batch_id}_{i}"
 
+            # print("generated angles: ", angle[i])
+            # print("generated lengths: ", length[i])
+            # print("generated atom_types: ", atom_types)
+            # print("generated frac_coords shape: ", frac_coords.shape)
+
             crys = array_dict_to_crystal(
                 {
                     "frac_coords": frac_coords,
@@ -279,6 +292,6 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
                 save=True,
                 save_dir_name=save_file_name
             )
-            print(f"save to{save_file_name}!!")
+            print(f"save to {save_file_name}!!")
 
         
