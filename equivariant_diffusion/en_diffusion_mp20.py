@@ -2075,6 +2075,82 @@ class EnVariationalDiffusion(torch.nn.Module):
         mae = torch.mean(torch.abs(new_context - org_context))
         
         return new_context, mae
+    
+    def evaluate_property_mp20(self, x, l, a, h, org_context, node_mask=None, edge_mask=None):
+        # Normalize data, take into account volume change in x.
+        batch_size = x.size(0)
+        x, h, delta_log_px = self.normalize(x, h, node_mask)
+        l,a = self.normalize_lengths_angles(l, a)
+        
+        t_int = torch.ones((batch_size, 1), device=x.device).float() # t_int all zero
+        s_int = t_int - 1
+        s_array = s_int / self.T
+        t_array = t_int / self.T
+
+        
+        # Compute gamma_s and gamma_t via the network.
+        gamma_s = self.inflate_batch_array(self.gamma(s_array), x)
+        gamma_t = self.inflate_batch_array(self.gamma(t_array), x)
+        gamma_s_l = self.inflate_batch_array(self.gamma_length(s_array), l)
+        gamma_t_l = self.inflate_batch_array(self.gamma_length(t_array), l)
+        gamma_s_a = self.inflate_batch_array(self.gamma_angle(s_array), a)
+        gamma_t_a = self.inflate_batch_array(self.gamma_angle(t_array), a)
+
+        # Compute alpha_t and sigma_t from gamma.
+        alpha_t = self.alpha(gamma_t, x)
+        sigma_t = self.sigma(gamma_t, x)
+        alpha_t_l = self.alpha(gamma_t_l, l)
+        sigma_t_l = self.sigma(gamma_t_l, l)
+        alpha_t_a = self.alpha(gamma_t_a, a)
+        sigma_t_a = self.sigma(gamma_t_a, a)
+
+        # Sample zt ~ Normal(alpha_t x, sigma_t)
+        eps = self.sample_combined_position_feature_noise(
+            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
+        eps_l, eps_a = self.sample_combined_length_angle_noise(
+            n_samples=batch_size,length_dim=l.size(1), angle_dim=a.size(1), device=l.device)
+
+
+        # Concatenate x, h[integer] and h[categorical].
+        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        # Sample z_t given x, h for timestep t, from q(z_t | x, h)
+        z_t = alpha_t * xh + sigma_t * eps
+        z_t_l = alpha_t_l * l + sigma_t_l * eps_l
+        z_t_a = alpha_t_a * a + sigma_t_a * eps_a
+
+        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
+        
+        new_context = None
+        
+        
+        # perpare the context, z_t, keep unchanged, copy the sample method
+        for s in reversed(range(0, self.T)):
+            n_samples= batch_size
+
+            s_array2 = torch.full((n_samples, 1), fill_value=s, device=x.device)
+            t_array2 = s_array2 + 1
+            s_array2 = s_array2 / self.T
+            t_array2 = t_array2 / self.T
+            
+            # sample new_context
+            if new_context is None:
+                new_context = utils.sample_gaussian_with_mask(
+                    size=(batch_size, 1, org_context.size(-1)), device=node_mask.device,
+                    node_mask=node_mask)
+                
+####################################################################################
+# new_context是什么？需要修改！
+            z, new_context = self.sample_p_zs_given_zt(
+                    s_array, t_array, z_t, z_t_l, z_t_a, node_mask, 
+                    edge_mask, new_context, fix_noise=False, 
+                    yt=t_array2, ys=s_array2, force_t_zero=True) 
+            # z_t and t keep unchanged
+            # 更新的是new_context
+
+        # calcuate the mae between new_context and org_context
+        mae = torch.mean(torch.abs(new_context - org_context))
+        
+        return new_context, mae
 
     def forward(self, x, h, lengths, angles, node_mask=None, edge_mask=None, context=None, 
                 mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
@@ -2174,7 +2250,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Neural net prediction.
         if self.bond_pred:
-            (eps_t, property_pred, edge_index_knn), eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, node_mask, edge_mask, context)
+            (eps_t, property_pred, edge_index_knn), eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, 
+                                                                                node_mask, edge_mask, context)
             pred = property_pred[0]
         elif self.property_pred:
             # if pesudo_context is not None:

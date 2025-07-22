@@ -127,59 +127,6 @@ def get_optim(args, generative_model):
         lr=args.lr, amsgrad=True,
         weight_decay=1e-12)
     return optim
-
-def evaluate_properties(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_dist, partition='Test', wandb=None): # node properties evaluation
-    eval_model.eval()
-    with torch.no_grad():
-        nll_epoch = 0
-        n_samples = 0
-        n_iterations = len(loader)
-        gts = []
-        preds = []
-        
-        for i, data in enumerate(loader):
-            x = data['positions'].to(device, dtype)
-            batch_size = x.size(0)
-            node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
-            edge_mask = data['edge_mask'].to(device, dtype)
-            one_hot = data['one_hot'].to(device, dtype)
-            charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
-            
-            x = remove_mean_with_mask(x, node_mask)
-            check_mask_correct([x, one_hot, charges], node_mask)
-            assert_mean_zero_with_mask(x, node_mask)
-            h = {'categorical': one_hot, 'integer': charges}
-            
-            if 'property' in data:
-                context = data['property']
-                context = context.unsqueeze(1)
-                context = context.repeat(1, x.shape[1], 1).to(device, dtype)
-                org_context = context * node_mask
-            else:
-                org_context = prepare_context(args.conditioning, data, property_norms).to(device, dtype)
-            assert_correctly_masked(org_context, node_mask)
-            if isinstance(eval_model, torch.nn.DataParallel):
-                pred_properties, batch_mae = eval_model.module.evaluate_property(x, h, org_context, node_mask, edge_mask)
-            else:
-                pred_properties, batch_mae = eval_model.evaluate_property(x, h, org_context, node_mask, edge_mask)
-            
-            preds.append(pred_properties)
-            gts.append(org_context)
-            
-            print(f'batch mae is {batch_mae}')
-            break # for test speed up
-        
-        # calculate the mean absolute error between preds and gts
-        preds = torch.cat(preds, dim=0)
-        gts = torch.cat(gts, dim=0)
-        preds = preds[:, 0, 0]
-        gts = gts[:, 0, 0]
-        mae = torch.mean(torch.abs(preds - gts))
-        
-        if wandb is not None:
-            wandb.log({'Properties Mean Absolute Error': mae.item()})
-        
-        print(f'Epoch {epoch}: properties Mean Absolute Error is {mae}')
  
 
 def test(args, loader, epoch, eval_model, partition, device, 
@@ -317,7 +264,7 @@ def main(args):
             if isinstance(model, en_diffusion.EnVariationalDiffusion):
                 wandb.log(model.log_info(), commit=True)
 
-            continue    # 分析与保存
+            # 分析与保存
             if not args.break_train_epoch:
                 analyze_and_save(args=args, epoch=epoch, model_sample=model_ema, nodes_dist=nodes_dist,
                                  dataset_info=dataset_info, device=args.device,
@@ -516,16 +463,3 @@ if __name__ == '__main__':
 
     """******  train & test  ******"""
 
-"""
-debug 命令：
-python main_mp20.py --device cpu --no-cuda --exp_name debug_mp20 --n_epochs 2 --batch_size 2 
---test_epochs 1 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1
-
-python main_mp20.py --device cpu --no-cuda --exp_name debug_mp20 --n_epochs 2 --batch_size 2 
---test_epochs 1 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 
---property_pred 1 --target_property band_gap --visualize_every_batch 100 --num_train 1000
---conditioning band_gap
-
-run 命令：
-python main_mp20.py --exp_name mp20_egnn_dynamics --n_epochs 200 --model DGAP --atom_type_pred 1 --test_epochs 10 --batch_size 64
-"""

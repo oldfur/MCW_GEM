@@ -124,7 +124,7 @@ def prepare_context_train(conditioning, data, batch_props, property_norms):
     for key in conditioning:
         properties = batch_props[key]
         properties = (properties - property_norms[key]['mean']) / property_norms[key]['mad']
-        if len(properties.size()) == 1:
+        if len(properties.size()) == 1: # 事实上目前只有全局特征
             # print(f"{key} is global feature")
             # Global feature.
             assert properties.size() == (batch_size,)
@@ -230,22 +230,20 @@ def check_mask_correct(variables, node_mask):
             assert_correctly_masked(variable, node_mask)
 
 
-def evaluate_properties(args, loader, epoch, eval_model, device, 
-                        dtype, property_norms, nodes_dist, partition='Test', wandb=None): 
-    """node properties evaluation"""
+def evaluate_properties(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_dist, partition='Test', wandb=None): # node properties evaluation
     eval_model.eval()
     with torch.no_grad():
         nll_epoch = 0
         n_samples = 0
-
         n_iterations = len(loader)
-        
         gts = []
         preds = []
         
         for i, data in enumerate(loader):
             x = data['positions'].to(device, dtype)
             batch_size = x.size(0)
+            lengths = data['lengths'].to(device, dtype)
+            angles = data['angles'].to(device, dtype)
             node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
             edge_mask = data['edge_mask'].to(device, dtype)
             one_hot = data['one_hot'].to(device, dtype)
@@ -254,7 +252,6 @@ def evaluate_properties(args, loader, epoch, eval_model, device,
             x = remove_mean_with_mask(x, node_mask)
             check_mask_correct([x, one_hot, charges], node_mask)
             assert_mean_zero_with_mask(x, node_mask)
-
             h = {'categorical': one_hot, 'integer': charges}
             
             if 'property' in data:
@@ -265,16 +262,14 @@ def evaluate_properties(args, loader, epoch, eval_model, device,
             else:
                 org_context = prepare_context(args.conditioning, data, property_norms).to(device, dtype)
             assert_correctly_masked(org_context, node_mask)
-            if isinstance(eval_model, torch.nn.DataParallel):
-                pred_properties, batch_mae = eval_model.module.evaluate_property(x, h, org_context, node_mask, edge_mask)
-            else:
-                pred_properties, batch_mae = eval_model.evaluate_property(x, h, org_context, node_mask, edge_mask)
+
+            # Evaluate the model
+            pred_properties, batch_mae = eval_model.evaluate_property(x, h, org_context, node_mask, edge_mask)
             
             preds.append(pred_properties)
             gts.append(org_context)
             
             print(f'batch mae is {batch_mae}')
-            
             break # for test speed up
         
         # calculate the mean absolute error between preds and gts

@@ -196,8 +196,6 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             # save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
             #                       batch_id=str(i))
             # chain用来可视化，目前暂时不用
-
-###########################################################################################################
             sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
                                             prop_dist, epoch=epoch, batch_id=str(i))
             print(f'Sampling took {time.time() - start:.2f} seconds')
@@ -219,7 +217,6 @@ def save_and_sample_conditional(args, device, model, prop_dist, dataset_info, ep
         one_hot, charges, x, node_mask, pred, length, angle = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
     else:
         one_hot, charges, x, node_mask, length, angle = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
-
     ## Save the sampled data
     # vis.save_xyz_file(
     #     'outputs/%s/epoch_%d/conditional/' % (args.exp_name, epoch), one_hot, charges, x, dataset_info,
