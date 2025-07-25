@@ -229,66 +229,73 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
                                     n_samples=5, epoch=0, batch_size=100, batch_id=''):
     """从生成模型中采样不同大小的晶体结构，并将结果保存为.cif文件格式"""
     batch_size = min(batch_size, n_samples)
-    for counter in range(int(n_samples/batch_size)):
-        nodesxsample = nodes_dist.sample(batch_size)
-        if args.bfn_schedule:
-            theta_traj, segment_ids, length, angle = sample(args, device, model, prop_dist=prop_dist,
-                                                nodesxsample=nodesxsample, dataset_info=dataset_info)
-        elif args.property_pred:
-            one_hot, charges, x, node_mask, pred, length, angle = sample(args, device, model, prop_dist=prop_dist,
-                                                nodesxsample=nodesxsample,
-                                                dataset_info=dataset_info)
-        else:
-            one_hot, charges, x, node_mask, length, angle = sample(args, device, model, prop_dist=prop_dist,
-                                                nodesxsample=nodesxsample,
-                                                dataset_info=dataset_info)
-        
-        if args.bfn_schedule:
-            frame_num = len(theta_traj)
-            charges = []
-            one_hot = []
-            x = []
-            for i in range(frame_num):
-                x.append(theta_traj[i][0].cpu().numpy())
-                h = theta_traj[i][1].cpu()
-                one_hot.append(charge_decode(h, dataset_info))
-        
-        # 需要：分数坐标、晶胞长度、角度、样本索引、原子类型
-        # 根据欧式空间的3D坐标x，晶胞长度lengths，晶胞角度angles，可以计算出分数坐标frac_coords
-        # print("node mask: ", node_mask) # [n,20,1]
-        # print("x: ", x) # [n,20,3]
-        # print("lengths: ", length)  # [n,3]
-        # print("angles: ", angle)    # [n,3]
-        # print("charges: ", charges) # [n, 20, 1]
-        length = length.detach().cpu().numpy()
-        angle = angle.detach().cpu().numpy()
+    nodesxsample = nodes_dist.sample(batch_size)
+    # print("n_samples in sample_different_sizes_and_save: ", n_samples)
+    # print("batch_size in sample_different_sizes_and_save: ", batch_size)
+    # print(f"Sampled nodesxsample: {nodesxsample}")
+    """
+    n_samples in sample_different_sizes_and_save:  5
+    batch_size in sample_different_sizes_and_save:  5
+    Sampled nodesxsample: tensor([10, 20,  6, 12, 18])
+    """
+    if args.bfn_schedule:
+        theta_traj, segment_ids, length, angle = sample(args, device, model, prop_dist=prop_dist,
+                                            nodesxsample=nodesxsample, dataset_info=dataset_info)
+    elif args.property_pred:
+        one_hot, charges, x, node_mask, pred, length, angle = sample(args, device, model, prop_dist=prop_dist,
+                                            nodesxsample=nodesxsample,
+                                            dataset_info=dataset_info)
+    else:
+        one_hot, charges, x, node_mask, length, angle = sample(args, device, model, prop_dist=prop_dist,
+                                            nodesxsample=nodesxsample,
+                                            dataset_info=dataset_info)
+    
+    if args.bfn_schedule:
+        frame_num = len(theta_traj)
+        charges = []
+        one_hot = []
+        x = []
+        for i in range(frame_num):
+            x.append(theta_traj[i][0].cpu().numpy())
+            h = theta_traj[i][1].cpu()
+            one_hot.append(charge_decode(h, dataset_info))
+    
+    # 需要：分数坐标、晶胞长度、角度、样本索引、原子类型
+    # 根据欧式空间的3D坐标x，晶胞长度lengths，晶胞角度angles，可以计算出分数坐标frac_coords
+    # print("node mask: ", node_mask) # [n,20,1]
+    # print("x: ", x) # [n,20,3]
+    # print("lengths: ", length)  # [n,3]
+    # print("angles: ", angle)    # [n,3]
+    # print("charges: ", charges) # [n, 20, 1]
+    length = length.detach().cpu().numpy()
+    angle = angle.detach().cpu().numpy()
 
-        for i in range(n_samples):
-            save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}_{i}'
-            lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
-                                     angle[i, 0], angle[i, 0], angle[i, 0])
-            mask = node_mask[i].squeeze(-1).bool()
-            x_valid = x[i][mask].detach().cpu().numpy()
-            frac_coords = cart_to_frac(x_valid, lattice)
-            atom_types = charges[i][mask].detach().cpu().numpy()
-            sample_idx = f"{epoch}_{batch_id}_{i}"
+    for i in range(batch_size):
+        save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}_{i}'
+        lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+                                    angle[i, 0], angle[i, 0], angle[i, 0])
+        mask = node_mask[i].squeeze(-1).bool()
+        x_valid = x[i][mask].detach().cpu().numpy()
+        frac_coords = cart_to_frac(x_valid, lattice)
+        atom_types = charges[i][mask].detach().cpu().numpy()
+        sample_idx = f"{epoch}_{batch_id}_{i}"
 
-            # print("generated angles: ", angle[i])
-            # print("generated lengths: ", length[i])
-            # print("generated atom_types: ", atom_types)
-            # print("generated frac_coords shape: ", frac_coords.shape)
+        # print("generated angles: ", angle[i])
+        # print("generated lengths: ", length[i])
+        # print("generated atom_types: ", atom_types)
+        # print("generated frac_coords shape: ", frac_coords.shape)
 
-            crys = array_dict_to_crystal(
-                {
-                    "frac_coords": frac_coords,
-                    "atom_types": atom_types,
-                    "lengths": length[i],
-                    "angles": angle[i],
-                    "sample_idx": sample_idx,
-                },
-                save=True,
-                save_dir_name=save_file_name
-            )
-            print(f"save to {save_file_name}!!")
+        crys = array_dict_to_crystal(
+            {
+                "frac_coords": frac_coords,
+                "atom_types": atom_types,
+                "lengths": length[i],
+                "angles": angle[i],
+                "sample_idx": sample_idx,
+            },
+            save=True,
+            save_dir_name=save_file_name
+        )
+        print(f"save to {save_file_name}!!")
 
         

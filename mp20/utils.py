@@ -1,8 +1,10 @@
 import torch
+import logging
+from typing import Mapping, Optional
 from equivariant_diffusion.utils import assert_mean_zero_with_mask, remove_mean_with_mask,\
     assert_correctly_masked, sample_center_gravity_zero_gaussian_with_mask
 import wandb
-
+from lightning_utilities.core.rank_zero import rank_prefixed_message, rank_zero_only
 from mp20.batch_reshape import reshape_minibatch
 
 
@@ -326,3 +328,182 @@ def charge_decode(charge, dataset_info, remove_h=False):
     )
     one_hot[torch.arange(charge.shape[0]), atom_type] = 1
     return one_hot
+
+
+
+import tqdm
+from typing import Iterable, Literal
+from joblib import Parallel, delayed, parallel_config
+
+
+class ParallelTqdm(Parallel):
+    """joblib.Parallel, but with a tqdm progressbar.
+
+    Adapted from:
+    - https://github.com/facebookresearch/flowmm
+    - https://gist.github.com/tsvikas/5f859a484e53d4ef93400751d0a116de
+
+    Additional parameters:
+    ----------------------
+    total_tasks: int, default: None
+        the number of expected jobs. Used in the tqdm progressbar.
+        If None, try to infer from the length of the called iterator, and
+        fallback to use the number of remaining items as soon as we finish
+        dispatching.
+        Note: use a list instead of an iterator if you want the total_tasks
+        to be inferred from its length.
+
+    desc: str, default: None
+        the description used in the tqdm progressbar.
+
+    disable_progressbar: bool, default: False
+        If True, a tqdm progressbar is not used.
+
+    show_joblib_header: bool, default: False
+        If True, show joblib header before the progressbar.
+
+    Removed parameters:
+    -------------------
+    verbose: will be ignored
+
+
+    Usage:
+    ------
+    >>> from joblib import delayed
+    >>> from time import sleep
+    >>> ParallelTqdm(n_jobs=-1)([delayed(sleep)(.1) for _ in range(10)])
+    80%|████████  | 8/10 [00:02<00:00,  3.12tasks/s]
+    """
+
+    def __init__(
+        self,
+        *,
+        total_tasks: int | None = None,
+        desc: str | None = None,
+        disable_progressbar: bool = False,
+        show_joblib_header: bool = False,
+        **kwargs,
+    ):
+        if "verbose" in kwargs:
+            raise ValueError(
+                "verbose is not supported. " "Use show_progressbar and show_joblib_header instead."
+            )
+        super().__init__(verbose=(1 if show_joblib_header else 0), **kwargs)
+        self.total_tasks = total_tasks
+        self.desc = desc
+        self.disable_progressbar = disable_progressbar
+        self.progress_bar: tqdm.tqdm | None = None
+
+    def __call__(self, iterable):
+        try:
+            if self.total_tasks is None:
+                # try to infer total_tasks from the length of the called iterator
+                try:
+                    self.total_tasks = len(iterable)
+                except (TypeError, AttributeError):
+                    pass
+            # call parent function
+            return super().__call__(iterable)
+        finally:
+            # close tqdm progress bar
+            if self.progress_bar is not None:
+                self.progress_bar.close()
+
+    __call__.__doc__ = Parallel.__call__.__doc__
+
+    def dispatch_one_batch(self, iterator):
+        # start progress_bar, if not started yet.
+        if self.progress_bar is None:
+            self.progress_bar = tqdm.tqdm(
+                desc=self.desc,
+                total=self.total_tasks,
+                disable=self.disable_progressbar,
+                unit="tasks",
+            )
+        # call parent function
+        return super().dispatch_one_batch(iterator)
+
+    dispatch_one_batch.__doc__ = Parallel.dispatch_one_batch.__doc__
+
+    def print_progress(self):
+        """Display the process of the parallel execution using tqdm."""
+        # if we finish dispatching, find total_tasks from the number of remaining items
+        if self.total_tasks is None and self._original_iterator is None:
+            self.total_tasks = self.n_dispatched_tasks
+            self.progress_bar.total = self.total_tasks
+            self.progress_bar.refresh()
+        # update progressbar
+        self.progress_bar.update(self.n_completed_tasks - self.progress_bar.n)
+
+        
+def joblib_map(
+    func: callable,
+    iterable: Iterable,
+    n_jobs: int = 1,
+    inner_max_num_threads: int | None = None,
+    desc: str | None = None,
+    total: int | None = None,
+    backend: Literal["sequential", "loky", "threading", "multiprocessing"] = "loky",
+) -> list:
+    if backend != "loky" and inner_max_num_threads is not None:
+        print(f"{backend=} does not support {inner_max_num_threads=}, setting to None.")
+        inner_max_num_threads = None
+
+    if backend != "sequential":
+        with parallel_config(backend=backend, inner_max_num_threads=inner_max_num_threads):
+            if backend == "loky":
+                results = ParallelTqdm(n_jobs=n_jobs, total_tasks=total, desc=desc)(
+                    delayed(func)(i) for i in iterable
+                )
+            else:
+                results = Parallel(n_jobs=n_jobs)(delayed(func)(i) for i in iterable)
+    else:
+        results = [func(i) for i in tqdm.tqdm(iterable, desc=desc, total=total)]
+    return results
+
+
+class RankedLogger(logging.LoggerAdapter):
+    """A multi-GPU-friendly python command line logger."""
+
+    def __init__(
+        self,
+        name: str = __name__,
+        rank_zero_only: bool = False,
+        extra: Optional[Mapping[str, object]] = None,
+    ) -> None:
+        """Initializes a multi-GPU-friendly python command line logger that logs on all processes
+        with their rank prefixed in the log message.
+
+        :param name: The name of the logger. Default is ``__name__``.
+        :param rank_zero_only: Whether to force all logs to only occur on the rank zero process. Default is `False`.
+        :param extra: (Optional) A dict-like object which provides contextual information. See `logging.LoggerAdapter`.
+        """
+        logger = logging.getLogger(name)
+        super().__init__(logger=logger, extra=extra)
+        self.rank_zero_only = rank_zero_only
+
+    def log(self, level: int, msg: str, rank: Optional[int] = None, *args, **kwargs) -> None:
+        """Delegate a log call to the underlying logger, after prefixing its message with the rank
+        of the process it's being logged from. If `'rank'` is provided, then the log will only
+        occur on that rank/process.
+
+        :param level: The level to log at. Look at `logging.__init__.py` for more information.
+        :param msg: The message to log.
+        :param rank: The rank to log at.
+        :param args: Additional args to pass to the underlying logging function.
+        :param kwargs: Any additional keyword args to pass to the underlying logging function.
+        """
+        if self.isEnabledFor(level):
+            msg, kwargs = self.process(msg, kwargs)
+            current_rank = getattr(rank_zero_only, "rank", None)
+            if current_rank is None:
+                raise RuntimeError("The `rank_zero_only.rank` needs to be set before use")
+            msg = rank_prefixed_message(msg, current_rank)
+            if self.rank_zero_only:
+                if current_rank == 0:
+                    self.logger.log(level, msg, *args, **kwargs)
+            else:
+                if rank is None:
+                    self.logger.log(level, msg, *args, **kwargs)
+                elif current_rank == rank:
+                    self.logger.log(level, msg, *args, **kwargs)

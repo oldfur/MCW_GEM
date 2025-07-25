@@ -2138,9 +2138,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                     size=(batch_size, 1, org_context.size(-1)), device=node_mask.device,
                     node_mask=node_mask)
                 
-####################################################################################
-# new_context是什么？需要修改！
-            z, new_context = self.sample_p_zs_given_zt(
+            # 参考Unigem中uni_diffusion为true时sample_p_zs_given_zt的返回值，目前不用这个函数    
+            _, _, new_context = self.sample_p_zs_given_zt(
                     s_array, t_array, z_t, z_t_l, z_t_a, node_mask, 
                     edge_mask, new_context, fix_noise=False, 
                     yt=t_array2, ys=s_array2, force_t_zero=True) 

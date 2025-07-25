@@ -233,4 +233,9 @@ def setup_shared_args(parser):
     parser.add_argument('--target', type=str, default='',
                         help='Learning target for a dataset (such as mp20) with multiple options.')
 
+    parser.add_argument('--visualize', type=bool, default=False,
+                        help='Visualize the generated structures. (default: False)')
+    parser.add_argument('--save_dir', type=str, default='mp20/analyze_test/',
+                        help='Directory to save the generated structures during analysis. (default: mp20/analyze)')
+
     return parser

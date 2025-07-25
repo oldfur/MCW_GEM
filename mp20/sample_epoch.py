@@ -6,7 +6,7 @@ from equivariant_diffusion.utils import assert_mean_zero_with_mask, remove_mean_
 
 
 def sample(args, device, generative_model, dataset_info,
-           prop_dist=None, nodesxsample=torch.tensor([10]), # 默认节点数
+           prop_dist=None, nodesxsample=torch.tensor([10]), # nodesxsample[i]为一个样本的节点数
            context=None, fix_noise=False, evaluate_condition_generation=False, pesudo_context=None, sample_steps=1000):
     max_n_nodes = dataset_info['max_n_nodes']  # this is the maximum node_size in mp20
 
@@ -99,37 +99,3 @@ def sample_sweep_conditional(args, device, generative_model, dataset_info, prop_
             nodesxsample=nodesxsample, context=context, fix_noise=True
             )
         return one_hot, charges, x, node_mask, length, angle
-
-
-
-
-def analyze_and_save(epoch, model_sample, nodes_dist, args, device, dataset_info, prop_dist,
-                     n_samples=1000, batch_size=100, evaluate_condition_generation=False):
-    print(f'Analyzing molecule stability at epoch {epoch}...')
-    batch_size = min(batch_size, n_samples)
-    assert n_samples % batch_size == 0
-    molecules = {'one_hot': [], 'x': [], 'node_mask': []}
-    for i in range(int(n_samples/batch_size)):
-        nodesxsample = nodes_dist.sample(batch_size)
-
-        if args.property_pred:
-            one_hot, charges, x, node_mask, pred = sample(args, device, model_sample, dataset_info, prop_dist,
-                                                nodesxsample=nodesxsample, evaluate_condition_generation=evaluate_condition_generation)
-        else:
-            one_hot, charges, x, node_mask = sample(args, device, model_sample, dataset_info, prop_dist,
-                                                nodesxsample=nodesxsample, evaluate_condition_generation=evaluate_condition_generation)
-
-        molecules['one_hot'].append(one_hot.detach().cpu())
-        molecules['x'].append(x.detach().cpu())
-        molecules['node_mask'].append(node_mask.detach().cpu())
-
-    if not args.bfn_schedule:
-        molecules = {key: torch.cat(molecules[key], dim=0) for key in molecules}
-
- ###################################       
-    validity_dict, rdkit_tuple = analyze_stability_for_molecules(molecules, dataset_info, bfn_schedule=args.bfn_schedule)
-
-    wandb.log(validity_dict)
-    if rdkit_tuple is not None:
-        wandb.log({'Validity': rdkit_tuple[0][0], 'Uniqueness': rdkit_tuple[0][1], 'Novelty': rdkit_tuple[0][2]})
-    return validity_dict

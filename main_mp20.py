@@ -19,6 +19,7 @@ from mp20.mp20 import MP20
 from mp20.get_model import get_model
 from mp20.utils import *
 from mp20.train_epoch import train_epoch
+from mp20.analyze_test import analyze_and_save
 
 
 
@@ -65,17 +66,7 @@ def get_dataloaders(args, dataset):
     dataloaders['test'] = test_loader
 
     return dataloaders
-########################################################################考虑是否修改
-    # 例子：
-    # dataloaders = {split: DataLoader(dataset,
-    #                                  batch_size=batch_size,
-    #                                  shuffle=args.shuffle if (split == 'train') else False,
-    #                                  num_workers=num_workers,
-    #                                  collate_fn=preprocess.collate_fn, drop_last=True)
-    #                                  # 预处理最终生成分子图的函数是preprocess.collate_fn！！！
-    #                          for split, dataset in datasets.items()}
-    # 后续再调整collate_fn,因为edge_index被转置了
-    # return dataloaders, charge_scale
+
 
 def get_dataset_info(args):
     if args.dataset == 'mp20':
@@ -134,14 +125,10 @@ def test(args, loader, epoch, eval_model, partition, device,
     print("test!!! We should complete this function")
 
 
-def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info, device, 
-                     prop_dist, n_samples, evaluate_condition_generation):
-    print("analyze_and_save!!! We should complete this function")
 
-
-# def evaluate_properties(args, loader, epoch, eval_model, partition, device, 
-#                         dtype, nodes_dist, property_norms, wandb):
-#     print("evaluate_properties!!! We should complete this function")
+def evaluate_properties(args, loader, epoch, eval_model, partition, device, 
+                        dtype, nodes_dist, property_norms, wandb):
+    print("evaluate_properties!!! We should complete this function")
 
 
 def main(args):
@@ -255,11 +242,6 @@ def main(args):
         if epoch % args.test_epochs == 0:   # 默认每10个epoch测试一次
 
             print('Evaluating model at epoch %d' % epoch)
-            if args.uni_diffusion:
-                # evaluate properties
-                evaluate_properties(args=args, loader=dataloaders['valid'], epoch=epoch, eval_model=model_ema_dp, 
-                                    partition='Val', device=args.device, dtype=args.dtype, nodes_dist=nodes_dist, 
-                                    property_norms=property_norms, wandb=wandb)
             
             if isinstance(model, en_diffusion.EnVariationalDiffusion):
                 wandb.log(model.log_info(), commit=True)
@@ -268,8 +250,8 @@ def main(args):
             if not args.break_train_epoch:
                 analyze_and_save(args=args, epoch=epoch, model_sample=model_ema, nodes_dist=nodes_dist,
                                  dataset_info=dataset_info, device=args.device,
-                                 prop_dist=prop_dist, n_samples=args.n_stability_samples, 
-                                 evaluate_condition_generation=args.evaluate_condition_generation)
+                                 prop_dist=prop_dist, evaluate_condition_generation=args.evaluate_condition_generation)
+                
             nll_val = test(args=args, loader=dataloaders['valid'], epoch=epoch, eval_model=model_ema_dp,
                            partition='Val', device=args.device, dtype=args.dtype, nodes_dist=nodes_dist,
                            property_norms=property_norms, uni_diffusion=args.uni_diffusion)
@@ -280,7 +262,7 @@ def main(args):
             if nll_val < best_nll_val:
                 best_nll_val = nll_val
                 best_nll_test = nll_test
-                if args.save_model:
+                if args.save_model:  # 保存
                     args.current_epoch = epoch + 1
                     utils.save_model(optim, 'outputs/%s/optim.npy' % args.exp_name)
                     utils.save_model(model, 'outputs/%s/generative_model.npy' % args.exp_name)
@@ -307,6 +289,7 @@ def main(args):
 if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser(description='E3Diffusion')
+    parser.add_argument('--dataset_folder_path', type=str, default='./mp20/raw',)
     parser.add_argument('--exp_name', type=str, default='debug_mp20')
     parser.add_argument('--model', type=str, default='egnn_dynamics',
                         help='our_dynamics | schnet | simple_dynamics | '
@@ -322,7 +305,7 @@ if __name__ == '__main__':
                         help='vlb, l2')
     parser.add_argument('--n_epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--sample_batch_size', type=int, default=100)
+    parser.add_argument('--sample_batch_size', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--brute_force', type=eval, default=False,
                         help='True | False')
