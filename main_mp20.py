@@ -19,7 +19,7 @@ from mp20.mp20 import MP20
 from mp20.get_model import get_model
 from mp20.utils import *
 from mp20.train_epoch import train_epoch
-from mp20.analyze_test import analyze_and_save
+from mp20.analyze_test import analyze_and_save, test
 
 
 
@@ -101,7 +101,7 @@ def get_dataset_info(args):
     return dataset_info
 
 
-def construct_model(args, dataset_info, dataloader, uni_diffusion=False, use_basis=False, decoupling=False, finetune=False):
+def construct_model(args, dataset_info, dataloader):
     # Create model
     device = args.device
     model, nodes_dist, prop_dist = get_model(args, device, dataset_info, dataloader, \
@@ -120,18 +120,8 @@ def get_optim(args, generative_model):
     return optim
  
 
-def test(args, loader, epoch, eval_model, partition, device, 
-         dtype, nodes_dist, property_norms, uni_diffusion):
-    print("test!!! We should complete this function")
-
-
-
-def evaluate_properties(args, loader, epoch, eval_model, partition, device, 
-                        dtype, nodes_dist, property_norms, wandb):
-    print("evaluate_properties!!! We should complete this function")
-
-
 def main(args):
+
     # 1 Load dataset
     dataset = get_dataset(args)
     dataset_info = get_dataset_info(args)
@@ -248,16 +238,13 @@ def main(args):
 
             # 分析与保存
             if not args.break_train_epoch:
-                analyze_and_save(args=args, epoch=epoch, model_sample=model_ema, nodes_dist=nodes_dist,
-                                 dataset_info=dataset_info, device=args.device,
-                                 prop_dist=prop_dist, evaluate_condition_generation=args.evaluate_condition_generation)
+                analyze_and_save(args, epoch, model_ema, nodes_dist,
+                                dataset_info, prop_dist, args.evaluate_condition_generation)
                 
-            nll_val = test(args=args, loader=dataloaders['valid'], epoch=epoch, eval_model=model_ema_dp,
-                           partition='Val', device=args.device, dtype=args.dtype, nodes_dist=nodes_dist,
-                           property_norms=property_norms, uni_diffusion=args.uni_diffusion)
-            nll_test = test(args=args, loader=dataloaders['test'], epoch=epoch, eval_model=model_ema_dp,
-                            partition='Test', device=args.device, dtype=args.dtype,
-                            nodes_dist=nodes_dist, property_norms=property_norms, uni_diffusion=args.uni_diffusion)
+            nll_val = test(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
+                           property_norms, nodes_dist, partition='Val')
+            nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
+                            property_norms, nodes_dist, partition='Test')
 
             if nll_val < best_nll_val:
                 best_nll_val = nll_val

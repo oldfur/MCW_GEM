@@ -262,20 +262,22 @@ class EnVariationalDiffusion(torch.nn.Module):
             dynamics: models.EGNN_dynamics_MP20, in_node_nf: int, n_dims: int,
             timesteps: int = 1000, parametrization='eps', noise_schedule='learned',
             noise_precision=1e-4, loss_type='vlb', norm_values=(1., 1., 1.),
-            norm_biases=(None, 0., 0., 0., 0.), include_charges=True, uni_diffusion=False, timesteps2: int = 1000, pre_training=False,
-            property_pred=False, prediction_threshold_t=10, target_property=None, use_prop_pred=1, 
-            freeze_gradient=False, unnormal_time_step=False, only_noisy_node=False, half_noisy_node=False, sep_noisy_node=False,
-            relay_sampling=0, second_dynamics=None, sampling_threshold_t=10, atom_type_pred=True, bfn_schedule=False, 
+            norm_biases=(None, 0., 0., 0., 0.), include_charges=True, 
+            uni_diffusion=False, timesteps2: int = 1000, pre_training=False,
+            property_pred=False, prediction_threshold_t=10, 
+            target_property=None, use_prop_pred=1, 
+            freeze_gradient=False, unnormal_time_step=False, 
+            only_noisy_node=False, half_noisy_node=False, 
+            sep_noisy_node=False, relay_sampling=0, 
+            second_dynamics=None, sampling_threshold_t=10, 
+            atom_type_pred=True, bfn_schedule=False, 
             device='cpu', atom_types=5,
-            bond_pred=False,
-            bfn_str=False,
+            bond_pred=False, bfn_str=False,
             str_schedule_norm=False,
             str_loss_type = 'denoise_loss', 
-            str_sigma_h = 0.05,str_sigma_x = 0.05,
-            temp_index = 0,
-            optimal_sampling = 0,
-            len_dim=3,
-            angle_dim=3,
+            str_sigma_h = 0.05, str_sigma_x = 0.05,
+            temp_index = 0, optimal_sampling = 0,
+            len_dim=3, angle_dim=3,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -349,10 +351,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         # self.gamma_lst = np.load('/mnt/nfs-ssd/data/fengshikun/e3_diffusion_for_molecules/gamma.npy')
         # self.gamma_lst = np.load("/home/AI4Science/luy2402/e3_diffusion_for_molecules/data/gamma_luyan/gamma.npy")
         
-        # for the bfn schedule
-        # self.k_r = [-0.7777777777777777, -0.5555555555555556, -0.3333333333333333, -0.1111111111111111, 0.1111111111111111, 0.3333333333333334, 0.5555555555555556, 0.7777777777777779, 1.0]
-        # self.k_l = [-1.0, -0.7777777777777779, -0.5555555555555556, -0.3333333333333333, -0.1111111111111111, 0.11111111111111122, 0.3333333333333333, 0.5555555555555556, 0.7777777777777777]
-        # self.K_c = torch.tensor([-0.8889, -0.6667, -0.4444, -0.2222,  0.0000,  0.2222,  0.4444,  0.6667, 0.8889])
         bins = 9
         k_c, self.k_l, self.k_r = self.get_k_params(bins)
         self.K_c = torch.tensor(k_c).to(device)
@@ -451,7 +449,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                 angles_out = self.angle_mlp(angles)
             else:
                 print("relay_sampling t: ", t)
-                assert isinstance(self.second_dynamics, models.EGNN_dynamics_MP20), "second_dynamics should be an instance of models.EGNN_dynamics_MP20"
+                assert isinstance(self.second_dynamics, models.EGNN_dynamics_MP20), \
+                    "second_dynamics should be an instance of models.EGNN_dynamics_MP20"
                 net_out = self.second_dynamics._forward(t, x, node_mask, edge_mask, context, t2=t2, mask_y=mask_y)
                 # lengths_out = self.second_dynamics.length_mlp(lengths)
                 # angles_out = self.second_dynamics.angle_mlp(angles)
@@ -1311,376 +1310,6 @@ class EnVariationalDiffusion(torch.nn.Module):
         x = x_pos - mean_for_each_segment
 
         return x
-    
-    def bfn_pred(self, t, mu_coord, mu_charge, node_mask, edge_mask, context, gamma_coord, gamma_charge):
-        if self.property_pred:
-            h_final, coord_final, org_h, prop_pred = self.dynamics._bfnforward(t, mu_coord, mu_charge, node_mask, edge_mask, context)
-        else:
-            h_final, coord_final, org_h = self.dynamics._bfnforward(t, mu_coord, mu_charge, node_mask, edge_mask, context)
-        h_final_org = h_final.clone()
-        
-        bs, n_nodes, dims = mu_coord.shape
-        coord_final = coord_final.reshape(bs, n_nodes, dims)
-        eps_coord_pred = coord_final - mu_coord
-        
-        eps_coord_pred = diffusion_utils.remove_mean_with_mask(eps_coord_pred, node_mask)
-        # eps_coord_pred =self.zero_center_of_mass(eps_coord_pred, segment_ids)
-        # h_final shape: [BxN, 2]
-        h_final = h_final[:,:2]
-        mu_charge_eps = h_final[:, -2:-1]  # [n_nodes,1]
-        sigma_charge_eps = h_final[:, -1:]  # [n_nodes,1]
-        mu_charge_eps = mu_charge_eps.view(bs, n_nodes, 1)
-        sigma_charge_eps = sigma_charge_eps.view(bs, n_nodes, 1)
-        
-        # clamp
-        eps_coord_pred = torch.clamp(eps_coord_pred, min=-10, max=10)
-        mu_charge_eps = torch.clamp(mu_charge_eps, min=-10, max=10)
-        sigma_charge_eps = torch.clamp(sigma_charge_eps, min=-10, max=10)
-        
-        coord_pred = (
-            mu_coord / gamma_coord
-            - torch.sqrt((1 - gamma_coord) / gamma_coord) * eps_coord_pred
-        )
-        sigma_charge_eps = torch.exp(sigma_charge_eps)
-        mu_charge_x = (
-            mu_charge / gamma_charge
-            - torch.sqrt((1 - gamma_charge) / gamma_charge) * mu_charge_eps
-        )
-        sigma_charge_x = (
-            torch.sqrt((1 - gamma_charge) / gamma_charge) * sigma_charge_eps
-        )
-        
-        # fix shape
-        t = t.repeat(1, mu_coord.size(1)).unsqueeze(-1)
-        t = t[node_mask.squeeze(2).to(torch.bool)]
-        
-        
-        coord_pred = coord_pred[node_mask.squeeze(2).to(torch.bool)]
-        if self.atom_type_pred:
-            if self.property_pred:
-                return coord_pred, h_final_org, prop_pred
-            else:
-                return coord_pred, h_final_org
-        
-        
-        
-        mu_charge_x = mu_charge_x[node_mask.squeeze(2).to(torch.bool)]
-        sigma_charge_x = sigma_charge_x[node_mask.squeeze(2).to(torch.bool)]
-        
-        
-        
-        mu_charge_x = torch.clamp(mu_charge_x, min=-2, max=2)
-        sigma_charge_x = torch.clamp(sigma_charge_x, min=1e-6, max=4)
-        
-        k_r = torch.tensor(self.k_r).to(sigma_charge_x.device).unsqueeze(-1).unsqueeze(0)
-        k_l = torch.tensor(self.k_l).to(sigma_charge_x.device).unsqueeze(-1).unsqueeze(0)
-        p_o = self.discretised_cdf(
-                mu_charge_x, sigma_charge_x, k_r
-            ) - self.discretised_cdf(mu_charge_x, sigma_charge_x, k_l)
-        k_hat = p_o
-        return coord_pred, k_hat
-    
-    def bfn_pred_optimal_sampling(self, t, mu_coord, mu_charge, node_mask, edge_mask, context, gamma_coord,gamma_coord_next, gamma_charge,gamma_charge_next):
-        if self.property_pred:
-            h_final, coord_final, org_h, prop_pred = self.dynamics._bfnforward(t, mu_coord, mu_charge, node_mask, edge_mask, context)
-        else:
-            h_final, coord_final, org_h = self.dynamics._bfnforward(t, mu_coord, mu_charge, node_mask, edge_mask, context)
-        h_final_org = h_final.clone()
-        
-        bs, n_nodes, dims = mu_coord.shape
-        coord_final = coord_final.reshape(bs, n_nodes, dims)
-        eps_coord_pred = coord_final - mu_coord
-        
-        eps_coord_pred = diffusion_utils.remove_mean_with_mask(eps_coord_pred, node_mask)
-        # eps_coord_pred =self.zero_center_of_mass(eps_coord_pred, segment_ids)
-        # h_final shape: [BxN, 2]
-        h_final = h_final[:,:2]
-        mu_charge_eps = h_final[:, -2:-1]  # [n_nodes,1]
-        sigma_charge_eps = h_final[:, -1:]  # [n_nodes,1]
-        mu_charge_eps = mu_charge_eps.view(bs, n_nodes, 1)
-        sigma_charge_eps = sigma_charge_eps.view(bs, n_nodes, 1)
-        
-        # clamp
-        eps_coord_pred = torch.clamp(eps_coord_pred, min=-10, max=10)
-        mu_charge_eps = torch.clamp(mu_charge_eps, min=-10, max=10)
-        sigma_charge_eps = torch.clamp(sigma_charge_eps, min=-10, max=10)
-        ## optimal sampling
-        x_t_next = gamma_coord_next/ gamma_coord *( mu_coord - torch.sqrt((1 - gamma_coord) * gamma_coord) * eps_coord_pred  )
-        
-        
-        coord_pred = (
-            mu_coord / gamma_coord
-            - torch.sqrt((1 - gamma_coord) / gamma_coord) * eps_coord_pred
-        )
-        sigma_charge_eps = torch.exp(sigma_charge_eps)
-        mu_charge_x = (
-            mu_charge / gamma_charge
-            - torch.sqrt((1 - gamma_charge) / gamma_charge) * mu_charge_eps
-        )
-        sigma_charge_x = (
-            torch.sqrt((1 - gamma_charge) / gamma_charge) * sigma_charge_eps
-        )
-        
-        # fix shape
-        t = t.repeat(1, mu_coord.size(1)).unsqueeze(-1)
-        t = t[node_mask.squeeze(2).to(torch.bool)]
-        
-        
-        coord_pred = coord_pred[node_mask.squeeze(2).to(torch.bool)]
-        x_t_next = x_t_next[node_mask.squeeze(2).to(torch.bool)]
-        if self.atom_type_pred:
-            if self.property_pred:
-                return coord_pred, h_final_org, prop_pred, x_t_next
-            else:
-                return coord_pred, h_final_org, x_t_next
-        
-        
-        
-        mu_charge_x = mu_charge_x[node_mask.squeeze(2).to(torch.bool)]
-        sigma_charge_x = sigma_charge_x[node_mask.squeeze(2).to(torch.bool)]
-        
-        
-        
-        mu_charge_x = torch.clamp(mu_charge_x, min=-2, max=2)
-        sigma_charge_x = torch.clamp(sigma_charge_x, min=1e-6, max=4)
-        
-        k_r = torch.tensor(self.k_r).to(sigma_charge_x.device).unsqueeze(-1).unsqueeze(0)
-        k_l = torch.tensor(self.k_l).to(sigma_charge_x.device).unsqueeze(-1).unsqueeze(0)
-        p_o = self.discretised_cdf(
-                mu_charge_x, sigma_charge_x, k_r
-            ) - self.discretised_cdf(mu_charge_x, sigma_charge_x, k_l)
-        k_hat = p_o
-        return coord_pred, k_hat, x_t_next
-    
-    def comput_loss_bfn(self, x, h, node_mask, edge_mask, context, property_label=None):
-        bz = x.size(0)
-        if self.sep_noisy_node:
-            continuous_t = self.prediction_threshold_t / self.T # 0.01
-            continuous_t = 1 - continuous_t # 0.99
-            # (r1 - r2) * torch.rand(a, b) + r2 for [r2, r1]
-            t1 = (continuous_t - 0) * torch.rand(bz // 2, 1) + 0 # half [0, 0.99]
-            t2 = (1 - continuous_t) * torch.rand(bz // 2, 1) + continuous_t # half [0.99, 1]
-            t = torch.cat([t1, t2], dim=0).to(torch.float).to(x.device)
-        else:        
-            t = torch.rand(size=(bz, 1), device=x.device, dtype=float)
-        self.t_min = 0.001 # TODO, move to self
-        t = torch.clamp(t, min=self.t_min).to(torch.float)
-        
-        # change h 
-        charges = h['integer']  * 10
-        # change to [-1, 1]
-        self.normal_dict_charges = 9
-        charges = (2 * charges - 1) / self.normal_dict_charges  - 1
-        # t = torch.randint(lowest_t, self.T + 1, size=(half_batch_size, 1), device=x.device).float()
-        
-        mu_charge, gamma_charge = self.continuous_var_bayesian_update(
-            t, sigma1=self.sigma1_charges, x=charges
-        )
-        
-        
-        
-        mu_coord, gamma_coord = self.continuous_var_bayesian_update(
-                t, sigma1=self.sigma1_coord, x=x
-            )
-        
-        # node_mask to segment_id
-        segment_ids = []
-        for i in range(node_mask.shape[0]):
-            segment_ids.append(torch.ones(int(node_mask[i].sum().item())) * i)
-        segment_ids = torch.cat(segment_ids).to(mu_charge.device).to(torch.long)
-        
-        mu_charge = mu_charge * node_mask
-        mu_coord = mu_coord * node_mask
-        mu_coord = diffusion_utils.remove_mean_with_mask(mu_coord, node_mask)
-        
-        # select non-zero mu_coord
-        # mu_coord = mu_coord[node_mask.squeeze(2).to(torch.bool)]
-        # mu_charge = mu_charge[node_mask.squeeze(2).to(torch.bool)]
-        
-        
-        mu_charge = torch.clamp(mu_charge, min=-10, max=10).to(torch.float)
-        mu_coord = torch.clamp(mu_coord, min=-10, max=10).to(torch.float)
-        
-        # mu_coord = self.zero_center_of_mass(mu_coord, segment_ids)
-        if self.property_pred:
-            coord_pred, k_hat, prop_pred = self.bfn_pred(t, mu_coord, mu_charge, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-        else:
-            coord_pred, k_hat = self.bfn_pred(t, mu_coord, mu_charge, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-        
-        org_t = t
-        t = t.repeat(1, mu_coord.size(1)).unsqueeze(-1)
-        t = t[node_mask.squeeze(2).to(torch.bool)]
-        
-        x = x[node_mask.squeeze(2).to(torch.bool)]
-        charges = charges[node_mask.squeeze(2).to(torch.bool)]
-        
-        posloss = self.ctime4continuous_loss(
-            t=t, sigma1=self.sigma1_coord, x_pred=coord_pred, x=x
-        )
-        
-        if self.atom_type_pred:
-            onehot_dim = h['categorical'].shape[-1]
-            pred_h = k_hat[:,:onehot_dim] # only use the fist five dim
-            atom_types_pred = torch.softmax(pred_h, dim=1)
-            atom_types_pred = atom_types_pred.view(node_mask.shape[0], node_mask.shape[1], -1)
-            atom_type_gt = h['categorical'] *  self.norm_values[1]
-            
-            atom_types_pred = atom_types_pred[node_mask.squeeze(2).to(torch.bool)]
-            atom_type_gt = atom_type_gt[node_mask.squeeze(2).to(torch.bool)]
-            
-            atom_type_loss = torch.nn.MSELoss(reduction="none")(atom_types_pred, atom_type_gt)
-            time_stamp_threshold = 1 - self.prediction_threshold_t / self.T
-            atom_type_mask = (t >= time_stamp_threshold).bool()
-            atom_type_loss = atom_type_loss[atom_type_mask.squeeze()]
-            charge_loss = atom_type_loss
-            
-            if self.property_pred:
-                loss_l1 = torch.nn.L1Loss(reduction='none')
-                # print(property_pred.size(), property_label.size())
-                assert prop_pred.size() == property_label.size(), f"property_pred size: {prop_pred.size()}, property_label size: {property_label.size()}"
-                pred_loss_mask = (org_t >= time_stamp_threshold).bool()
-                pred_rate = pred_loss_mask.sum() / pred_loss_mask.size(0)
-                
-                # loss_dict["pred_rate"] = pred_rate
-                pred_loss = loss_l1(prop_pred[pred_loss_mask.squeeze()], property_label[pred_loss_mask.squeeze()])
-        else:
-            k_c = self.K_c.unsqueeze(-1).unsqueeze(0).to(k_hat.device)
-            k_hat = (k_hat * k_c).sum(dim=1)
-            charge_loss = self.ctime4discreteised_loss(
-                t=t, sigma1=self.sigma1_charges, x_pred=k_hat, x=charges
-        )
-        # if self.mode == "BFN":
-        #     return (
-        #         posloss,
-        #         charge_loss,
-        #         (mu_coord, mu_charge, coord_pred, k_hat, gamma_coord, gamma_charge),
-        #     )
-
-        # if posloss.mean().item() > 10:
-        #     # simply give label zero to posloss
-        #     posloss = torch.zeros_like(posloss)
-        
-        if self.property_pred:
-            loss = charge_loss.mean()  + posloss.mean() + pred_loss.mean()
-            loss_dict = {'t': t.squeeze(), 'posloss': posloss.squeeze(),
-                      'charge_loss': charge_loss.squeeze(), 'pred_loss': pred_loss.squeeze(), 'pred_rate': pred_rate}
-        else:
-            loss = charge_loss.mean()  + posloss.mean()
-            
-            loss_dict = {'t': t.squeeze(), 'posloss': posloss.squeeze(),
-                        'charge_loss': charge_loss.squeeze()}
-        
-        return loss, loss_dict
-
-    def compute_loss_bfn_str(self, x, h, lengths, angles, node_mask, edge_mask, context, property_label=None):
-
-        # self.str_loss_type = 'denoise_loss' 
-        # self.str_sigma_x = 0.05
-        # self.str_sigma_h = 0.05
-        batch_size = x.size(0)
-        # t = torch.ones(size=(x.size(0), 1), device=x.device, dtype=float)*0.99 #即使t一直取得很大，也不会nan
-        t = torch.rand(size=(batch_size, 1), device=x.device, dtype=float)
-        self.t_min = 0.001 # TODO, move to self
-        t = torch.clamp(t, min=self.t_min, max=0.99).to(torch.float) # add clamp max
-        # change h 
-        charges = h['integer']  * 10
-        # change to [-1, 1]
-        self.normal_dict_charges = 9
-        charges = (2 * charges - 1) / self.normal_dict_charges  - 1
-        # add noise to coord(x) and charge
-        coord_eps_gt = diffusion_utils.remove_mean_with_mask(torch.randn_like(x)* node_mask, node_mask)
-        te = t.repeat(1, x.size(1)).unsqueeze(-1)
-        x_t = (1 - te) * x + self.str_sigma_x * coord_eps_gt
-        charge_eps_gt = torch.randn_like(charges)
-        charges_t = (1 - te) * charges + self.str_sigma_h * charge_eps_gt
-        
-        x_t = x_t * node_mask
-        charges_t = charges_t * node_mask
-        # x_t = diffusion_utils.remove_mean_with_mask(x_t, node_mask)
-        x_t = torch.clamp(x_t, min=-10, max=10).to(torch.float)
-        charges_t = torch.clamp(charges_t, min=-10, max=10).to(torch.float) # h_t
-        
-        #input normal scale
-        if self.str_schedule_norm:
-            x_in = x_t.clone()
-            x_scale = 1 / torch.sqrt(((1 - t)**2) * 3 + self.str_sigma_x ** 2)
-            x_in = x_in * x_scale.unsqueeze(1)
-            h_in = charges_t.clone()
-            h_scale = 1 / torch.sqrt(((1 - t)**2) * 0.14 + self.str_sigma_h ** 2)
-            h_in = h_in * h_scale.unsqueeze(1)
-            # predict
-            h_final, eps_coord_pred, org_h = self.dynamics._bfnforward(t, x_in, h_in, node_mask, edge_mask, context)
-        else:
-            h_final, eps_coord_pred, org_h = self.dynamics._bfnforward(t, x_t, charges_t, node_mask, edge_mask, context)        
-        
-        bs, n_nodes, dims = x_t.shape
-        eps_coord_pred = eps_coord_pred.reshape(bs, n_nodes, dims)
-        
-        mu_charge_eps = h_final[:, -2:-1]  # [n_nodes,1]
-        sigma_charge_eps = h_final[:, -1:]  # [n_nodes,1]
-        sigma_charge_eps.register_hook(self.save_intermediate_grad) # fix nan
-
-        mu_charge_eps = mu_charge_eps.view(bs, n_nodes, 1)
-        sigma_charge_eps = sigma_charge_eps.view(bs, n_nodes, 1)
-        
-        print(f"Sigma charge epsilon values: max={sigma_charge_eps.max()}, min={sigma_charge_eps.min()}, mean={sigma_charge_eps.mean()}") # fix nan
-        sigma_charge_eps = torch.clamp(sigma_charge_eps, min=-20, max=5)
-        sigma_charge_eps = torch.exp(sigma_charge_eps) # log(sigma) -> sigma
-        
-        eps_coord_pred = torch.clamp(eps_coord_pred, min=-10, max=10)
-        mu_charge_eps = torch.clamp(mu_charge_eps, min=-10, max=10)
-        sigma_charge_eps = torch.clamp(sigma_charge_eps, min=-10, max=10)
-        
-        mu_charge = (charges_t - self.str_sigma_h * mu_charge_eps) / (1 - te) * node_mask
-        sigma_charge = self.str_sigma_h * sigma_charge_eps / (1 - te) * node_mask
-
-        
-        k_r = torch.tensor(self.k_r).to(charges_t.device).unsqueeze(-1).unsqueeze(0)
-        k_l = torch.tensor(self.k_l).to(charges_t.device).unsqueeze(-1).unsqueeze(0)
-        mu_charge = mu_charge[node_mask.squeeze(2).to(torch.bool)]
-        sigma_charge = sigma_charge[node_mask.squeeze(2).to(torch.bool)]
-        p_o = self.discretised_cdf(
-                    mu_charge, sigma_charge, k_r
-                ) - self.discretised_cdf(mu_charge, sigma_charge, k_l)
-        bi = k_l + (k_r - k_l) / 2    
-        
-        
-        if self.str_loss_type == 'denoise_loss':
-            # pos loss: l2 between coord_eps_gt and eps_coord_pred, TODO * node mask
-            posloss = (eps_coord_pred - coord_eps_gt).abs().pow(2).sum(-1)
-            posloss = posloss[node_mask.squeeze(2).to(torch.bool)]
-            posloss = posloss.mean()
-            # charge loss: l2 between charge_eps_gt and mu_charge_eps, TODO * node mask
-            chargeloss1 = (mu_charge_eps - charge_eps_gt)
-            chargeloss1 = chargeloss1[node_mask.squeeze(2).to(torch.bool)]
-            tl = te[node_mask.squeeze(2).to(torch.bool)]
-            coeff = (1 - tl) / self.str_sigma_h
-            bi_minus_mu_charge = bi.reshape(1, -1) - mu_charge
-            chargeloss2 = (coeff * p_o.squeeze(-1) * bi_minus_mu_charge).sum(-1).reshape(-1, 1)
-            chargeloss = (chargeloss1 - chargeloss2).abs().pow(2).mean()
-            # chargeloss = chargeloss + chargeloss2
-            # chargeloss = chargeloss.mean()
-        elif self.str_loss_type == 'x0_loss':
-            x_pred = (x_t - self.str_sigma_x * eps_coord_pred) / (1 - te)
-            posloss = (x_pred - x).abs().pow(2).sum(-1)
-            posloss = posloss[node_mask.squeeze(2).to(torch.bool)]
-            posloss = posloss.mean()
-            charge_pred = (p_o * bi).sum(dim=1)
-            charges_gt = charges[node_mask.squeeze(2).to(torch.bool)]
-            chargeloss = (charge_pred - charges_gt).abs().pow(2).mean()
-            
-        else:
-            raise ValueError(f"loss type {self.str_loss_type} not supported")
-        
-            
-        loss = posloss + chargeloss
-        # loss = posloss
-        # check loss contains nan
-        if torch.isnan(loss):
-            print('nan happens')
-        loss_dict = {'posloss': posloss, 'charge_loss': chargeloss}
-        return loss, loss_dict
-    
 
 
     def compute_loss(self, x, h, lengths, angles, node_mask, edge_mask, context, t0_always, mask_indicator=None,
@@ -1852,8 +1481,8 @@ class EnVariationalDiffusion(torch.nn.Module):
             # Compute noise values for t = 0.
             t_zeros = torch.zeros_like(s)
             gamma_0 = self.inflate_batch_array(self.gamma(t_zeros), x)
-            gamma_0_length = self.inflate_batch_array(self.gamma_length(t_zeros), lengths)
-            gamma_0_angle = self.inflate_batch_array(self.gamma_angle(t_zeros), angles)
+            gamma_0_length = self.inflate_batch_array(self.gamma(t_zeros), lengths)
+            gamma_0_angle = self.inflate_batch_array(self.gamma(t_zeros), angles)
             alpha_0 = self.alpha(gamma_0, x)
             alpha_0_length = self.alpha(gamma_0_length, lengths)
             alpha_0_angle = self.alpha(gamma_0_angle, angles)
@@ -1878,9 +1507,9 @@ class EnVariationalDiffusion(torch.nn.Module):
                 z_0_angle = alpha_0_angle * angles + sigma_0_angle * eps_0_angle
 
             if self.property_pred:
-                net_out, property_pred = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context)
+                (net_out, property_pred), lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context)
             else:
-                net_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context)
+                net_out, lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context)
 
             # Compute the error for t = 0.            
             loss_term_0 = -self.log_pxh_lengths_angles_given_z0_without_constants(
@@ -1942,7 +1571,8 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
             # calculate the loss for atom type
-            h_true = torch.cat([h['categorical'], h['integer']], dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
+            h_true = torch.cat([h['categorical'], h['integer']], 
+                               dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
             h_pred = net_out[:, :, 3:]
             # 保留第0维度不计算loss，因为第0维度是batch维度
             l1_loss = torch.nn.L1Loss(reduction='none')
@@ -2016,7 +1646,8 @@ class EnVariationalDiffusion(torch.nn.Module):
             pred_loss_mask = pred_loss_mask.squeeze(1)   
             atom_type_loss = atom_type_loss * pred_loss_mask
             loss += atom_type_loss
-            return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(), 'error': error.squeeze(), "atom_type_loss": atom_type_loss, "pred_rate": pred_rate}
+            return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(), 'error': error.squeeze(), 
+                          "atom_type_loss": atom_type_loss, "pred_rate": pred_rate}
         else:
             return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(),
                 'error': error.squeeze()}
@@ -2069,7 +1700,8 @@ class EnVariationalDiffusion(torch.nn.Module):
                     node_mask=node_mask)
             
             z, new_context = self.sample_p_zs_given_zt(
-                    s_array, t_array, z_t, node_mask, edge_mask, new_context, fix_noise=False, yt=t_array2, ys=s_array2, force_t_zero=True) # z_t and t keep unchanged
+                    s_array, t_array, z_t, node_mask, edge_mask, new_context, fix_noise=False, yt=t_array2, ys=s_array2, force_t_zero=True) 
+            # z_t and t keep unchanged
         
         # calcuate the mae between new_context and org_context
         mae = torch.mean(torch.abs(new_context - org_context))
@@ -2169,46 +1801,17 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Reset delta_log_px if not vlb objective.
         if self.training and self.loss_type == 'l2':
             delta_log_px = torch.zeros_like(delta_log_px)
-            
-        # self.eval()
-        # with torch.no_grad():
-        #     # self.eval()
-        #     denoise_error_lst = []
-        #     T = 1000
-        #     from tqdm import tqdm
-        #     for t in tqdm(range(T)):
-        #         # if t % 2 == 0:
-        #         #     time_upperbond = 10
-        #         # else:
-        #         #     time_upperbond = 1000
-        #         time_upperbond = t
-        #         loss, loss_dict = self.compute_loss(x, h, node_mask, edge_mask, context, t0_always=False, mask_indicator=mask_indicator, property_label=property_label, time_upperbond=time_upperbond)
-        #         denoise_error_lst.append(loss_dict['error'])
-        #         print(f'upperbond: {t}, error: {loss_dict["error"].mean().item()}')
-        #     denoise_error = torch.stack(denoise_error_lst, dim=1)
-        #     # save denoise_error
-        #     torch.save(denoise_error, 'denoise_error_new.pt')
-        #     exit(0)
 
         if self.training:
             # Only 1 forward pass when t0_always is False.
             if expand_diff:
                 loss, loss_dict = self.compute_loss_exp(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=False)
-            elif self.bfn_schedule:
-                if self.bfn_str:
-                    loss, loss_dict = self.compute_loss_bfn_str(x, h, lengths, angles, node_mask, edge_mask, context, property_label=property_label)
-                else:
-                    loss, loss_dict = self.compute_loss_bfn(x, h, lengths, angles, node_mask, edge_mask, context, property_label=property_label)
-                return loss, loss_dict
             else:
-                loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
+                loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
+                                                    mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
         else:
-            # Less variance in the estimator, costs two forward passes.
-            if self.bfn_schedule:
-                loss, loss_dict = self.compute_loss_bfn(x, h, lengths, angles, node_mask, edge_mask, context, property_label=property_label)
-                return loss, loss_dict
-            else:
-                loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
+            loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, 
+                                                mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
 
         neg_log_pxh = loss
 
@@ -2397,7 +2000,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
-        # print(f't is {t[0].item()}, sigma: {sigma[0].item()}, z coeffient: {(1 / alpha_t_given_s)[0][0].item()}, nn output coeffient: {(sigma2_t_given_s / alpha_t_given_s / sigma_t)[0][0].item()}')
+        # print(f't is {t[0].item()}, sigma: {sigma[0].item()}, z coeffient: 
+        # {(1 / alpha_t_given_s)[0][0].item()}, nn output coeffient: 
+        # {(sigma2_t_given_s / alpha_t_given_s / sigma_t)[0][0].item()}')
+        
         # Project down to avoid numerical runaway of the center of gravity.
         
         # split the zs into two parts
@@ -2519,406 +2125,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             node_mask=node_mask)
         return z_x
 
-    @torch.no_grad()
-    def sample_bfn_str(self, n_samples, n_nodes, node_mask, edge_mask, context, sample_steps=1000):
-        # self.str_sigma = 0.01
-        # self.temp_index = 0
-        # self.str_sigma_x = 0.05
-        # self.str_sigma_h = 0.05
-
-        x_t = torch.randn((n_samples, n_nodes, 3)).to(node_mask.device) * self.str_sigma_x
-        charges_t = torch.randn((n_samples, n_nodes, 1)).to(node_mask.device) * self.str_sigma_h
-        
-        k_r = torch.tensor(self.k_r).to(charges_t.device).unsqueeze(-1).unsqueeze(0)
-        k_l = torch.tensor(self.k_l).to(charges_t.device).unsqueeze(-1).unsqueeze(0)
-        bi = k_l + (k_r - k_l) / 2  
-        
-        theta_traj = []
-        delta_t = 1 / sample_steps
-        for i in range(sample_steps - 1, 0, -1):
-            t = torch.ones((n_samples, 1)).to(node_mask.device) * i / sample_steps
-            te = t.repeat(1, x_t.size(1)).unsqueeze(-1)
-                        
-            x_t = x_t * node_mask
-            x_t = diffusion_utils.remove_mean_with_mask(x_t, node_mask)
-            charges_t = charges_t * node_mask
-            x_t = torch.clamp(x_t, min=-10, max=10).to(torch.float)
-            charges_t = torch.clamp(charges_t, min=-10, max=10).to(torch.float) # h_t
-            
-            # predict
-            h_final, eps_coord_pred, org_h = self.dynamics._bfnforward(t, x_t, charges_t, node_mask, edge_mask, context)
-            
-            bs, n_nodes, dims = x_t.shape
-            eps_coord_pred = eps_coord_pred.reshape(bs, n_nodes, dims)
-            
-            mu_charge_eps = h_final[:, -2:-1]  # [n_nodes,1]
-            sigma_charge_eps = h_final[:, -1:]  # [n_nodes,1]
-            mu_charge_eps = mu_charge_eps.view(bs, n_nodes, 1)
-            sigma_charge_eps = sigma_charge_eps.view(bs, n_nodes, 1)
-            
-            sigma_charge_eps = torch.exp(sigma_charge_eps) # log(sigma) -> sigma
-            
-            eps_coord_pred = torch.clamp(eps_coord_pred, min=-10, max=10)
-            mu_charge_eps = torch.clamp(mu_charge_eps, min=-10, max=10)
-            sigma_charge_eps = torch.clamp(sigma_charge_eps, min=-10, max=10)
-        
-            mu_charge = (charges_t - self.str_sigma_h * mu_charge_eps) / (1 - te)
-            sigma_charge = self.str_sigma_h * sigma_charge_eps / (1 - te)
-            
-            ts = te - delta_t
-            x_t =  (x_t - self.str_sigma_x * eps_coord_pred) * (1 - ts) / (1 - te)
-            
-            
-            mu_charge = mu_charge[node_mask.squeeze(2).to(torch.bool)]
-            sigma_charge = sigma_charge[node_mask.squeeze(2).to(torch.bool)]
-            
-            p_o = self.discretised_cdf(
-                    mu_charge, sigma_charge, k_r
-                ) - self.discretised_cdf(mu_charge, sigma_charge, k_l)
-            charges_pred = (p_o * bi).sum(dim=1)
-            charges_pred_reshape = torch.zeros_like(charges_t)
-            charges_pred_reshape[node_mask.squeeze(2).to(torch.bool)] = charges_pred
-            charges_t = (1 - ts) * charges_pred_reshape
-            if i > 1:
-                x_t = x_t + torch.randn_like(x_t) * self.str_sigma_x * np.sqrt(2) * (te ** self.temp_index) 
-                charges_t = charges_t + torch.randn_like(charges_t) * self.str_sigma_h * np.sqrt(2) * (te ** self.temp_index) 
-
-            x_t = diffusion_utils.remove_mean_with_mask(x_t* node_mask, node_mask)
-            x_t_save = x_t[node_mask.squeeze(2).to(torch.bool)]
-            charges_t_save = charges_t[node_mask.squeeze(2).to(torch.bool)]
-            theta_traj.append((x_t_save, charges_t_save))
-        
-
-        segment_ids = []
-        for idx in range(node_mask.shape[0]):
-            segment_ids.append(torch.ones(int(node_mask[idx].sum().item())) * idx)
-        segment_ids = torch.cat(segment_ids).to(node_mask.device).to(torch.long)
-        
-        return theta_traj, segment_ids
 
     @torch.no_grad()
-    def sample_bfn(self, n_samples, n_nodes, node_mask, edge_mask, context, sample_steps=1000):
-        mu_pos_t = torch.zeros((n_samples, n_nodes, 3)).to(node_mask.device)  # [N, 4] coordinates prior
-        mu_charge_t = torch.zeros((n_samples, n_nodes, 1)).to(node_mask.device)
-
-        ro_coord = torch.tensor(1, dtype=torch.float32).to(node_mask.device)
-        ro_charge = torch.tensor(1, dtype=torch.float32).to(node_mask.device)
-        
-        
-        
-        
-        
-        theta_traj = []
-        for i in range(1, sample_steps + 1):
-            t = torch.ones((n_samples, 1)).to(node_mask.device) * (i - 1) / sample_steps # t all have the same value
-            t = torch.clamp(t, min=self.t_min)
-        
-            gamma_coord = 1 - torch.pow(self.sigma1_coord, 2 * t)
-            gamma_charge = 1 - torch.pow(self.sigma1_charges, 2 * t)
-            
-            gamma_coord = gamma_coord.unsqueeze(-1)
-            gamma_charge = gamma_charge.unsqueeze(-1)
-            
-            mu_charge_t = torch.clamp(mu_charge_t, min=-10, max=10)
-            mu_pos_t = torch.clamp(mu_pos_t, min=-10, max=10)
-            
-            mu_charge_t = mu_charge_t * node_mask
-            mu_pos_t = mu_pos_t * node_mask
-            
-            mu_pos_t = diffusion_utils.remove_mean_with_mask(mu_pos_t, node_mask)
-
-            if self.atom_type_pred:
-                if self.property_pred:
-                    coord_pred, h_final_org, prop_pred = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-                else:
-                    coord_pred, h_final_org = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-                onehot_dim = self.atom_types
-                h_final_org = h_final_org.view(n_samples, n_nodes, -1)
-                h_final_org = h_final_org[node_mask.squeeze(2).to(torch.bool)]
-                pred_h = h_final_org[:,:onehot_dim] # only use the fist five dim
-                atom_types_pred = torch.softmax(pred_h, dim=1)
-            else:
-                coord_pred, k_hat = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-            
-            
-            # node_mask to segment_id
-            segment_ids = []
-            for idx in range(node_mask.shape[0]):
-                segment_ids.append(torch.ones(int(node_mask[idx].sum().item())) * idx)
-            segment_ids = torch.cat(segment_ids).to(node_mask.device).to(torch.long)
-            
-
-            alpha_coord = torch.pow(self.sigma1_coord, -2 * i / sample_steps) * (
-                1 - torch.pow(self.sigma1_coord, 2 / sample_steps)
-            )
-            y_coord = coord_pred + torch.randn_like(coord_pred) * torch.sqrt(
-                1 / alpha_coord
-            )
-            y_coord = self.zero_center_of_mass(
-                torch.clamp(y_coord, min=-10, max=10), segment_ids
-            )
-            
-            # change y_coord shape
-            y_coord_all = torch.zeros_like(mu_pos_t)
-            
-            start_idx = 0
-            bz, _, _ = mu_pos_t.shape
-            for idx2 in range(bz):
-                y_coord_all[idx2, :int(node_mask[idx2].sum().item()), :] = y_coord[start_idx:start_idx+int(node_mask[idx2].sum().item()), :]
-                start_idx += int(node_mask[idx2].sum().item())
-            
-            
-            mu_pos_t = (ro_coord * mu_pos_t + alpha_coord * y_coord_all) / (
-                ro_coord + alpha_coord
-            )
-            ro_coord = ro_coord + alpha_coord
-            
-            
-            if not self.atom_type_pred:
-                k_c = self.K_c.unsqueeze(-1).unsqueeze(0).to(k_hat.device)
-                e_k_hat = (k_hat * k_c).sum(dim=1, keepdim=True)
-                e_k_c = self.K_c[(e_k_hat - k_c).abs().argmin(dim=1).to(self.K_c.device)].to(k_hat.device)
-
-                theta_traj.append((coord_pred, e_k_c))
-                
-                alpha_charge = torch.pow(self.sigma1_charges, -2 * i / sample_steps) * (
-                    1 - torch.pow(self.sigma1_charges, 2 / sample_steps)
-                    )
-                # print("k_hat",k_hat,k_hat.shape,k_hat.min(),k_hat.max())
-
-                y_charge = e_k_c + torch.randn_like(e_k_c) * torch.sqrt(
-                        1 / alpha_charge
-                    )
-                
-                y_charge_all = torch.zeros_like(mu_charge_t)
-                start_idx = 0
-                
-                for idx3 in range(bz):
-                    y_charge_all[idx3, :int(node_mask[idx3].sum().item()), :] = y_charge[start_idx:start_idx+int(node_mask[idx3].sum().item()), :]
-                    start_idx += int(node_mask[idx3].sum().item())
-                
-                
-                mu_charge_t = (ro_charge * mu_charge_t + alpha_charge * y_charge_all) / (
-                    ro_charge + alpha_charge
-                )
-                ro_charge = ro_charge + alpha_charge
-                
-            else:
-                theta_traj.append((coord_pred, atom_types_pred))
-
-            
-            
-        mu_charge_t = torch.clamp(mu_charge_t, min=-10, max=10)
-        mu_pos_t = torch.clamp(mu_pos_t, min=-10, max=10)
-        
-        
-        if self.atom_type_pred:
-            if self.property_pred:
-                mu_pos_final, h_final_org, prop_pred = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-            else:
-                mu_pos_final, h_final_org = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-            onehot_dim = self.atom_types
-            h_final_org = h_final_org.view(n_samples, n_nodes, -1)
-            h_final_org = h_final_org[node_mask.squeeze(2).to(torch.bool)]
-            pred_h = h_final_org[:,:onehot_dim] # only use the fist five dim
-            atom_types_pred = torch.softmax(pred_h, dim=1)
-            theta_traj.append((mu_pos_final, atom_types_pred))
-        else:        
-            mu_pos_final, k_hat_final = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context,  gamma_coord=1-self.sigma1_coord**2, gamma_charge=1-self.sigma1_charges**2)
-       
-        # mu_pos_final, k_hat_final = self.interdependency_modeling(
-        #     time=torch.ones((n_nodes, 1)).to(self.device),
-        #     mu_charge_t=mu_charge_t,
-        #     mu_pos_t=mu_pos_t,
-        #     gamma_coord=1 - self.sigma1_coord**2,
-        #     gamma_charge=1 - self.sigma1_charges**2,
-        #     edge_index=edge_index,
-        #     edge_attr=edge_attr,
-        #     segment_ids=segment_ids,
-        # )
-        
-            k_c = self.K_c.unsqueeze(-1).unsqueeze(0).to(k_hat_final.device)
-            e_k_hat = (k_hat_final * k_c).sum(dim=1, keepdim=True)
-            e_k_c = self.K_c[(e_k_hat - k_c).abs().argmin(dim=1).to(self.K_c.device)].to(k_hat_final.device)
-            theta_traj.append((mu_pos_final, e_k_c))
-
-        return theta_traj, segment_ids
-
-    @torch.no_grad()
-    def sample_bfn_optimal_sampling(self, n_samples, n_nodes, node_mask, edge_mask, context, sample_steps=1000):
-        mu_pos_t = torch.zeros((n_samples, n_nodes, 3)).to(node_mask.device)  # [N, 4] coordinates prior
-        mu_charge_t = torch.zeros((n_samples, n_nodes, 1)).to(node_mask.device)
-
-        ro_coord = torch.tensor(1, dtype=torch.float32).to(node_mask.device)
-        ro_charge = torch.tensor(1, dtype=torch.float32).to(node_mask.device)
-        
-        print("bfn_optimal_sampling!!")
-        theta_traj = []
-        for i in range(1, sample_steps + 1):
-            t = torch.ones((n_samples, 1)).to(node_mask.device) * (i - 1) / sample_steps # t all have the same value
-            t_next = torch.ones((n_samples, 1)).to(node_mask.device) * i / sample_steps
-            t = torch.clamp(t, min=self.t_min)
-            t_next = torch.clamp(t_next, min=self.t_min)
-        
-            gamma_coord = 1 - torch.pow(self.sigma1_coord, 2 * t)
-            gamma_charge = 1 - torch.pow(self.sigma1_charges, 2 * t)
-            gamma_coord_next = 1 - torch.pow(self.sigma1_coord, 2 * t_next)
-            gamma_charge_next = 1 - torch.pow(self.sigma1_charges, 2 * t_next)
-            
-            gamma_coord = gamma_coord.unsqueeze(-1)
-            gamma_charge = gamma_charge.unsqueeze(-1)
-            gamma_coord_next = gamma_coord_next.unsqueeze(-1)
-            gamma_charge_next = gamma_charge_next.unsqueeze(-1)
-            
-            mu_charge_t = torch.clamp(mu_charge_t, min=-10, max=10)
-            mu_pos_t = torch.clamp(mu_pos_t, min=-10, max=10)
-            
-            mu_charge_t = mu_charge_t * node_mask
-            mu_pos_t = mu_pos_t * node_mask
-            
-            mu_pos_t = diffusion_utils.remove_mean_with_mask(mu_pos_t, node_mask)
-
-            if self.atom_type_pred:
-                if self.property_pred:
-                    coord_pred, h_final_org, prop_pred, x_t_next = self.bfn_pred_optimal_sampling(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_coord_next, gamma_charge,gamma_charge_next)
-                else:
-                    coord_pred, h_final_org, x_t_next = self.bfn_pred_optimal_sampling(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord,gamma_coord_next, gamma_charge,gamma_charge_next)
-                onehot_dim = self.atom_types
-                h_final_org = h_final_org.view(n_samples, n_nodes, -1)
-                h_final_org = h_final_org[node_mask.squeeze(2).to(torch.bool)]
-                pred_h = h_final_org[:,:onehot_dim] # only use the fist five dim
-                atom_types_pred = torch.softmax(pred_h, dim=1)
-            else:
-                coord_pred, k_hat, x_t_next = self.bfn_pred_optimal_sampling(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord,gamma_coord_next, gamma_charge,gamma_charge_next)
-            
-            
-            # node_mask to segment_id
-            segment_ids = []
-            for idx in range(node_mask.shape[0]):
-                segment_ids.append(torch.ones(int(node_mask[idx].sum().item())) * idx)
-            segment_ids = torch.cat(segment_ids).to(node_mask.device).to(torch.long)
-            
-
-            alpha_coord = torch.pow(self.sigma1_coord, -2 * i / sample_steps) * (
-                1 - torch.pow(self.sigma1_coord, 2 / sample_steps)
-            )
-            y_coord = coord_pred + torch.randn_like(coord_pred) * torch.sqrt(
-                1 / alpha_coord
-            )
-            #optimal sampling
-            sigma_coord = torch.sqrt(gamma_coord * (1-gamma_coord))
-            sigma_coord_next= torch.sqrt(gamma_coord_next * (1-gamma_coord_next))
-            # x_t_next = x_t_next + torch.randn_like(x_t_next) * 2*sigma_coord[0]*sigma_coord_next[0] # temp version
-            x_t_next = x_t_next + torch.randn_like(x_t_next) * torch.sqrt(2*sigma_coord[0]*sigma_coord_next[0]) # ori optimal version
-            x_t_next = self.zero_center_of_mass(
-                torch.clamp(x_t_next, min=-10, max=10), segment_ids
-            )
-            
-            y_coord = self.zero_center_of_mass(
-                torch.clamp(y_coord, min=-10, max=10), segment_ids
-            )
-            
-            # # change y_coord shape
-            # y_coord_all = torch.zeros_like(mu_pos_t)
-            
-            # start_idx = 0
-            # bz, _, _ = mu_pos_t.shape
-            # for idx2 in range(bz):
-            #     y_coord_all[idx2, :int(node_mask[idx2].sum().item()), :] = y_coord[start_idx:start_idx+int(node_mask[idx2].sum().item()), :]
-            #     start_idx += int(node_mask[idx2].sum().item())
-            
-            
-            # mu_pos_t = (ro_coord * mu_pos_t + alpha_coord * y_coord_all) / (
-            #     ro_coord + alpha_coord
-            # )
-            # ro_coord = ro_coord + alpha_coord
-            
-            #optimal sampling:
-            # change y_coord shape
-            y_coord_all = torch.zeros_like(mu_pos_t)
-            
-            start_idx = 0
-            bz, _, _ = mu_pos_t.shape
-            for idx2 in range(bz):
-                y_coord_all[idx2, :int(node_mask[idx2].sum().item()), :] = x_t_next[start_idx:start_idx+int(node_mask[idx2].sum().item()), :]
-                start_idx += int(node_mask[idx2].sum().item())
-            
-            mu_pos_t =  y_coord_all
-            
-            if not self.atom_type_pred:
-                k_c = self.K_c.unsqueeze(-1).unsqueeze(0).to(k_hat.device)
-                e_k_hat = (k_hat * k_c).sum(dim=1, keepdim=True)
-                e_k_c = self.K_c[(e_k_hat - k_c).abs().argmin(dim=1).to(self.K_c.device)].to(k_hat.device)
-
-                theta_traj.append((coord_pred, e_k_c))
-                
-                alpha_charge = torch.pow(self.sigma1_charges, -2 * i / sample_steps) * (
-                    1 - torch.pow(self.sigma1_charges, 2 / sample_steps)
-                    )
-                # print("k_hat",k_hat,k_hat.shape,k_hat.min(),k_hat.max())
-
-                y_charge = e_k_c + torch.randn_like(e_k_c) * torch.sqrt(
-                        1 / alpha_charge
-                    )
-                
-                y_charge_all = torch.zeros_like(mu_charge_t)
-                start_idx = 0
-                
-                for idx3 in range(bz):
-                    y_charge_all[idx3, :int(node_mask[idx3].sum().item()), :] = y_charge[start_idx:start_idx+int(node_mask[idx3].sum().item()), :]
-                    start_idx += int(node_mask[idx3].sum().item())
-                
-                
-                mu_charge_t = (ro_charge * mu_charge_t + alpha_charge * y_charge_all) / (
-                    ro_charge + alpha_charge
-                )
-                ro_charge = ro_charge + alpha_charge
-                
-            else:
-                # theta_traj.append((coord_pred, atom_types_pred))
-                theta_traj.append((x_t_next, atom_types_pred))
-
-            
-            
-        mu_charge_t = torch.clamp(mu_charge_t, min=-10, max=10)
-        mu_pos_t = torch.clamp(mu_pos_t, min=-10, max=10)
-        
-        
-        if self.atom_type_pred:
-            if self.property_pred:
-                mu_pos_final, h_final_org, prop_pred = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-            else:
-                mu_pos_final, h_final_org = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context, gamma_coord, gamma_charge)
-            onehot_dim = self.atom_types
-            h_final_org = h_final_org.view(n_samples, n_nodes, -1)
-            h_final_org = h_final_org[node_mask.squeeze(2).to(torch.bool)]
-            pred_h = h_final_org[:,:onehot_dim] # only use the fist five dim
-            atom_types_pred = torch.softmax(pred_h, dim=1)
-            theta_traj.append((mu_pos_final, atom_types_pred))
-        else:        
-            mu_pos_final, k_hat_final = self.bfn_pred(t, mu_pos_t, mu_charge_t, node_mask, edge_mask, context,  gamma_coord=1-self.sigma1_coord**2, gamma_charge=1-self.sigma1_charges**2)
-       
-        # mu_pos_final, k_hat_final = self.interdependency_modeling(
-        #     time=torch.ones((n_nodes, 1)).to(self.device),
-        #     mu_charge_t=mu_charge_t,
-        #     mu_pos_t=mu_pos_t,
-        #     gamma_coord=1 - self.sigma1_coord**2,
-        #     gamma_charge=1 - self.sigma1_charges**2,
-        #     edge_index=edge_index,
-        #     edge_attr=edge_attr,
-        #     segment_ids=segment_ids,
-        # )
-        
-            k_c = self.K_c.unsqueeze(-1).unsqueeze(0).to(k_hat_final.device)
-            e_k_hat = (k_hat_final * k_c).sum(dim=1, keepdim=True)
-            e_k_c = self.K_c[(e_k_hat - k_c).abs().argmin(dim=1).to(self.K_c.device)].to(k_hat_final.device)
-            theta_traj.append((mu_pos_final, e_k_c))
-
-        return theta_traj, segment_ids
-
-
-    @torch.no_grad()
-    def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
+    def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, 
+               fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
         """
         Draw samples from the generative model.
         """

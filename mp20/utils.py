@@ -157,6 +157,45 @@ def prepare_context_train(conditioning, data, batch_props, property_norms):
     # print("context_size", context.size())
     return context
 
+def prepare_context_test(conditioning, data, batch_props, property_norms):
+    """ Prepare context for training data."""
+    batch_size, n_nodes, _ = data['positions'].size()
+    node_mask = data['atom_mask'].unsqueeze(2)
+    context_node_nf = 0
+    context_list = []
+    for key in conditioning:
+        properties = batch_props[key]
+        properties = (properties - property_norms[key]['mean']) / property_norms[key]['mad']
+        if len(properties.size()) == 1: # 事实上目前只有全局特征
+            # print(f"{key} is global feature")
+            # Global feature.
+            assert properties.size() == (batch_size,)
+            reshaped = properties.view(batch_size, 1, 1).repeat(1, n_nodes, 1)
+            context_list.append(reshaped)
+            context_node_nf += 1
+        elif len(properties.size()) == 2 or len(properties.size()) == 3:
+            # print(f"{key} is node feature")
+            # Node feature.
+            assert properties.size()[:2] == (batch_size, n_nodes)
+
+            context_key = properties
+
+            # Inflate if necessary.
+            if len(properties.size()) == 2:
+                context_key = context_key.unsqueeze(2)
+
+            context_list.append(context_key)
+            context_node_nf += context_key.size(2)
+        else:
+            raise ValueError('Invalid tensor size, more than 3 axes.')
+    # Concatenate
+    context = torch.cat(context_list, dim=2)
+    # Mask disabled nodes!
+    context = context * node_mask
+    assert context.size(2) == context_node_nf
+
+    return context
+
 
 def sum_except_batch(x):
     return x.view(x.size(0), -1).sum(dim=-1)

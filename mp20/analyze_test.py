@@ -1,7 +1,9 @@
 from mp20.sample_epoch import sample
 from mp20.crystal import lattice_matrix, cart_to_frac, array_dict_to_crystal
-from mp20.utils import RankedLogger, joblib_map
+from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_loss_and_nll,\
+    assert_correctly_masked, remove_mean_with_mask, assert_mean_zero_with_mask, check_mask_correct
 from mp20.ase_tools.viewer import AseView
+from mp20.batch_reshape import reshape
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core.structure import Structure
 from typing import Dict
@@ -35,7 +37,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     device = args.device
     mp20_evaluator = CrystalGenerationEvaluator(
             dataset_cif_list=pd.read_csv(
-                os.path.join(args.dataset_folder_path, f"/all.csv")
+                os.path.join(args.dataset_folder_path, f"all.csv")
             )["cif"].tolist()
         )
 
@@ -63,8 +65,8 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
                     "atom_types": atom_types,
                     "pos": x_valid,
                     "frac_coords": frac_coords,
-                    "lengths": length[i].detach().cpu().numpy(),
-                    "angles": angle[i].detach().cpu().numpy(),
+                    "lengths": length[i],
+                    "angles": angle[i],
                     "sample_idx": f"epoch_{epoch}_sample_{i}"
                 }
             )
@@ -77,7 +79,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
 
 
     for k, v in metrics_dict.items():
-        print(f"{k}: {v.item() if isinstance(v, torch.Tensor) else v}")
+        print(f"{k}: {v.tolist() if isinstance(v, torch.Tensor) else v}")
 
     wandb.log(metrics_dict)
     wandb.log({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
@@ -508,173 +510,100 @@ self.val_metrics = ModuleDict(
 #         return [validity, uniqueness, novelty], unique
     
 
-# def test(args, loader, epoch, eval_model, device, dtype, property_norms, nodes_dist, partition='Test', uni_diffusion=False):
-#     eval_model.eval()
-#     with torch.no_grad():
-#         nll_epoch = 0
-#         n_samples = 0
+def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, partition='Test'):
+    print(f"Testing {partition} at epoch {epoch}...")
+    one_hot_shape = max(info['atom_encoder'].values())
+    device = args.device
+    dtype = args.dtype
+    eval_model.eval()
+    with torch.no_grad():
+        nll_epoch = 0
+        n_samples = 0
 
-#         n_iterations = len(loader)
+        n_iterations = len(loader)
 
-#         for i, data in enumerate(loader):
-#             x = data['positions'].to(device, dtype)
-#             batch_size = x.size(0)
-#             node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
-#             edge_mask = data['edge_mask'].to(device, dtype)
-#             one_hot = data['one_hot'].to(device, dtype)
-#             charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
+        for i, data in enumerate(loader):
+            props = data.propertys # 理化性质, a list of dict
+            data = reshape(data, device, dtype, include_charges=True)
+            x = data['positions'].to(device, dtype) 
+            lengths = data['lengths'].to(device, dtype)
+            angles = data['angles'].to(device, dtype)
+            batch_size = x.size(0)
+            node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
+            edge_mask = data['edge_mask'].to(device, dtype)
+            one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype)
+            charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
             
-#             if args.bond_pred:
-#                 edge_index = data['edge_index'].to(device, dtype)
-#                 edge_attr = data['edge_attr'].to(device, dtype)
-#                 bond_info = {'edge_index': edge_index, 'edge_attr': edge_attr}
-#             else:
-#                 bond_info = None
+            if args.bond_pred:
+                edge_index = data['edge_index'].to(device, dtype)
+                edge_attr = data['edge_attr'].to(device, dtype)
+                bond_info = {'edge_index': edge_index, 'edge_attr': edge_attr}
+            else:
+                bond_info = None
 
-#             if args.augment_noise > 0:
-#                 # Add noise eps ~ N(0, augment_noise) around points.
-#                 eps = sample_center_gravity_zero_gaussian_with_mask(x.size(),
-#                                                                     x.device,
-#                                                                     node_mask)
-#                 x = x + eps * args.augment_noise
+            x = remove_mean_with_mask(x, node_mask) # 后续暂时不给x加噪声
+            check_mask_correct([x, one_hot, charges], node_mask)
+            assert_mean_zero_with_mask(x, node_mask)
 
-#             x = remove_mean_with_mask(x, node_mask)
-#             check_mask_correct([x, one_hot, charges], node_mask)
-#             assert_mean_zero_with_mask(x, node_mask)
+            h = {'categorical': one_hot, 'integer': charges}
 
-#             h = {'categorical': one_hot, 'integer': charges}
+            if len(args.conditioning) > 0:
+                context = prepare_context_test(args.conditioning, data, props, property_norms).to(device, dtype)
+                assert_correctly_masked(context, node_mask)
+            else:
+                context = None
 
-#             if len(args.conditioning) > 0:
-#                 context = qm9utils.prepare_context(args.conditioning, data, property_norms).to(device, dtype)
-#                 assert_correctly_masked(context, node_mask)
-#             elif 'property' in data:
-#                 context = data['property']
-#                 context = context.unsqueeze(1)
-#                 context = context.repeat(1, x.shape[1], 1).to(device, dtype)
-#                 context = context * node_mask
-#             else:
-#                 context = None
+            # transform batch through flow
+            # print(x.shape, h['categorical'].shape, h['integer'].shape, lengths.shape, angles.shape)
+            # torch.Size([B, N, 3]) torch.Size([B, N, 88]) torch.Size([B, N, 1]) torch.Size([B, 3]) torch.Size([B, 3])
+            nll, _, _, _ = compute_loss_and_nll(args, eval_model, nodes_dist, x, h, lengths, angles,
+                                                node_mask, edge_mask, context, bond_info=bond_info,
+                                                property_label=props[args.target_property].to(device, dtype) \
+                                                    if args.target_property in props else None)
+        
+            # standard nll from forward KL
 
-#             # transform batch through flow
-#             if uni_diffusion:
-#                 nll, _, _, _ = compute_loss_and_nll(args, eval_model, nodes_dist, x, h,
-#                                                     node_mask, edge_mask, context, uni_diffusion=uni_diffusion)
-#             else:
-#                 nll, _, _, _ = compute_loss_and_nll(args, eval_model, nodes_dist, x, h,
-#                                                     node_mask, edge_mask, context, uni_diffusion=uni_diffusion
-#                                                     , property_label=data[args.target_property].to(device, dtype) if args.target_property in data else None, bond_info=bond_info)
-#             # standard nll from forward KL
+            nll_epoch += nll.item() * batch_size
+            n_samples += batch_size
+            if i % args.n_report_steps == 0:
+                print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
+                      f"NLL: {nll_epoch/n_samples:.2f}")
 
-#             nll_epoch += nll.item() * batch_size
-#             n_samples += batch_size
-#             if i % args.n_report_steps == 0:
-#                 print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
-#                       f"NLL: {nll_epoch/n_samples:.2f}")
-
-#     return nll_epoch/n_samples
+    return nll_epoch/n_samples
  
 
-def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, node_mask, edge_mask, context, uni_diffusion=False, 
-                         mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
-    """
-    负对数似然（NLL）和正则化项的计算
-    Args:
-        args: 参数对象，包含模型配置和训练参数
-        generative_model: 生成模型，用于计算NLL
-        nodes_dist: 节点分布，用于计算节点数的对数概率
-        x: 输入数据，通常是分子图的节点特征
-        h: 辅助信息，通常是分子图的边特征
-        node_mask: 节点掩码，标记哪些节点是有效的
-        edge_mask: 边掩码，标记哪些边是有效的
-        context: 上下文信息，用于条件生成
-        uni_diffusion: 是否使用单一扩散模型
-        mask_indicator: 掩码指示器，用于处理不同类型的掩码
-        expand_diff: 是否扩展扩散模型
-        property_label: 属性标签，用于条件生成
-        bond_info: 键信息，用于条件生成
-    Returns:
-        nll: 负对数似然
-        reg_term: 正则化项
-        mean_abs_z: 平均绝对值
-        loss_dict: 损失字典，包含不同类型的损失
-    """
-    bs, n_nodes, n_dims = x.size()
 
+# def sample_center_gravity_zero_gaussian_with_mask(size, device, node_mask):
+#     assert len(size) == 3
+#     x = torch.randn(size, device=device)
 
-    if args.probabilistic_model == 'diffusion':
-        edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
+#     x_masked = x * node_mask
 
-        assert_correctly_masked(x, node_mask)
+#     # This projection only works because Gaussian is rotation invariant around
+#     # zero and samples are independent!
+#     x_projected = remove_mean_with_mask(x_masked, node_mask)
+#     return x_projected
 
-        # Here x is a position tensor, and h is a dictionary with keys
-        # 'categorical' and 'integer'.
-        
-        
-        if uni_diffusion:
-            nll, loss_dict = generative_model(x, h, node_mask, edge_mask, context, mask_indicator=mask_indicator)
-            # 默认的loss_dict是一个字典里面有很多个loss,此处调用了forward函数
-        else:
-            nll, loss_dict = generative_model(x, h, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
-                                              expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
+# def remove_mean_with_mask(x, node_mask):
+#     masked_max_abs_value = (x * (1 - node_mask)).abs().sum().item()
+#     assert masked_max_abs_value < 1e-5, f'Error {masked_max_abs_value} too high'
+#     N = node_mask.sum(1, keepdims=True)
 
-        if args.bfn_schedule:
-            return nll, torch.tensor([0], device=nll.device), torch.tensor([0], device=nll.device), loss_dict
+#     mean = torch.sum(x, dim=1, keepdim=True) / N
+#     x = x - mean * node_mask
+#     return x
 
-        N = node_mask.squeeze(2).sum(1).long()
+# def assert_correctly_masked(variable, node_mask):
+#     assert (variable * (1 - node_mask)).abs().sum().item() < 1e-8
 
-        log_pN = nodes_dist.log_prob(N)
+# def check_mask_correct(variables, node_mask):
+#     for i, variable in enumerate(variables):
+#         if len(variable) > 0:
+#             assert_correctly_masked(variable, node_mask)
 
-        assert nll.size() == log_pN.size()
-        nll = nll - log_pN
-
-        # Average over batch.
-        nll = nll.mean(0)
-
-        reg_term = torch.tensor([0.]).to(nll.device)
-        mean_abs_z = 0.
-    else:
-        raise ValueError(args.probabilistic_model)
-
-    
-    return nll, reg_term, mean_abs_z, loss_dict
-    
-    # if uni_diffusion:
-    #     return nll, reg_term, mean_abs_z, loss_dict
-    
-    # return nll, reg_term, mean_abs_z
-
-
-def sample_center_gravity_zero_gaussian_with_mask(size, device, node_mask):
-    assert len(size) == 3
-    x = torch.randn(size, device=device)
-
-    x_masked = x * node_mask
-
-    # This projection only works because Gaussian is rotation invariant around
-    # zero and samples are independent!
-    x_projected = remove_mean_with_mask(x_masked, node_mask)
-    return x_projected
-
-def remove_mean_with_mask(x, node_mask):
-    masked_max_abs_value = (x * (1 - node_mask)).abs().sum().item()
-    assert masked_max_abs_value < 1e-5, f'Error {masked_max_abs_value} too high'
-    N = node_mask.sum(1, keepdims=True)
-
-    mean = torch.sum(x, dim=1, keepdim=True) / N
-    x = x - mean * node_mask
-    return x
-
-def assert_correctly_masked(variable, node_mask):
-    assert (variable * (1 - node_mask)).abs().sum().item() < 1e-8
-
-def check_mask_correct(variables, node_mask):
-    for i, variable in enumerate(variables):
-        if len(variable) > 0:
-            assert_correctly_masked(variable, node_mask)
-
-def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
-    assert_correctly_masked(x, node_mask)
-    largest_value = x.abs().max().item()
-    error = torch.sum(x, dim=1, keepdim=True).abs().max().item()
-    rel_error = error / (largest_value + eps)
-    assert rel_error < 1e-2, f'Mean is not zero, relative_error {rel_error}'
+# def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
+#     assert_correctly_masked(x, node_mask)
+#     largest_value = x.abs().max().item()
+#     error = torch.sum(x, dim=1, keepdim=True).abs().max().item()
+#     rel_error = error / (largest_value + eps)
+#     assert rel_error < 1e-2, f'Mean is not zero, relative_error {rel_error}'
