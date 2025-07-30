@@ -127,7 +127,7 @@ class MP20(InMemoryDataset):
         self.save(data_list, os.path.join(self.root, "processed/mp20.pt"))
 
 if __name__ == "__main__":
-    # 运行该文件时，当前目录为UniGEM/mp20/
+    # 运行该文件时，当前目录为MCW_GEM/mp20/!!!!
     # 命令行运行：python mp20.py
 
     from torch_geometric.loader import DataLoader
@@ -137,7 +137,7 @@ if __name__ == "__main__":
     # 忽略与 CIF 解析相关的警告信息
     warnings.filterwarnings("ignore", message="Issues encountered while parsing CIF*")
     # 实例化数据集
-    dataset = MP20(root="./")   # 在unigem主目录下运行
+    dataset = MP20(root="./")   # 在主目录下运行
 
     # 构建 DataLoader
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
@@ -157,6 +157,8 @@ if __name__ == "__main__":
     "Ac", "Th", "Pa", "U",  "Np", "Pu"
 ]   
     atom_count = []    # 统计每个样本的原子数
+    lengths = []
+    angles = []
 
     # 迭代使用,获取一些mp20的统计信息
     for batch in tqdm(loader, desc="Loading batches"):
@@ -164,6 +166,8 @@ if __name__ == "__main__":
         cur_atom_types = set(batch.atom_types.unique().tolist())
         atom_types = atom_types.union(cur_atom_types)
         atom_count = atom_count + batch.num_atoms.tolist()
+        lengths = lengths + batch.lengths.tolist()
+        angles = angles + batch.angles.tolist()
         
         # print(batch)
         # print(batch.batch)
@@ -241,18 +245,26 @@ if __name__ == "__main__":
                 dtype=torch.float64)
         }
         """
-        
-
-    # 构建字典：元素符号 -> 原子序号
-    symbol_to_number = {
-        element_symbols[i-1]: i-1
-        for i in atom_types
-        if i <= len(element_symbols)
-    }
-    print("atom_types: ", atom_types)  # 打印mp20中所有存在的原子类型
-    print("symbol_to_number: ", symbol_to_number)  # 打印mp20中所有存在的原子类型映射字典
-    print("symbol.keys(): ", symbol_to_number.keys())  # 打印mp20中所有存在的原子类型
     
-    hist = dict(Counter(atom_count))   # 用 Counter 得到分布直方图
-    print({'n_nodes': hist})
+    lengths = torch.tensor(lengths, dtype=torch.float32)
+    angles = torch.tensor(angles, dtype=torch.float32)
+    print("lengths mean, std, min, max: ", lengths.mean(), lengths.std(), lengths.min(), lengths.max())
+    print("angles mean, std, min, max: ", angles.mean(), angles.std(), angles.min(), angles.max())
+    """
+    lengths mean, std, min, max:  tensor(6.1379) tensor(2.7370) tensor(2.2598) tensor(46.7425)
+    angles mean, std, min, max:  tensor(85.8952) tensor(17.9990) tensor(59.9960) tensor(120.7278)
+    """
+
+    # # 构建字典：元素符号 -> 原子序号
+    # symbol_to_number = {
+    #     element_symbols[i-1]: i-1
+    #     for i in atom_types
+    #     if i <= len(element_symbols)
+    # }
+    # print("atom_types: ", atom_types)  # 打印mp20中所有存在的原子类型
+    # print("symbol_to_number: ", symbol_to_number)  # 打印mp20中所有存在的原子类型映射字典
+    # print("symbol.keys(): ", symbol_to_number.keys())  # 打印mp20中所有存在的原子类型
+    
+    # hist = dict(Counter(atom_count))   # 用 Counter 得到分布直方图
+    # print({'n_nodes': hist})
     

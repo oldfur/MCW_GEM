@@ -4,3 +4,12 @@
 # dataset_cif_list=pd.read_csv(
 #                 os.path.join(dataset_folder_path, f"all.csv")
 #             )["cif"].tolist()
+
+import torch
+a = []
+b = [1,2,3,4]
+c = torch.tensor(a+b, dtype=torch.float32)
+print(c)
+print(c.sum())
+print(c.mean())
+print(c.std())
