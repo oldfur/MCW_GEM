@@ -24,11 +24,11 @@ python main_mp20.py --device cpu --no-cuda --exp_name debug_mp20 --n_epochs 2 --
 ## train
 
 ```
-python main_mp20.py --exp_name mp20_egnn_dynamics --n_epochs 200 --model DGAP --atom_type_pred 1 --test_epochs 10 --batch_size 64
+CUDA_VISIBLE_DEVICES=0 python main_mp20.py --exp_name mp20_egnn_dynamics --n_epochs 200 --model DGAP --atom_type_pred 1 --test_epochs 10 --batch_size 64
 ```
 
 ## conditional train(no wandb)
 
 ```
-python main_mp20.py --exp_name train_mp20 --n_epochs 200 --batch_size 64  --test_epochs 10 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --property_pred 1 --target_property band_gap --visualize_every_batch 10000 --conditioning band_gap --n_report_steps 2 --lambda_l 1.0 --lambda_a 1.0
+CUDA_VISIBLE_DEVICES=0 python main_mp20.py --exp_name train_mp20 --n_epochs 200 --batch_size 64  --test_epochs 10 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --property_pred 1 --target_property band_gap --visualize_every_batch 10000 --conditioning band_gap --n_report_steps 2 --lambda_l 1.0 --lambda_a 1.0
 ```
