@@ -1,0 +1,76 @@
+2025-07-29 12:22:52,147 INFO    MainThread:3929943 [wandb_setup.py:_flush():68] Current SDK version is 0.19.10
+2025-07-29 12:22:52,147 INFO    MainThread:3929943 [wandb_setup.py:_flush():68] Configure stats pid to 3929943
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_setup.py:_flush():68] Loading settings from /home/user/.config/wandb/settings
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_setup.py:_flush():68] Loading settings from /home/user/mcw/MCW_GEM/wandb/settings
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_setup.py:_flush():68] Loading settings from environment variables
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_init.py:setup_run_log_directory():724] Logging user logs to /home/user/mcw/MCW_GEM/wandb/run-20250729_122252-7tc4tk0j/logs/debug.log
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_init.py:setup_run_log_directory():725] Logging internal logs to /home/user/mcw/MCW_GEM/wandb/run-20250729_122252-7tc4tk0j/logs/debug-internal.log
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_init.py:init():852] calling init triggers
+2025-07-29 12:22:52,148 INFO    MainThread:3929943 [wandb_init.py:init():857] wandb.init called with sweep_config: {}
+config: {'dataset_folder_path': './mp20/raw', 'exp_name': 'train_mp20', 'model': 'DGAP', 'probabilistic_model': 'diffusion', 'diffusion_steps': 1000, 'diffusion_noise_schedule': 'polynomial_2', 'diffusion_noise_precision': 1e-05, 'diffusion_loss_type': 'l2', 'n_epochs': 200, 'batch_size': 64, 'sample_batch_size': 10, 'lr': 0.0001, 'brute_force': False, 'actnorm': True, 'break_train_epoch': False, 'dp': True, 'condition_time': True, 'clip_grad': True, 'trace': 'hutch', 'n_layers': 9, 'inv_sublayers': 1, 'nf': 256, 'tanh': True, 'attention': True, 'norm_constant': 1, 'sin_embedding': False, 'ode_regularization': 0.001, 'dataset': 'mp20', 'datadir': './mp20', 'dequantization': 'argmax_variational', 'n_report_steps': 1, 'wandb_usr': 'maochenwei-ustc', 'no_wandb': False, 'online': True, 'no_cuda': False, 'save_model': True, 'generate_epochs': 1, 'num_workers': 4, 'test_epochs': 10, 'data_augmentation': False, 'conditioning': ['band_gap'], 'resume': None, 'start_epoch': 0, 'ema_decay': 0.9999, 'augment_noise': 0, 'normalize_factors': [1, 4, 10, 1, 1], 'include_charges': True, 'visualize_every_batch': 10000, 'normalization_factor': 1, 'aggregation_method': 'sum', 'condition_decoupling': False, 'uni_diffusion': 0, 'use_basis': 0, 'evaluate_condition_generation': 0, 'decoupling': 0, 'finetune': 0, 'expand_diff': 0, 'pretrained_model': '', 'denoise_pretrain': 0, 'property_pred': 1, 'prediction_threshold_t': 10, 'target_property': 'band_gap', 'use_prop_pred': 1, 'freeze_gradient': 0, 'basic_prob': 0, 'unnormal_time_step': 0, 'only_noisy_node': 0, 'half_noisy_node': 0, 'sep_noisy_node': 1, 'atom_type_pred': 1, 'branch_layers_num': 0, 'bfn_schedule': 0, 'sample_steps': 1000, 'use_get': 0, 'bond_pred': 0, 'bfn_str': 0, 'str_loss_type': 'denoise_loss', 'str_sigma_x': 0.01, 'str_sigma_h': 0.01, 'str_schedule_norm': 0, 'temp_index': 0, 'num_epoch': 255, 'alpha': 0.9, 'weight_decay': 0, 'cutoff_decay': 0, 'lr_init': 0.001, 'lr_final': 1e-05, 'lr_decay': inf, 'lr_decay_type': 'cos', 'lr_minibatch': True, 'sgd_restart': -1, 'optim': 'amsgrad', 'shuffle': True, 'seed': 1, 'save': True, 'load': False, 'test': True, 'log_level': 'info', 'textlog': True, 'predict': True, 'prefix': 'nosave', 'loadfile': '', 'checkfile': '', 'bestfile': '', 'logfile': '', 'predictfile': '', 'workdir': './', 'logdir': 'log/', 'modeldir': 'model/', 'predictdir': 'predict/', 'num_train': 27138, 'num_val': 9046, 'num_test': -1, 'force_download': False, 'cuda': True, 'dtype': torch.float32, 'device': device(type='cuda', index=0), 'num_cg_levels': 4, 'maxl': [3], 'max_sh': [3], 'num_channels': [10], 'level_gain': [10.0], 'charge_power': 2, 'hard_cut_rad': 1.73, 'soft_cut_rad': 1.73, 'soft_cut_width': 0.2, 'cutoff_type': ['learn'], 'basis_set': [3, 3], 'weight_init': 'rand', 'input': 'linear', 'num_mpnn_levels': 1, 'top': 'linear', 'gaussian_mask': False, 'edge_cat': False, 'target': '', 'visualize': False, 'save_dir': 'mp20/analyze_test/', '_wandb': {}}
+2025-07-29 12:22:52,149 INFO    MainThread:3929943 [wandb_init.py:init():893] starting backend
+2025-07-29 12:22:52,149 INFO    MainThread:3929943 [wandb_init.py:init():897] sending inform_init request
+2025-07-29 12:22:52,160 INFO    MainThread:3929943 [backend.py:_multiprocessing_setup():101] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2025-07-29 12:22:52,161 INFO    MainThread:3929943 [wandb_init.py:init():907] backend started and connected
+2025-07-29 12:22:52,168 INFO    MainThread:3929943 [wandb_init.py:init():1002] updated telemetry
+2025-07-29 12:22:52,177 INFO    MainThread:3929943 [wandb_init.py:init():1026] communicating run to backend with 90.0 second timeout
+2025-07-29 12:23:23,522 INFO    Thread-2 (wrapped_target):3929943 [retry.py:__call__():175] [no run ID] Retry attempt failed:
+Traceback (most recent call last):
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connection.py", line 198, in _new_conn
+    sock = connection.create_connection(
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/util/connection.py", line 85, in create_connection
+    raise err
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/util/connection.py", line 73, in create_connection
+    sock.connect(sa)
+TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
+    conn.connect()
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connection.py", line 704, in connect
+    self.sock = sock = self._new_conn()
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connection.py", line 207, in _new_conn
+    raise ConnectTimeoutError(
+urllib3.exceptions.ConnectTimeoutError: (<urllib3.connection.HTTPSConnection object at 0x7f428e72fc10>, 'Connection to api.wandb.ai timed out. (connect timeout=20)')
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/requests/adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/urllib3/util/retry.py", line 519, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='api.wandb.ai', port=443): Max retries exceeded with url: /graphql (Caused by ConnectTimeoutError(<urllib3.connection.HTTPSConnection object at 0x7f428e72fc10>, 'Connection to api.wandb.ai timed out. (connect timeout=20)'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/wandb/sdk/lib/retry.py", line 134, in __call__
+    result = self._call_fn(*args, **kwargs)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/wandb/sdk/internal/internal_api.py", line 402, in execute
+    return self.client.execute(*args, **kwargs)  # type: ignore
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/wandb/vendor/gql-0.2.0/wandb_gql/client.py", line 52, in execute
+    result = self._get_result(document, *args, **kwargs)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/wandb/vendor/gql-0.2.0/wandb_gql/client.py", line 60, in _get_result
+    return self.transport.execute(document, *args, **kwargs)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/wandb/sdk/lib/gql_request.py", line 58, in execute
+    request = self.session.post(self.url, **post_args)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/requests/sessions.py", line 637, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "/home/user/miniconda3/envs/unigem/lib/python3.10/site-packages/requests/adapters.py", line 688, in send
+    raise ConnectTimeout(e, request=request)
+requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.wandb.ai', port=443): Max retries exceeded with url: /graphql (Caused by ConnectTimeoutError(<urllib3.connection.HTTPSConnection object at 0x7f428e72fc10>, 'Connection to api.wandb.ai timed out. (connect timeout=20)'))

@@ -93,6 +93,7 @@ def get_model(args, device, dataset_info, dataloader_train,
             str_sigma_h=args.str_sigma_h if "str_sigma_h" in args else 0.05,
             str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
             temp_index=args.temp_index if "temp_index" in args else 0,
+            lambda_l=args.lambda_l, lambda_a=args.lambda_a,
             )
         
         ##  在这里打印一些模型参数

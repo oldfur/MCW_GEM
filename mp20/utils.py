@@ -119,6 +119,7 @@ def prepare_context(conditioning, minibatch, property_norms):
 
 def prepare_context_train(conditioning, data, batch_props, property_norms):
     """ Prepare context for training data."""
+    device = data['positions'].device
     batch_size, n_nodes, _ = data['positions'].size()
     node_mask = data['atom_mask'].unsqueeze(2)
     context_node_nf = 0
@@ -149,7 +150,7 @@ def prepare_context_train(conditioning, data, batch_props, property_norms):
         else:
             raise ValueError('Invalid tensor size, more than 3 axes.')
     # Concatenate
-    context = torch.cat(context_list, dim=2)
+    context = torch.cat(context_list, dim=2).to(device)
     # Mask disabled nodes!
     context = context * node_mask
     assert context.size(2) == context_node_nf
@@ -159,6 +160,7 @@ def prepare_context_train(conditioning, data, batch_props, property_norms):
 
 def prepare_context_test(conditioning, data, batch_props, property_norms):
     """ Prepare context for training data."""
+    device = data['positions'].device
     batch_size, n_nodes, _ = data['positions'].size()
     node_mask = data['atom_mask'].unsqueeze(2)
     context_node_nf = 0
@@ -189,7 +191,7 @@ def prepare_context_test(conditioning, data, batch_props, property_norms):
         else:
             raise ValueError('Invalid tensor size, more than 3 axes.')
     # Concatenate
-    context = torch.cat(context_list, dim=2)
+    context = torch.cat(context_list, dim=2).to(device)
     # Mask disabled nodes!
     context = context * node_mask
     assert context.size(2) == context_node_nf

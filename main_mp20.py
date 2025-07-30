@@ -405,6 +405,9 @@ if __name__ == '__main__':
     parser.add_argument("--str_schedule_norm", type=float, default=0, help="whether use input nprmal scale for the str schedule")
     parser.add_argument("--temp_index", type=int, default=0, help="temp index for the str schedule")
 
+    parser.add_argument("--lambda_l", type=float, default=1.0, help="the loss weight of lattice lengths")
+    parser.add_argument("--lambda_a", type=float, default=1.0, help="the loss weight of lattice angles")
+
     parser = setup_shared_args(parser)
     args = parser.parse_args()
     

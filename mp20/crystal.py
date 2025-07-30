@@ -201,6 +201,7 @@ def array_dict_to_crystal(
         if crys.valid and save:
             os.makedirs(save_dir_name, exist_ok=True)
             crys.structure.to(os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif"))
+            print(f"save to {save_dir_name}!!")
     else:
         # returns an absurd crystal
         crys = Crystal(
@@ -249,6 +250,10 @@ def frac_to_cart(frac_coords, lattice):
     return np.dot(frac_coords, lattice)
 
 def cart_to_frac(cart_coords, lattice):
+    det = np.linalg.det(lattice)
+    if abs(det) < 1e-8:
+        print(f"Warning: lattice is nearly singular, det={det:.2e}")
+        return np.dot(cart_coords, np.zeros(lattice.shape))
     return np.dot(cart_coords, np.linalg.inv(lattice))
 
 

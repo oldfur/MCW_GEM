@@ -277,7 +277,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             str_loss_type = 'denoise_loss', 
             str_sigma_h = 0.05, str_sigma_x = 0.05,
             temp_index = 0, optimal_sampling = 0,
-            len_dim=3, angle_dim=3,
+            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -376,6 +376,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         # output: lengths and angles, both are [b,3]
         self.len_dim = len_dim
         self.angle_dim = angle_dim
+        self.lambda_l = lambda_l
+        self.lambda_a = lambda_a
+        print("use lambda_l: ", lambda_l)
+        print("use lambda_a: ", lambda_a)
         self.length_mlp = torch.nn.Sequential(
             torch.nn.Linear(self.len_dim+1, 8),
             torch.nn.ReLU(),
@@ -654,7 +658,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         return kl_distance_x + kl_distance_h
 
 
-    def kl_prior_with_lengths_angles(self, xh, lengths, angles, node_mask):
+    def kl_prior_with_lengths_angles(self, xh, lengths, angles, node_mask, lambda_l=0.1, lambda_a=0.1):
         """
         计算 q(zT | x) 与 p(zT) = N(0, 1) 的KL散度，包含lengths和angles两个特征。
         """
@@ -752,7 +756,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         return error    # [B]
 
 
-    def compute_error_mp20(self, net_out, lengths_out, angles_out, eps, eps_l, eps_a):
+    def compute_error_mp20(self, net_out, lengths_out, angles_out, eps, eps_l, eps_a, lambda_l=0.1, lambda_a=0.1):
         """Computes error, i.e. the most likely prediction of x."""
         eps_t = net_out
         eps_t_lengths = lengths_out
@@ -760,19 +764,49 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.dynamics.mode == "PAT" or self.atom_type_pred:
             eps_t = eps_t[:, :, :self.n_dims]
             eps = eps[:, :, :self.n_dims]
+
         if self.training and self.loss_type == 'l2':
             denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
             if self.dynamics.mode == "PAT" or self.atom_type_pred:
                 denom = (self.n_dims) * eps_t.shape[1]
             error = sum_except_batch((eps - eps_t) ** 2) / denom
-            error += sum_except_batch((eps_l - eps_t_lengths) ** 2) / self.len_dim + \
-                sum_except_batch((eps_a - eps_t_angles) ** 2) / self.angle_dim
+            error += sum_except_batch((eps_l - eps_t_lengths) ** 2) * lambda_l / self.len_dim + \
+                sum_except_batch((eps_a - eps_t_angles) ** 2) * lambda_a / self.angle_dim
         else:
             error = sum_except_batch((eps - eps_t) ** 2) + \
                 sum_except_batch((eps_l - eps_t_lengths) ** 2) + \
                 sum_except_batch((eps_a - eps_t_angles) ** 2)
         return error
+    
+    def show_x_error(self, net_out, eps):
+        eps_t = net_out
+        if self.dynamics.mode == "PAT" or self.atom_type_pred:
+            eps_t = eps_t[:, :, :self.n_dims]
+            eps = eps[:, :, :self.n_dims]
 
+        if self.training and self.loss_type == 'l2':
+            denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
+            if self.dynamics.mode == "PAT" or self.atom_type_pred:
+                denom = (self.n_dims) * eps_t.shape[1]
+            error = sum_except_batch((eps - eps_t) ** 2) / denom
+        else:
+            error = sum_except_batch((eps - eps_t) ** 2)
+        print("x error is :", error)
+        return error
+
+
+    def show_l_error(self, l_out, eps_l):
+        eps_t_l = l_out
+        error = sum_except_batch((eps_l - eps_t_l) ** 2) / self.len_dim
+        print("length error is :", error)
+        return error
+
+
+    def show_a_error(self, a_out, eps_a):
+        eps_t_a = a_out
+        error = sum_except_batch((eps_a - eps_t_a) ** 2) / self.angle_dim
+        print("angle error is :", error)
+        return error
 
     def log_constants_p_x_given_z0(self, batch_size, device, node_mask):
         """Computes p(x|z0)."""
@@ -1044,7 +1078,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     def log_pxh_lengths_angles_given_z0_without_constants(
         self, x, h, lengths, angles, z_t, lengths_t, angles_t, gamma_0, gamma_0_length, gamma_0_angle,
-        eps, eps_l, eps_a, net_out, lengths_out, angles_out, node_mask, epsilon=1e-10
+        eps, eps_l, eps_a, net_out, lengths_out, angles_out, node_mask, epsilon=1e-10, lambda_l=0.1, lambda_a=0.1
     ):
         """
         计算 x, h, lengths, angles 在给定 z0 下的对数似然（去掉常数项）。
@@ -1094,7 +1128,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # 合并所有对数似然
         log_p_xh_lengths_angles_given_z = (
             log_p_x_given_z_without_constants + log_p_h_given_z +
-            log_p_length_given_z + log_p_angle_given_z
+            log_p_length_given_z * lambda_l + log_p_angle_given_z * lambda_a
         )
         return log_p_xh_lengths_angles_given_z
 
@@ -1380,13 +1414,13 @@ class EnVariationalDiffusion(torch.nn.Module):
         if self.half_noisy_node:
             half_batch_size = batch_size // 2
             t_int[half_batch_size:,:] = torch.randint(
-                    lowest_t, self.prediction_threshold_t + 1, size=(half_batch_size, 1), device=x.device).float()
+                    lowest_t, self.prediction_threshold_t + 1, size=(batch_size - half_batch_size, 1), device=x.device).float()
             t_int[:half_batch_size,:] = torch.randint(lowest_t, self.T + 1, size=(half_batch_size, 1), device=x.device).float()
         
         if self.sep_noisy_node:
             half_batch_size = batch_size // 2
             t_int[half_batch_size:,:] = torch.randint(
-                    lowest_t, self.prediction_threshold_t + 1, size=(half_batch_size, 1), device=x.device).float()
+                    lowest_t, self.prediction_threshold_t + 1, size=(batch_size - half_batch_size, 1), device=x.device).float()
             t_int[:half_batch_size,:] = torch.randint(self.prediction_threshold_t + 1, self.T + 1, 
                                                       size=(half_batch_size, 1), device=x.device).float()
         
@@ -1450,8 +1484,10 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Compute the error.
         # error = self.compute_error(net_out, gamma_t, eps)
-        error = self.compute_error_mp20(net_out, lengths_out, angles_out, eps, eps_length, eps_angle)
-
+        error = self.compute_error_mp20(net_out, lengths_out, angles_out, eps, eps_length, eps_angle, self.lambda_l, self.lambda_a)
+        # self.show_x_error(net_out, eps)
+        # self.show_l_error(lengths_out, eps_length)
+        # self.show_a_error(angles_out, eps_angle)
         if self.training and self.loss_type == 'l2':
             SNR_weight = torch.ones_like(error)
         else:
@@ -1469,7 +1505,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             neg_log_constants = torch.zeros_like(neg_log_constants)
 
         # The KL between q(zT | x) and p(zT) = Normal(0, 1). Should be close to zero.
-        kl_prior = self.kl_prior_with_lengths_angles(xh, lengths, angles, node_mask)
+        kl_prior = self.kl_prior_with_lengths_angles(xh, lengths, angles, node_mask, self.lambda_l, self.lambda_a)
         # 是否有归一化lengths和angles？
 
         # Combining the terms
@@ -1490,7 +1526,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             sigma_0_length = self.sigma(gamma_0_length, lengths)
             sigma_0_angle = self.sigma(gamma_0_angle, angles)
 
-            # Sample z_0 given x, h for timestep t, from q(z_t | x, h)
+            # Sample z_0 given x,l,a,h for timestep t, from q(z_t | x,l,a,h)
             eps_0 = self.sample_combined_position_feature_noise(
                 n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
             eps_0_length = self.sample_length_noise(n_samples=batch_size, length_dim=lengths.size(1), device=lengths.device)
@@ -1515,7 +1551,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             loss_term_0 = -self.log_pxh_lengths_angles_given_z0_without_constants(
                 x, h, lengths, angles, z_0, z_0_length, z_0_angle, gamma_0, gamma_0_length, gamma_0_angle,
                 eps_0, eps_0_length, eps_0_angle, net_out, lengths_out, angles_out, node_mask
-            )
+            , lambda_l=self.lambda_l, lambda_a=self.lambda_a)
 
             assert kl_prior.size() == estimator_loss_terms.size()
             assert kl_prior.size() == neg_log_constants.size()
@@ -1530,7 +1566,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             loss_term_0 = -self.log_pxh_lengths_angles_given_z0_without_constants(
                 x, h, lengths, angles, z_t, lengths_out, angles_out, gamma_t, gamma_t_length, gamma_t_angle,
                 eps, eps_length, eps_angle, net_out, lengths_out, angles_out, node_mask
-            )
+            , lambda_l=self.lambda_l, lambda_a=self.lambda_a)
 
             t_is_not_zero = 1 - t_is_zero
 

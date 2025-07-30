@@ -45,16 +45,16 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         # lattices = data['lattices'].to(device, dtype)
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
-        if i == 0:
-            print("lengths for training: ", lengths[:2])
-            print("angles for training: ", angles[:2])
-            """
-            输出:
-            lengths for training:  tensor([[3.6849, 5.5324, 5.5324],
-                                        [4.9460, 4.9460, 7.4759]])
-            angles for training:  tensor([[120.0000,  90.0000,  90.0000],
-                                        [ 90.0000,  90.0000, 120.0000]])
-            """
+        # if i == 0:
+        #   print("lengths for training: ", lengths[:2])
+        #   print("angles for training: ", angles[:2])
+        """
+        输出:
+        lengths for training:  tensor([[3.6849, 5.5324, 5.5324],
+                                    [4.9460, 4.9460, 7.4759]])
+        angles for training:  tensor([[120.0000,  90.0000,  90.0000],
+                                    [ 90.0000,  90.0000, 120.0000]])
+        """
         # lengths shape: torch.Size([B, 3]), angles shape: torch.Size([B, 3])
         node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
         # node_mask shape: torch.Size([B, N, 1]), 
@@ -297,6 +297,6 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
             save=True,
             save_dir_name=save_file_name
         )
-        print(f"save to {save_file_name}!!")
+        # print(f"save to {save_file_name}!!")
 
         
