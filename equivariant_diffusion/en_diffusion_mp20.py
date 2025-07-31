@@ -1569,6 +1569,11 @@ class EnVariationalDiffusion(torch.nn.Module):
 
             # Combine all terms.
             loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
+            print("kl_prior: ", kl_prior.sum(0))
+            print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
+            print("neg_log_constants: ", neg_log_constants.sum(0))
+            print("loss_term_0: ", loss_term_0.sum(0))
+
 
         else:
             # Computes the L_0 term (even if gamma_t is not actually gamma_0)
@@ -1593,6 +1598,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             assert kl_prior.size() == neg_log_constants.size()
 
             loss = kl_prior + estimator_loss_terms + neg_log_constants
+            print("kl_prior: ", kl_prior.sum(0))
+            print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
+            print("neg_log_constants: ", neg_log_constants.sum(0))
         
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
