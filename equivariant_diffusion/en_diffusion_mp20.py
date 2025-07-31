@@ -1126,13 +1126,15 @@ class EnVariationalDiffusion(torch.nn.Module):
         # lengths 部分
         sigma_0_length = self.sigma(gamma_0_length, target_tensor=lengths_t)
         net_l = lengths_out
-        log_p_length_given_z = -0.5 * sum_except_batch(((eps_l - net_l) ** 2) / (sigma_0_length ** 2))
+        # log_p_length_given_z = -0.5 * sum_except_batch(((eps_l - net_l) ** 2) / (sigma_0_length ** 2))
+        log_p_length_given_z = -0.5 * sum_except_batch((eps_l - net_l) ** 2)
         # print("log_p_length_given_z: ", log_p_length_given_z.sum(0))
 
         # angles 部分
         sigma_0_angle = self.sigma(gamma_0_angle, target_tensor=angles_t)
         net_a = angles_out
-        log_p_angle_given_z = -0.5 * sum_except_batch(((eps_a - net_a) ** 2) / (sigma_0_angle ** 2))
+        # log_p_angle_given_z = -0.5 * sum_except_batch(((eps_a - net_a) ** 2) / (sigma_0_angle ** 2))
+        log_p_angle_given_z = -0.5 * sum_except_batch((eps_a - net_a) ** 2)
         # print("log_p_angle_given_z: ", log_p_angle_given_z.sum(0))
 
         # 合并所有对数似然
@@ -1569,10 +1571,10 @@ class EnVariationalDiffusion(torch.nn.Module):
 
             # Combine all terms.
             loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
-            print("kl_prior: ", kl_prior.sum(0))
-            print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
-            print("neg_log_constants: ", neg_log_constants.sum(0))
-            print("loss_term_0: ", loss_term_0.sum(0))
+            # print("kl_prior: ", kl_prior.sum(0))
+            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
+            ## print("neg_log_constants: ", neg_log_constants.sum(0))
+            # print("loss_term_0: ", loss_term_0.sum(0))
 
 
         else:
@@ -1581,11 +1583,13 @@ class EnVariationalDiffusion(torch.nn.Module):
             loss_term_0 = -self.log_pxh_lengths_angles_given_z0_without_constants(
                 x, h, lengths, angles, z_t, lengths_out, angles_out, gamma_t, gamma_t_length, gamma_t_angle,
                 eps, eps_length, eps_angle, net_out, lengths_out, angles_out, node_mask
-            , lambda_l=self.lambda_l, lambda_a=self.lambda_a)
+            , lambda_l=self.lambda_l, lambda_a=self.lambda_a)   # main loss term
 
             t_is_not_zero = 1 - t_is_zero
 
             loss_t = loss_term_0 * t_is_zero.squeeze() + t_is_not_zero.squeeze() * loss_t_larger_than_zero
+            # print("loss_term_0: ", loss_term_0.sum(0))  # main loss term
+            # print("loss_t_larger_than_zero: ", loss_t_larger_than_zero.sum(0))
 
             # Only upweigh estimator if using the vlb objective.
             if self.training and self.loss_type == 'l2':
@@ -1598,9 +1602,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             assert kl_prior.size() == neg_log_constants.size()
 
             loss = kl_prior + estimator_loss_terms + neg_log_constants
-            print("kl_prior: ", kl_prior.sum(0))
-            print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
-            print("neg_log_constants: ", neg_log_constants.sum(0))
+            # print("kl_prior: ", kl_prior.sum(0))
+            print("estimator_loss_terms: ", estimator_loss_terms.sum(0))    # main loss term
+            ## print("neg_log_constants: ", neg_log_constants.sum(0))
         
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 

@@ -53,14 +53,17 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     angle = angle.detach().cpu().numpy()
 
     for i in range(int(batch_size)):
-        print("sampled lengths:", length[i])
-        print("sampled angles:", angle[i])
+        
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
                                     angle[i, 0], angle[i, 0], angle[i, 0])
         mask = node_mask[i].squeeze(-1).bool()
         x_valid = x[i][mask].detach().cpu().numpy()
         frac_coords = cart_to_frac(x_valid, lattice)
         atom_types = charges[i][mask].detach().cpu().numpy()
+
+        print("sampled lengths:", length[i])
+        print("sampled angles:", angle[i])
+        print("sampled atom types:", atom_types)
 
         mp20_evaluator.append_pred_array(
                 {
