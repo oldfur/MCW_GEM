@@ -1603,9 +1603,9 @@ class EnVariationalDiffusion(torch.nn.Module):
 
             loss = kl_prior + estimator_loss_terms + neg_log_constants
             # print("kl_prior: ", kl_prior.sum(0))
-            print("estimator_loss_terms: ", estimator_loss_terms.sum(0))    # main loss term
+            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))    # main loss term
             ## print("neg_log_constants: ", neg_log_constants.sum(0))
-        
+         
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
         """至此loss已经计算完成, 下面mask掉不需要计算的loss, 即生长阶段loss"""

@@ -16,6 +16,12 @@ import tqdm
 import pandas as pd
 import os
 
+import warnings
+from matminer.utils.data import MagpieData
+# 仅忽略 MagpieData 相关的 UserWarning
+warnings.filterwarnings("ignore", category=UserWarning, module="matminer.utils.data")
+
+
 log = RankedLogger(__name__)  # 代码输出日志
 ase_view = AseView(
     rotations="45x,45y,45z",

@@ -245,7 +245,6 @@ def main(args):
                            property_norms, nodes_dist, partition='Val')
             nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
                             property_norms, nodes_dist, partition='Test')
-            
             # 先不保存模型
 
             # if nll_val < best_nll_val:

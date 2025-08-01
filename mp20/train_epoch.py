@@ -187,7 +187,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                 # 条件化采样
 
                 one_hot, charges, x, length, angle = save_and_sample_conditional(args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
-                print(f"one_hot: {one_hot.shape}, charges: {charges.shape}, x: {x.shape}, length: {length.shape}, angle: {angle.shape}")
+                # print(f"one_hot: {one_hot.shape}, charges: {charges.shape}, x: {x.shape}, length: {length.shape}, angle: {angle.shape}")
                 """
                 打印结果(10个样本 20个原子 88种原子类型):
                 one_hot: torch.Size([10, 20, 88]), charges: torch.Size([10, 20, 1]), x: torch.Size([10, 20, 3]), 
