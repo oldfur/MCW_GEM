@@ -13,3 +13,13 @@ print(c)
 print(c.sum())
 print(c.mean())
 print(c.std())
+
+d = torch.tensor([[1,2,3,4], 
+                  [1,2,3,4]], 
+                  dtype=torch.float32)
+print(d.sum(dim=1))
+
+e = []
+f = [1,2,3,4]
+e.append(f)
+print(e)

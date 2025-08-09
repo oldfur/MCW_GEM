@@ -267,6 +267,66 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     # return nll, reg_term, mean_abs_z
 
 
+def compute_loss_and_nll_epoch(args, epoch, generative_model, nodes_dist, x, h, lengths, angles,
+                         node_mask, edge_mask, context, uni_diffusion=False, mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+    """
+    负对数似然NLL和正则化项的计算
+    Args:
+        args: 参数对象，包含模型配置和训练参数
+        generative_model: 生成模型，用于计算NLL
+        nodes_dist: 节点分布，用于计算节点数的对数概率
+        x: 输入数据，通常是分子图的节点特征
+        h: 辅助信息，通常是分子图的边特征
+        node_mask: 节点掩码，标记哪些节点是有效的
+        edge_mask: 边掩码，标记哪些边是有效的
+        context: 上下文信息，用于条件生成
+        uni_diffusion: 是否使用单一扩散模型
+        mask_indicator: 掩码指示器，用于处理不同类型的掩码
+        expand_diff: 是否扩展扩散模型
+        property_label: 属性标签，用于条件生成
+        bond_info: 键信息，用于条件生成
+    Returns:
+        nll: 负对数似然
+        reg_term: 正则化项
+        mean_abs_z: 平均绝对值
+        loss_dict: 损失字典，包含不同类型的损失
+    """
+    bs, n_nodes, n_dims = x.size()
+
+    if args.probabilistic_model == 'diffusion':
+        edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
+        assert_correctly_masked(x, node_mask)
+        # Here x is a position tensor, and h is a dictionary with keys
+        # 'categorical' and 'integer'.
+        
+        if uni_diffusion:
+            nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator)
+            # 默认的loss_dict是一个字典里面有很多个loss,此处调用了forward函数
+        else:
+            nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
+                                              expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
+
+        if args.bfn_schedule:
+            return nll, torch.tensor([0], device=nll.device), torch.tensor([0], device=nll.device), loss_dict
+
+        N = node_mask.squeeze(2).sum(1).long()
+        log_pN = nodes_dist.log_prob(N)
+        assert nll.size() == log_pN.size()
+        nll = nll - log_pN
+        # Average over batch.
+        nll = nll.mean(0)
+        reg_term = torch.tensor([0.]).to(nll.device)
+        mean_abs_z = 0.
+    else:
+        raise ValueError(args.probabilistic_model)
+
+    return nll, reg_term, mean_abs_z, loss_dict
+    
+    # if uni_diffusion:
+    #     return nll, reg_term, mean_abs_z, loss_dict
+    # return nll, reg_term, mean_abs_z
+
+
 def check_mask_correct(variables, node_mask):
     for i, variable in enumerate(variables):
         if len(variable) > 0:

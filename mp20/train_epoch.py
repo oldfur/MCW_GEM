@@ -25,7 +25,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
     mask_indicator = False
     device = args.device
     dtype = args.dtype
-    one_hot_shape = max(dataset_info['atom_encoder'].values())
+    one_hot_shape = max(dataset_info['atom_encoder'].values()) + 1
 
     if args.denoise_pretrain:
         mask_indicator = 2
@@ -114,7 +114,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                                                             property_label=property_label, bond_info=bond_info)
         
         if 'error' in loss_dict:
-            wandb.log({"denoise_x": loss_dict['error'].mean().item()}, commit=True)
+            wandb.log({"denoise_x_l_a": loss_dict['error'].mean().item()}, commit=True)
         if 'pred_loss' in loss_dict:
             if isinstance(loss_dict['pred_loss'], torch.Tensor):
                 wandb.log({"pred_loss": loss_dict['pred_loss'].mean().item(), "pred_rate": loss_dict['pred_rate'].mean().item()}, commit=True)

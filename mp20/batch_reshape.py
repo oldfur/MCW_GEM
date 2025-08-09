@@ -115,7 +115,6 @@ def reshape(data, device, dtype, include_charges=True):
     angles = data.angles.to(device, dtype)  # [bs, 3]
     lattices = data.lattices.to(device, dtype)  # [bs, 3, 3]
     belong_to = data.batch.to(device, dtype)  # [num_atoms_all]
-    num_atoms = data.num_atoms.to(device, dtype)  # [bs]
     atom_types = data.atom_types.to(device, dtype)  # [num_atoms_all]
     edge_index = data.edge_index.to(device, dtype)  # [2, num_edges_all]
     atom_types_onehot = data.atom_types_onehot.to(device, dtype)  # [num_atoms_all, 100]

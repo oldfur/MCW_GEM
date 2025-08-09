@@ -245,19 +245,20 @@ def main(args):
                            property_norms, nodes_dist, partition='Val')
             nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
                             property_norms, nodes_dist, partition='Test')
-            # 先不保存模型
+            
 
-            # if nll_val < best_nll_val:
-            #     best_nll_val = nll_val
-            #     best_nll_test = nll_test
-            #     if args.save_model:  # 保存
-            #         args.current_epoch = epoch + 1
-            #         utils.save_model(optim, 'outputs/%s/optim.npy' % args.exp_name)
-            #         utils.save_model(model, 'outputs/%s/generative_model.npy' % args.exp_name)
-            #         if args.ema_decay > 0:
-            #             utils.save_model(model_ema, 'outputs/%s/generative_model_ema.npy' % args.exp_name)
-            #         with open('outputs/%s/args.pickle' % args.exp_name, 'wb') as f:
-            #             pickle.dump(args, f)
+            if nll_val < best_nll_val:
+                best_nll_val = nll_val
+                best_nll_test = nll_test
+                # 先不保存模型
+                # if args.save_model:  # 保存
+                #     args.current_epoch = epoch + 1
+                #     utils.save_model(optim, 'outputs/%s/optim.npy' % args.exp_name)
+                #     utils.save_model(model, 'outputs/%s/generative_model.npy' % args.exp_name)
+                #     if args.ema_decay > 0:
+                #         utils.save_model(model_ema, 'outputs/%s/generative_model_ema.npy' % args.exp_name)
+                #     with open('outputs/%s/args.pickle' % args.exp_name, 'wb') as f:
+                #         pickle.dump(args, f)
 
             # if args.save_model:
             #     utils.save_model(optim, 'outputs/%s/optim_%d.npy' % (args.exp_name, epoch))
@@ -266,11 +267,11 @@ def main(args):
             #         utils.save_model(model_ema, 'outputs/%s/generative_model_ema_%d.npy' % (args.exp_name, epoch))
             #     with open('outputs/%s/args_%d.pickle' % (args.exp_name, epoch), 'wb') as f:
             #         pickle.dump(args, f)
-            # print('Val loss: %.4f \t Test loss:  %.4f' % (nll_val, nll_test))
-            # print('Best val loss: %.4f \t Best test loss:  %.4f' % (best_nll_val, best_nll_test))
-            # wandb.log({"Val loss ": nll_val}, commit=True)
-            # wandb.log({"Test loss ": nll_test}, commit=True)
-            # wandb.log({"Best cross-validated test loss ": best_nll_test}, commit=True)
+            print('Val loss: %.4f \t Test loss:  %.4f' % (nll_val, nll_test))
+            print('Best val loss: %.4f \t Best test loss:  %.4f' % (best_nll_val, best_nll_test))
+            wandb.log({"Val loss ": nll_val}, commit=True)
+            wandb.log({"Test loss ": nll_test}, commit=True)
+            wandb.log({"Best cross-validated test loss ": best_nll_test}, commit=True)
 
 
 
@@ -355,7 +356,7 @@ if __name__ == '__main__':
                         help='Amount of EMA decay, 0 means off. A reasonable value'
                             ' is 0.999.')
     parser.add_argument('--augment_noise', type=float, default=0)
-    parser.add_argument('--normalize_factors', type=eval, default=[1, 4, 10, 3, 18],
+    parser.add_argument('--normalize_factors', type=eval, default=[1, 4, 16, 3, 18],
                         help='normalize factors for [x, categorical, integer, lengths, angles]')
     parser.add_argument('--normalize_biases', type=eval, default=[0, 0, 0, 0, 0],
                         help='normalize biases for [x, categorical, integer, lengths, angles]')

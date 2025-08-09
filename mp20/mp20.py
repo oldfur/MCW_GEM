@@ -4,7 +4,7 @@ from tqdm import tqdm
 from torch_geometric.data import InMemoryDataset, Data
 from typing import List, Callable, Optional
 import numpy as np
-from mp20.preprocess import preprocess
+from preprocess import preprocess
 
 
 class MP20(InMemoryDataset):
@@ -138,9 +138,11 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore", message="Issues encountered while parsing CIF*")
     # 实例化数据集
     dataset = MP20(root="./")   # 在主目录下运行
+    batch_size = 1
 
     # 构建 DataLoader
-    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+    # loader = DataLoader(dataset, batch_size=32, shuffle=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     atom_types = set([])
     element_symbols = [
@@ -156,100 +158,117 @@ if __name__ == "__main__":
     "Au", "Hg", "Tl", "Pb", "Bi",        # Skipping some (e.g., 84–88)
     "Ac", "Th", "Pa", "U",  "Np", "Pu"
 ]   
-    atom_count = []    # 统计每个样本的原子数
-    lengths = []
-    angles = []
-
-    # 迭代使用,获取一些mp20的统计信息
-    for batch in tqdm(loader, desc="Loading batches"):
-
-        cur_atom_types = set(batch.atom_types.unique().tolist())
-        atom_types = atom_types.union(cur_atom_types)
-        atom_count = atom_count + batch.num_atoms.tolist()
-        lengths = lengths + batch.lengths.tolist()
-        angles = angles + batch.angles.tolist()
-        
-        # print(batch)
-        # print(batch.batch)
-        # print(batch.edge_index)
-        # print(batch.propertys)  # 打印每个样本的理化性质
-        # print(batch.propertys['formation_energy_per_atom']) # 字典式访问
-        # break
-        """
-        (batch_size = 32)
-
-        batch: 
-        DataBatch(edge_index=[2, 2074], id=[32], atom_types=[280], atom_types_onehot=[280, 100],
-            frac_coords=[280, 3], cell=[32, 3, 3], lattices=[32, 6], lattices_scaled=[32, 6],
-            lengths=[32, 3], lengths_scaled=[32, 3], angles=[32, 3], angles_radians=[32, 3],
-            num_atoms=[32], token_idx=[280],
-            propertys={
-                formation_energy_per_atom=[32],
-                band_gap=[32],
-                e_above_hull=[32],
-            },
-            pos=[280, 3], spacegroup=[32], num_nodes=[1], batch=[280], ptr=[33]
-        )
-
-        
-        batch.batch:
-        tensor([ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,
-         1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,
-         2,  2,  2,  2,  2,  2,  3,  3,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,
-         4,  4,  4,  4,  4,  4,  4,  4,  5,  5,  5,  5,  6,  6,  6,  6,  6,  6,
-         6,  6,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,
-         7,  7,  7,  7,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  9,  9,  9,  9,
-         9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9, 10, 10,
-        10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 12, 12, 12,
-        12, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14,
-        14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15,
-        16, 16, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17,
-        18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 19, 19, 19, 19,
-        19, 19, 19, 19, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
-        21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
-        22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 23, 23,
-        23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 24, 24, 24, 24,
-        24, 24, 24, 24, 24, 24, 24, 24, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25,
-        25, 25, 25, 25, 25, 25, 25, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26,
-        26, 26, 26, 26, 26, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 28,
-        28, 28, 28, 29, 29, 29, 29, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
-        30, 30, 30, 30, 30, 30, 30, 30, 30, 31, 31, 31, 31, 31, 31])
-
-
-        batch.edge_index:
-        tensor([[ 11,   0,  11,  ..., 260, 261, 260],
-        [  0,  11,   0,  ..., 261, 260, 261]])
-
-
-        batch.propertys:
-        {
-        'formation_energy_per_atom': tensor(
-                [-0.0448, -0.7831, -0.4047, -0.2193, -2.3317, -0.9138, -2.5739, -2.1768,
-                -0.2267, -1.9609, -1.9334, -0.0753, -0.4097, -0.6964, -0.3284, -0.7491,
-                -0.8485, -1.8593, -0.8017, -3.3351, -0.3071, -0.0757, -2.2856, -0.5970,
-                -1.0132, -0.8006,  0.0157, -2.2841, -0.7595, -1.9112, -0.6293, -0.6185],
-                dtype=torch.float64), 
-
-        'band_gap': tensor(
-                [0.0000, 0.0000, 0.0000, 0.0000, 3.1315, 0.0000, 0.0000, 0.0000, 0.0000,
-                2.7735, 2.9553, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 1.6041,
-                0.0000, 5.8930, 0.0000, 0.0000, 0.0000, 0.7946, 0.0000, 0.8691, 0.0000,
-                4.6260, 0.0000, 0.0000, 0.0000, 0.8037], 
-                dtype=torch.float64), 
-
-        'e_above_hull': tensor(
-                [0.0000, 0.0000, 0.0448, 0.0256, 0.0000, 0.0000, 0.0265, 0.0183, 0.0000,
-                0.0014, 0.0766, 0.0000, 0.0015, 0.0000, 0.0000, 0.0384, 0.0174, 0.0000,
-                0.0000, 0.0597, 0.0204, 0.0572, 0.0000, 0.0373, 0.0000, 0.0163, 0.0157,
-                0.0000, 0.0000, 0.0192, 0.0000, 0.0555], 
-                dtype=torch.float64)
-        }
-        """
+    # atom_count = []    # 统计每个样本的原子数
+    # lengths = []
+    # angles = []
+    atom_bin = []
+    avg_types = []
     
-    lengths = torch.tensor(lengths, dtype=torch.float32)
-    angles = torch.tensor(angles, dtype=torch.float32)
-    print("lengths mean, std, min, max: ", lengths.mean(), lengths.std(), lengths.min(), lengths.max())
-    print("angles mean, std, min, max: ", angles.mean(), angles.std(), angles.min(), angles.max())
+    # 迭代使用,获取一些mp20的统计信息
+    from batch_reshape import reshape
+    for batch in tqdm(loader, desc="Loading batches"):
+        device = 'cpu'
+        dtype = torch.float32
+        batch = reshape(batch, device, dtype, include_charges=True)
+        atom_types = batch['charges'].view(-1)
+        atom_num = len(atom_types)
+        avg_type = torch.sum(atom_types) / atom_num
+        avg_types.append(avg_type.item())
+
+    avg_types = torch.tensor(avg_types, dtype=torch.float32)
+    print("Average atom type mean, std, min, max: ", avg_types.mean(), avg_types.std(), avg_types.min(), avg_types.max())
+    # tensor(33.7747) tensor(16.5881) tensor(1.) tensor(94.)
+
+
+    # cur_atom_types = set(batch.atom_types.unique().tolist())
+    # atom_types = atom_types.union(cur_atom_types)
+    # atom_count = atom_count + batch.num_atoms.tolist()
+    # lengths = lengths + batch.lengths.tolist()
+    # angles = angles + batch.angles.tolist()
+    
+    # print(batch)
+    # print(batch.batch)
+    # print(batch.edge_index)
+    # print(batch.propertys)  # 打印每个样本的理化性质
+    # print(batch.propertys['formation_energy_per_atom']) # 字典式访问
+    # break
+    """
+    (batch_size = 32)
+
+    batch: 
+    DataBatch(edge_index=[2, 2074], id=[32], atom_types=[280], atom_types_onehot=[280, 100],
+        frac_coords=[280, 3], cell=[32, 3, 3], lattices=[32, 6], lattices_scaled=[32, 6],
+        lengths=[32, 3], lengths_scaled=[32, 3], angles=[32, 3], angles_radians=[32, 3],
+        num_atoms=[32], token_idx=[280],
+        propertys={
+            formation_energy_per_atom=[32],
+            band_gap=[32],
+            e_above_hull=[32],
+        },
+        pos=[280, 3], spacegroup=[32], num_nodes=[1], batch=[280], ptr=[33]
+    )
+
+    
+    batch.batch:
+    tensor([ 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,
+        1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,
+        2,  2,  2,  2,  2,  2,  3,  3,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,
+        4,  4,  4,  4,  4,  4,  4,  4,  5,  5,  5,  5,  6,  6,  6,  6,  6,  6,
+        6,  6,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,
+        7,  7,  7,  7,  8,  8,  8,  8,  8,  8,  8,  8,  8,  8,  9,  9,  9,  9,
+        9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9,  9, 10, 10,
+    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 12, 12, 12,
+    12, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14,
+    14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15,
+    16, 16, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17,
+    18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 19, 19, 19, 19,
+    19, 19, 19, 19, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+    21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
+    22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 23, 23,
+    23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 24, 24, 24, 24,
+    24, 24, 24, 24, 24, 24, 24, 24, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25,
+    25, 25, 25, 25, 25, 25, 25, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26,
+    26, 26, 26, 26, 26, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 28,
+    28, 28, 28, 29, 29, 29, 29, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    30, 30, 30, 30, 30, 30, 30, 30, 30, 31, 31, 31, 31, 31, 31])
+
+
+    batch.edge_index:
+    tensor([[ 11,   0,  11,  ..., 260, 261, 260],
+    [  0,  11,   0,  ..., 261, 260, 261]])
+
+
+    batch.propertys:
+    {
+    'formation_energy_per_atom': tensor(
+            [-0.0448, -0.7831, -0.4047, -0.2193, -2.3317, -0.9138, -2.5739, -2.1768,
+            -0.2267, -1.9609, -1.9334, -0.0753, -0.4097, -0.6964, -0.3284, -0.7491,
+            -0.8485, -1.8593, -0.8017, -3.3351, -0.3071, -0.0757, -2.2856, -0.5970,
+            -1.0132, -0.8006,  0.0157, -2.2841, -0.7595, -1.9112, -0.6293, -0.6185],
+            dtype=torch.float64), 
+
+    'band_gap': tensor(
+            [0.0000, 0.0000, 0.0000, 0.0000, 3.1315, 0.0000, 0.0000, 0.0000, 0.0000,
+            2.7735, 2.9553, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 1.6041,
+            0.0000, 5.8930, 0.0000, 0.0000, 0.0000, 0.7946, 0.0000, 0.8691, 0.0000,
+            4.6260, 0.0000, 0.0000, 0.0000, 0.8037], 
+            dtype=torch.float64), 
+
+    'e_above_hull': tensor(
+            [0.0000, 0.0000, 0.0448, 0.0256, 0.0000, 0.0000, 0.0265, 0.0183, 0.0000,
+            0.0014, 0.0766, 0.0000, 0.0015, 0.0000, 0.0000, 0.0384, 0.0174, 0.0000,
+            0.0000, 0.0597, 0.0204, 0.0572, 0.0000, 0.0373, 0.0000, 0.0163, 0.0157,
+            0.0000, 0.0000, 0.0192, 0.0000, 0.0555], 
+            dtype=torch.float64)
+    }
+    """
+    
+    # lengths = torch.tensor(lengths, dtype=torch.float32)
+    # angles = torch.tensor(angles, dtype=torch.float32)
+    
+    # print("lengths mean, std, min, max: ", lengths.mean(), lengths.std(), lengths.min(), lengths.max())
+    # print("angles mean, std, min, max: ", angles.mean(), angles.std(), angles.min(), angles.max())
+                
     """
     lengths mean, std, min, max:  tensor(6.1379) tensor(2.7370) tensor(2.2598) tensor(46.7425)
     angles mean, std, min, max:  tensor(85.8952) tensor(17.9990) tensor(59.9960) tensor(120.7278)
