@@ -229,7 +229,7 @@ def main(args):
         print(f"Epoch took {time.time() - start_epoch:.1f} seconds.")
 
         # 8 Eval and Save model
-        if epoch % args.test_epochs == 0 and epoch != 0:   # 默认每10个epoch测试一次
+        if epoch % args.test_epochs == 0 and epoch != 0 and epoch >= args.visulaize_epoch:   # 默认每10个epoch测试一次
 
             print('Evaluating model at epoch %d' % epoch)
             
@@ -245,7 +245,7 @@ def main(args):
                            property_norms, nodes_dist, partition='Val')
             nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
                             property_norms, nodes_dist, partition='Test')
-            
+                        
 
             if nll_val < best_nll_val:
                 best_nll_val = nll_val
@@ -350,7 +350,7 @@ if __name__ == '__main__':
                         help='arguments : formation_energy_per_atom| band_gap | e_above_hull |' )
     parser.add_argument('--resume', type=str, default=None,
                         help='')
-    parser.add_argument('--start_epoch', type=int, default=0,
+    parser.add_argument('--start_epoch', type=int, default=0, 
                         help='')
     parser.add_argument('--ema_decay', type=float, default=0.9999,
                         help='Amount of EMA decay, 0 means off. A reasonable value'
@@ -411,6 +411,10 @@ if __name__ == '__main__':
 
     parser.add_argument("--lambda_l", type=float, default=1.0, help="the loss weight of lattice lengths")
     parser.add_argument("--lambda_a", type=float, default=1.0, help="the loss weight of lattice angles")
+
+    parser.add_argument("--visulaize_epoch", type=int, default=60, help="visualize after this epoch")   
+    # visulaize_epoch之后打印所需的实验信息
+    # parser.add_argument("--record_more_info", type=int, default=1, help="record more information about loss in visulaize_epoch")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()

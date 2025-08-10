@@ -157,7 +157,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                     f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
                     # f"RegTerm: {reg_term.item():.1f}, "
                     f"GradNorm: {grad_norm:.1f}, "
-                    f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
+                    f"denoise x,l,a: {loss_dict['error'].mean().item():.3f} ", 
                     end='' if args.property_pred or args.model == "PAT" else '\n')
             else:  # BFN
                 print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "

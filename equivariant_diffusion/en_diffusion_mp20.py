@@ -250,7 +250,7 @@ class GammaNetwork(torch.nn.Module):
         return gamma
 
 
-def cdf_standard_gaussian(x):
+def cdf_standard_gaussian(x):   # 计算标准正态分布的累积分布函数（CDF）
     return 0.5 * (1. + torch.erf(x / math.sqrt(2)))
 
 
@@ -1095,6 +1095,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         net_x = net_out[:, :, :self.n_dims]
 
         # x
+        # x ~ N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0)
         sigma_0 = self.sigma(gamma_0, target_tensor=z_t)
         sigma_0_cat = sigma_0 * self.norm_values[1]
         sigma_0_int = sigma_0 * self.norm_values[2]
@@ -1124,15 +1125,15 @@ class EnVariationalDiffusion(torch.nn.Module):
         # print("log_p_h_given_z: ", log_p_h_given_z.sum(0))
 
         # lengths 部分
-        sigma_0_length = self.sigma(gamma_0_length, target_tensor=lengths_t)
         net_l = lengths_out
+        # sigma_0_length = self.sigma(gamma_0_length, target_tensor=lengths_t)
         # log_p_length_given_z = -0.5 * sum_except_batch(((eps_l - net_l) ** 2) / (sigma_0_length ** 2))
         log_p_length_given_z = -0.5 * sum_except_batch((eps_l - net_l) ** 2)
         # print("log_p_length_given_z: ", log_p_length_given_z.sum(0))
 
         # angles 部分
-        sigma_0_angle = self.sigma(gamma_0_angle, target_tensor=angles_t)
         net_a = angles_out
+        # sigma_0_angle = self.sigma(gamma_0_angle, target_tensor=angles_t)
         # log_p_angle_given_z = -0.5 * sum_except_batch(((eps_a - net_a) ** 2) / (sigma_0_angle ** 2))
         log_p_angle_given_z = -0.5 * sum_except_batch((eps_a - net_a) ** 2)
         # print("log_p_angle_given_z: ", log_p_angle_given_z.sum(0))
@@ -1521,7 +1522,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # 是否有归一化lengths和angles？
 
         # Combining the terms
-        if t0_always:
+        if t0_always:   # test
             loss_t = loss_t_larger_than_zero
             num_terms = self.T  # Since t=0 is not included here.
             estimator_loss_terms = num_terms * loss_t
@@ -1574,7 +1575,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             # print("kl_prior: ", kl_prior.sum(0))
             # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
             ## print("neg_log_constants: ", neg_log_constants.sum(0))
-            # print("loss_term_0: ", loss_term_0.sum(0))
+            # print("loss_term_0: ", loss_term_0.sum(0)) # main loss term
 
 
         else:
@@ -1608,6 +1609,15 @@ class EnVariationalDiffusion(torch.nn.Module):
          
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
+        loss_dict = {'t': t_int.squeeze(), 
+                     'loss_t': loss.squeeze(),
+                     'error': error.squeeze(),
+                     'kl_prior': kl_prior.squeeze(),
+                     'neg_log_constants': neg_log_constants.squeeze(),
+                     'estimator_loss_terms': estimator_loss_terms.squeeze(),
+                     'loss_term_0': loss_term_0.squeeze()}
+
+
         """至此loss已经计算完成, 下面mask掉不需要计算的loss, 即生长阶段loss"""
 
         # calc loss for prediction
@@ -1640,11 +1650,6 @@ class EnVariationalDiffusion(torch.nn.Module):
             atom_type_loss = atom_type_loss * node_mask
             atom_type_loss = atom_type_loss.mean(dim=2).mean(dim=1)
 
-
-        loss_dict = {'t': t_int.squeeze(), 
-                     'loss_t': loss.squeeze(),
-                     'error': error.squeeze()}
-        
         if self.property_pred:
             assert self.dynamics.mode == "DGAP", "only DGAP mode support property prediction"
             # TODO check the pred_mask and pred_loss
@@ -1690,25 +1695,32 @@ class EnVariationalDiffusion(torch.nn.Module):
             # loss_dict = {'t': t_int.squeeze(), 'loss_t': loss.squeeze(),
             #       'error': error.squeeze(), "pred_loss": pred_loss, "pred_rate": pred_rate}                
 
-        if self.atom_type_pred:
+        if self.atom_type_pred: # True !
             pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
             pred_loss_mask = pred_loss_mask.squeeze(1)
             atom_type_loss = atom_type_loss * pred_loss_mask
             loss_dict["atom_type_loss"] = atom_type_loss
             loss += atom_type_loss
-            
-            return loss, loss_dict
+            # return loss, loss_dict
         elif self.dynamics.mode == "PAT":
             pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
             pred_rate = pred_loss_mask.sum() / pred_loss_mask.size(0)
             pred_loss_mask = pred_loss_mask.squeeze(1)   
             atom_type_loss = atom_type_loss * pred_loss_mask
             loss += atom_type_loss
-            return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(), 'error': error.squeeze(), 
-                          "atom_type_loss": atom_type_loss, "pred_rate": pred_rate}
+            loss_dict["atom_type_loss"] = atom_type_loss
+            loss_dict["pred_rate"] = pred_rate
+            loss_dict["loss_t"] = loss.squeeze()
+            # return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(), 'error': error.squeeze(), 
+            #               "atom_type_loss": atom_type_loss, "pred_rate": pred_rate}
         else:
-            return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(),
-                'error': error.squeeze()}
+            loss_dict['loss_t'] = loss.squeeze()
+            # return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(),
+            #     'error': error.squeeze()}
+
+
+        return loss, loss_dict   
+
 
     def evaluate_property(self, x, h, org_context, node_mask=None, edge_mask=None):
         # Normalize data, take into account volume change in x.
