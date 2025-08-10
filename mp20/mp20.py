@@ -4,7 +4,7 @@ from tqdm import tqdm
 from torch_geometric.data import InMemoryDataset, Data
 from typing import List, Callable, Optional
 import numpy as np
-from preprocess import preprocess
+from mp20.preprocess import preprocess
 
 
 class MP20(InMemoryDataset):
