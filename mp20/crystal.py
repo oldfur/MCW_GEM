@@ -1,3 +1,7 @@
+# 确保这是文件的第一行
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import numpy as np
 import os
 import smact

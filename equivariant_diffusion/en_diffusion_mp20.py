@@ -1573,9 +1573,9 @@ class EnVariationalDiffusion(torch.nn.Module):
             # Combine all terms.
             loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
             # print("kl_prior: ", kl_prior.sum(0))
-            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
+            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0)) # main loss term!!!!!
             ## print("neg_log_constants: ", neg_log_constants.sum(0))
-            # print("loss_term_0: ", loss_term_0.sum(0)) # main loss term
+            # print("loss_term_0: ", loss_term_0.sum(0)) 
 
 
         else:
@@ -1610,12 +1610,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
         loss_dict = {'t': t_int.squeeze(), 
-                     'loss_t': loss.squeeze(),
+                     'loss':loss.squeeze(),
+                     'loss_t': loss_t.squeeze(),
                      'error': error.squeeze(),
                      'kl_prior': kl_prior.squeeze(),
                      'neg_log_constants': neg_log_constants.squeeze(),
                      'estimator_loss_terms': estimator_loss_terms.squeeze(),
-                     'loss_term_0': loss_term_0.squeeze()}
+                     'loss_term_0': loss_term_0.squeeze(),
+                     'loss_t_larger_than_zero': loss_t_larger_than_zero.squeeze()}
 
 
         """至此loss已经计算完成, 下面mask掉不需要计算的loss, 即生长阶段loss"""
@@ -1701,7 +1703,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             atom_type_loss = atom_type_loss * pred_loss_mask
             loss_dict["atom_type_loss"] = atom_type_loss
             loss += atom_type_loss
-            # return loss, loss_dict
+
         elif self.dynamics.mode == "PAT":
             pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
             pred_rate = pred_loss_mask.sum() / pred_loss_mask.size(0)
@@ -1710,13 +1712,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             loss += atom_type_loss
             loss_dict["atom_type_loss"] = atom_type_loss
             loss_dict["pred_rate"] = pred_rate
-            loss_dict["loss_t"] = loss.squeeze()
-            # return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(), 'error': error.squeeze(), 
-            #               "atom_type_loss": atom_type_loss, "pred_rate": pred_rate}
+            loss_dict["loss"] = loss.squeeze()
+
         else:
-            loss_dict['loss_t'] = loss.squeeze()
-            # return loss, {'t': t_int.squeeze(), 'loss_t': loss.squeeze(),
-            #     'error': error.squeeze()}
+            loss_dict['loss'] = loss.squeeze()
 
 
         return loss, loss_dict   
