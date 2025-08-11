@@ -21,6 +21,10 @@ from mp20.utils import *
 from mp20.train_epoch import train_epoch
 from mp20.analyze_test import analyze_and_save, test
 
+# 全局忽略所有warning
+import warnings
+# This will suppress all UserWarnings from being printed
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def get_dataset(args):

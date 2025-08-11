@@ -16,11 +16,6 @@ import tqdm
 import pandas as pd
 import os
 
-import warnings
-from matminer.utils.data import MagpieData
-# 仅忽略 MagpieData 相关的 UserWarning
-warnings.filterwarnings("ignore", category=UserWarning, module="matminer.utils.data")
-
 
 log = RankedLogger(__name__)  # 代码输出日志
 ase_view = AseView(
@@ -86,7 +81,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     metrics_dict = mp20_evaluator.get_metrics(
         save=args.visualize,
         save_dir=args.save_dir + f"/epoch_{epoch}",
-    )
+    )   # warning!
 
 
     for k, v in metrics_dict.items():

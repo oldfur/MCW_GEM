@@ -11,10 +11,7 @@ from mp20.utils import extract_attribute_safe, extract_property_safe
 def get_model(args, device, dataset_info, dataloader_train, 
               uni_diffusion=False, use_basis=False, decoupling=False, pretrain=False, finetune=False):
     histogram = dataset_info['n_nodes']
-    in_node_nf = max(dataset_info['atom_encoder'].values()) + int(args.include_charges) + 1
-    
-    if "bfn_schedule" in args and args.bfn_schedule:
-        in_node_nf = 16
+    in_node_nf = max(dataset_info['atom_encoder'].values()) + int(args.include_charges)
     
     nodes_dist = DistributionNodes(histogram)
     prop_dist = None

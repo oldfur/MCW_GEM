@@ -25,7 +25,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
     mask_indicator = False
     device = args.device
     dtype = args.dtype
-    one_hot_shape = max(dataset_info['atom_encoder'].values()) + 1
+    one_hot_shape = max(dataset_info['atom_encoder'].values())
 
     if args.denoise_pretrain:
         mask_indicator = 2
@@ -178,7 +178,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         nll_epoch.append(nll.item())
 
  
-        if (epoch % args.test_epochs == 0) and (i % args.visualize_every_batch == 0) and not (epoch == 0 and i == 0):
+        if (epoch % args.test_epochs == 0) and (i % args.visualize_every_batch == 0) and (not epoch == 0) and (not i == 0):
             print(f"Visualizing at epoch {epoch}, batch {i}")
         # if epoch == 0: # for test
             # 采样
@@ -197,8 +197,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             # save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
             #                       batch_id=str(i))
             # chain用来可视化，目前暂时不用
-            sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
-                                            prop_dist, epoch=epoch, batch_id=str(i))
+            # sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
+            #                                 prop_dist, epoch=epoch, batch_id=str(i))
             print(f'Sampling took {time.time() - start:.2f} seconds')
 
             # vis.visualize(f"outputs/{args.exp_name}/epoch_{epoch}_{i}", dataset_info=dataset_info, wandb=wandb)
