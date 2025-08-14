@@ -64,7 +64,9 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
         mask = node_mask[i].squeeze(-1).bool()
         x_valid = x[i][mask].detach().cpu().numpy()
         frac_coords = cart_to_frac(x_valid, lattice)
-        atom_types = charges[i][mask].detach().cpu().numpy()
+        one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
+        atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
+        # charges = charges[i][mask].detach().cpu().numpy()
 
         print("sampled lengths:", length[i])
         print("sampled angles:", angle[i])
@@ -340,9 +342,9 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                       f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
                       f"loss: {loss_dict['loss'].mean().item():.3f}, ",
                       f"loss_t: {loss_dict['loss_t'].mean().item():.3f}, "
-                      f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}")
-                if args.atom_type_pred:
-                    print(f", atom_type_loss: {loss_dict['atom_type_loss'].mean().item():.3f}")
+                      f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}, ",
+                      f"atom_type_loss: {loss_dict['atom_type_loss'].mean().item():.3f}"
+                      )
 
     return nll_epoch/n_samples
  
