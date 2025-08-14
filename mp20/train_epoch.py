@@ -7,6 +7,7 @@ import time
 import numpy as np
 import torch
 import wandb
+import datetime
 from mp20.batch_reshape import reshape
 from mp20.crystal import array_dict_to_crystal, lattice_matrix, cart_to_frac
 
@@ -278,9 +279,14 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
         mask = node_mask[i].squeeze(-1).bool()
         x_valid = x[i][mask].detach().cpu().numpy()
         frac_coords = cart_to_frac(x_valid, lattice)
-        atom_types = charges[i][mask].detach().cpu().numpy()
-        sample_idx = f"{epoch}_{batch_id}_{i}"
+        one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
+        atom_types = np.argmax(one_hot_valid, axis=-1) 
 
+        current_time = datetime.datetime.now()
+        formatted_time = current_time.strftime("%m-%d-%H-%M-%S")
+        sample_idx = f"{formatted_time}_{epoch}_{batch_id}_{i}"
+        # charges = charges[i][mask].detach().cpu().numpy()
+        
         # print("generated angles: ", angle[i])
         # print("generated lengths: ", length[i])
         # print("generated atom_types: ", atom_types)
