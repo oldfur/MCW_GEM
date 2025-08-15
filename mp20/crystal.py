@@ -202,10 +202,13 @@ def array_dict_to_crystal(
     if np.all(50 < x["angles"]) and np.all(x["angles"] < 130):
         crys = Crystal(x)   # 这一行创建crystal对象，包含有效性
         # Check if the crystal is valid
-        if crys.valid and save:
-            os.makedirs(save_dir_name, exist_ok=True)
-            crys.structure.to(os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif"))
-            print(f"save to {save_dir_name}!!")
+        if save:    # 如果需要保存
+            if crys.valid:
+                os.makedirs(save_dir_name, exist_ok=True)
+                crys.structure.to(os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif"))
+                print(f"save to {save_dir_name}!!")
+            else:
+                print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
     else:
         # returns an absurd crystal
         crys = Crystal(

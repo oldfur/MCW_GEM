@@ -185,7 +185,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             # 采样
             start = time.time()
             if len(args.conditioning) > 0 and not args.uni_diffusion:
-                # 条件化采样
+                # 条件化采样, 暂时no saving
 
                 one_hot, charges, x, length, angle = save_and_sample_conditional(args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
                 # print(f"one_hot: {one_hot.shape}, charges: {charges.shape}, x: {x.shape}, length: {length.shape}, angle: {angle.shape}")
@@ -198,8 +198,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             # save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
             #                       batch_id=str(i))
             # chain用来可视化，目前暂时不用
-            # sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
-            #                                 prop_dist, epoch=epoch, batch_id=str(i))
+            sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
+                                            prop_dist, epoch=epoch, batch_size=args.batch_size, batch_id=str(i))
             print(f'Sampling took {time.time() - start:.2f} seconds')
 
             # vis.visualize(f"outputs/{args.exp_name}/epoch_{epoch}_{i}", dataset_info=dataset_info, wandb=wandb)
@@ -228,9 +228,10 @@ def save_and_sample_conditional(args, device, model, prop_dist, dataset_info, ep
 
 
 def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_info, prop_dist,
-                                    n_samples=5, epoch=0, batch_size=100, batch_id=''):
+                                    n_samples=5, epoch=0, batch_size=10, batch_id=''):
     """从生成模型中采样不同大小的晶体结构，并将结果保存为.cif文件格式"""
     batch_size = min(batch_size, n_samples)
+    print(f"sampling {batch_size} samples with different sizes and save to outputs/{args.exp_name}/epoch_{epoch}_{batch_id}...")
     nodesxsample = nodes_dist.sample(batch_size)
     # print("n_samples in sample_different_sizes_and_save: ", n_samples)
     # print("batch_size in sample_different_sizes_and_save: ", batch_size)
@@ -264,11 +265,6 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
     
     # 需要：分数坐标、晶胞长度、角度、样本索引、原子类型
     # 根据欧式空间的3D坐标x，晶胞长度lengths，晶胞角度angles，可以计算出分数坐标frac_coords
-    # print("node mask: ", node_mask) # [n,20,1]
-    # print("x: ", x) # [n,20,3]
-    # print("lengths: ", length)  # [n,3]
-    # print("angles: ", angle)    # [n,3]
-    # print("charges: ", charges) # [n, 20, 1]
     length = length.detach().cpu().numpy()
     angle = angle.detach().cpu().numpy()
 
