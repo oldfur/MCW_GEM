@@ -208,7 +208,10 @@ def array_dict_to_crystal(
                 crys.structure.to(os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif"))
                 print(f"save to {save_dir_name}!!")
             else:
-                print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
+                if hasattr(crys, 'invalid_reason'):
+                    print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
+                else:
+                    print("Crystal is not valid")
     else:
         # returns an absurd crystal
         crys = Crystal(
@@ -220,6 +223,7 @@ def array_dict_to_crystal(
                 "sample_idx": x["sample_idx"],
             }
         )
+        print("Invalid angles, returning absurd crystal.")
     return crys
 
 
