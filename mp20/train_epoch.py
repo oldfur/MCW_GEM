@@ -269,7 +269,7 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
     angle = angle.detach().cpu().numpy()
 
     for i in range(batch_size):
-        save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_{batch_id}_{i}'
+        save_file_name = f'outputs/{args.exp_name}/epoch_{epoch}_batch_{batch_id}'
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
                                     angle[i, 0], angle[i, 0], angle[i, 0])
         mask = node_mask[i].squeeze(-1).bool()
