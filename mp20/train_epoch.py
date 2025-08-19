@@ -199,7 +199,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             #                       batch_id=str(i))
             # chain用来可视化，目前暂时不用
             sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
-                                            prop_dist, epoch=epoch, batch_size=args.batch_size, batch_id=str(i))
+                                            prop_dist, n_samples=args.n_samples, epoch=epoch, batch_size=args.batch_size, batch_id=str(i))
             print(f'Sampling took {time.time() - start:.2f} seconds')
 
             # vis.visualize(f"outputs/{args.exp_name}/epoch_{epoch}_{i}", dataset_info=dataset_info, wandb=wandb)

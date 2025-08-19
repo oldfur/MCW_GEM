@@ -414,6 +414,7 @@ if __name__ == '__main__':
     parser.add_argument("--visulaize_epoch", type=int, default=60, help="visualize after this epoch")   
     # visulaize_epoch之后打印所需的实验信息
     # parser.add_argument("--record_more_info", type=int, default=1, help="record more information about loss in visulaize_epoch")
+    parser.add_argument("--n_samples", type=int, default=10, help="number of samples for visualization")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()
