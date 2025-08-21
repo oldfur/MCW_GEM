@@ -95,12 +95,12 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
 
     wandb.log(metrics_dict)
     wandb.log({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
-               'Uniqueness': metrics_dict["unique_rate"].sum()/batch_size, 
-               'Novelty': metrics_dict["novel_rate"].sum()/batch_size})
+               'Uniqueness': metrics_dict["unique_rate"], 
+               'Novelty': metrics_dict["novel_rate"]})
     
     print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
-               'Uniqueness': metrics_dict["unique_rate"].sum()/batch_size, 
-               'Novelty': metrics_dict["novel_rate"].sum()/batch_size})
+               'Uniqueness': metrics_dict["unique_rate"], 
+               'Novelty': metrics_dict["novel_rate"]})
 
     return metrics_dict
 
