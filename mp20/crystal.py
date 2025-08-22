@@ -98,9 +98,14 @@ class Crystal:
         self.comp_valid = smact_validity(self.elems, self.comps)
         if self.constructed:
             self.struct_valid = structure_validity(self.structure)
+            if not self.struct_valid:
+                self.invalid_reason = "constructed but structure invalid"
         else:
-            self.struct_valid = False
+            self.struct_valid = False   # 结构未构建成功,自有对应的invalid_reason
         self.valid = self.comp_valid and self.struct_valid
+        if self.struct_valid and not self.comp_valid:
+            self.invalid_reason = "structure valid but comp invalid"
+        
 
     def get_fingerprints(self):
         elem_counter = Counter(self.atom_types)
