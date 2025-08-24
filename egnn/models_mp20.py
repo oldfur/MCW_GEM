@@ -97,7 +97,9 @@ class EGNN_dynamics_MP20(nn.Module):
             context_node_nf = 53 + 1
             self.property_fc = nn.Linear(1, context_node_nf - 1) # fc emb + property
             
-            shared_args = {'hidden_channels': 256, 'num_layers': 8, 'num_rbf': 64, 'rbf_type': 'expnorm', 'trainable_rbf': False, 'activation': 'silu', 'neighbor_embedding': True, 'cutoff_lower': 0.0, 'cutoff_upper': 5.0, 'max_z': in_node_nf + context_node_nf, 'max_num_neighbors': 32}
+            shared_args = {'hidden_channels': 256, 'num_layers': 8, 'num_rbf': 64, 'rbf_type': 'expnorm', 'trainable_rbf': False, 
+                           'activation': 'silu', 'neighbor_embedding': True, 'cutoff_lower': 0.0, 'cutoff_upper': 5.0, 
+                           'max_z': in_node_nf + context_node_nf, 'max_num_neighbors': 32}
             self.gnn = TorchMD_ET(
                 attn_activation="silu",
                 num_heads=8,
@@ -139,7 +141,9 @@ class EGNN_dynamics_MP20(nn.Module):
             # if self.atom_type_pred:
             #     assert branch_layers_num > 0, "branch_layers_num should be larger than 0 when the atom_type_pred is True"
             if self.use_get:
-                shared_args = {'hidden_channels': 256, 'num_layers': 9, 'num_rbf': 64, 'rbf_type': 'expnorm', 'trainable_rbf': False, 'activation': 'silu', 'neighbor_embedding': True, 'cutoff_lower': 0.0, 'cutoff_upper': 5.0, 'max_z': in_node_nf + context_node_nf, 'max_num_neighbors': 32}
+                shared_args = {'hidden_channels': 256, 'num_layers': 9, 'num_rbf': 64, 'rbf_type': 'expnorm', 'trainable_rbf': False, 
+                               'activation': 'silu', 'neighbor_embedding': True, 'cutoff_lower': 0.0, 'cutoff_upper': 5.0, 
+                               'max_z': in_node_nf + context_node_nf, 'max_num_neighbors': 32}
                 shared_args['bond_pred'] = self.bond_pred
                 self.egnn = TorchMD_ETF2D(
                         attn_activation="silu",

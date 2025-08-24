@@ -66,6 +66,10 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
         frac_coords = cart_to_frac(x_valid, lattice)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
+        # 此处H解码出来是0，He解码出来是1......
+        # 评估里面的有效性默认H是1，He是2......
+        atom_types += 1 # convert to 1-indexed！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+
         # charges = charges[i][mask].detach().cpu().numpy()
 
         # print("sampled lengths:", length[i])
