@@ -160,4 +160,3 @@ dependencies:
       - wandb==0.21.0
       - xmltodict==0.14.2
       - zipp==3.23.0
-prefix: /home/mcw/miniconda3/envs/mpgem
