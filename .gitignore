@@ -1,7 +1,7 @@
 mp20/raw/all.csv
 mp20/processed/all_ori.pt
 mp20/processed/mp20.pt
-outputs
-
+outputs/
+wandb/
 *.pyc
 __pycache__/
