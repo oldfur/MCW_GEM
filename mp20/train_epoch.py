@@ -277,7 +277,6 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
         frac_coords = cart_to_frac(x_valid, lattice)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)
-        atom_types += 1 # convert to 1-indexed！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！ 
 
         current_time = datetime.datetime.now()
         formatted_time = current_time.strftime("%m-%d-%H-%M-%S")

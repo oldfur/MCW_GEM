@@ -66,9 +66,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
         frac_coords = cart_to_frac(x_valid, lattice)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
-        # 此处H解码出来是0，He解码出来是1......
-        # 评估里面的有效性默认H是1，He是2......
-        atom_types += 1 # convert to 1-indexed！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+        # 注意，这里不需要+1,因为mp20中的one-hot是从0开始的，H对应1的one-hot是[0,1,0,...]
 
         # charges = charges[i][mask].detach().cpu().numpy()
 
