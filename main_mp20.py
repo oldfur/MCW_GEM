@@ -431,12 +431,32 @@ if __name__ == '__main__':
     if args.no_wandb:
         mode = 'disabled'
     else:
-        mode = 'online' if args.online else 'offline'
-    kwargs = {'entity': args.wandb_usr, 'name': args.exp_name, 'project': 'e3_diffusion', 'config': args,
-            'settings': wandb.Settings(_disable_stats=True), 'reinit': True, 'mode': mode}
-    os.environ["WANDB_SERVICE_WAIT"] = "60" 
-    wandb.init(**kwargs)
-    wandb.save('*.txt')
+        mode = 'online' if args.online else 'offline'    
+    kwargs = {
+        'entity': args.wandb_usr, 
+        'name': args.exp_name, 
+        'project': 'e3_diffusion', 
+        'config': args,
+        'settings': wandb.Settings(
+            _disable_stats=True,
+            init_timeout=300,  # 增加初始化超时到300秒
+            timeout=120        # 增加常规超时到120秒
+        ), 
+        'mode': mode
+    }
+    os.environ["WANDB_SERVICE_WAIT"] = "60"
+    os.environ["WANDB_MODE"] = mode  # 显式设置模式
+    try:
+        wandb.init(**kwargs)
+        wandb.save('*.txt')
+    except wandb.errors.CommError as e:
+        print(f"Wandb connection failed: {e}")
+        print("Continuing in offline mode...")
+        # 强制切换到离线模式重试
+        os.environ["WANDB_MODE"] = "offline"
+        kwargs['mode'] = 'offline'
+        wandb.init(**kwargs)
+
 
     """******  main function  ******"""
 

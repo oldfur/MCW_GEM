@@ -3,15 +3,15 @@
 ## 环境配置
 ```
 # python版本: 3.10.16
+conda create -n mpgem python=3.10.16
+
 pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126
 
 pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric -f https://data.pyg.org/whl/torch-2.7.1+cu126.html
 
 pip install -r requirements.txt
 
-pip install lightning_utilities
-pip install svgwrite
-pip install importlib_resources
+pip install lightning_utilities svgwrite importlib_resources
 ```
 
 - 条件生成
