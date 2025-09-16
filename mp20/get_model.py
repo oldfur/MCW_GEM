@@ -6,6 +6,8 @@ from egnn.models_mp20 import EGNN_dynamics_MP20
 
 from equivariant_diffusion.en_diffusion_mp20 import EnVariationalDiffusion
 from equivariant_diffusion.en_diffusion_mp20_new import EnVariationalDiffusion_new
+from equivariant_diffusion.en_diffusion_another import EnVariationalDiffusion_another 
+from egnn.EGNN_MP20_another import EGNN_dynamics_MP20_another
 from mp20.utils import extract_attribute_safe, extract_property_safe
 
 
@@ -36,27 +38,47 @@ def get_model(args, device, dataset_info, dataloader_train,
     if not hasattr(args, 'target_property'):
         args.target_property = None
 
-    
-    net_dynamics = EGNN_dynamics_MP20(
-        in_node_nf=dynamics_in_node_nf, context_node_nf=args.context_node_nf,
-        n_dims=3, device=device, hidden_nf=args.nf, act_fn=torch.nn.SiLU(), n_layers=args.n_layers,
-        attention=args.attention, tanh=args.tanh, mode=args.model, norm_constant=args.norm_constant,
-        condition_decoupling=condition_decoupling, uni_diffusion=uni_diffusion, use_basis=use_basis, 
-        inv_sublayers=args.inv_sublayers, sin_embedding=args.sin_embedding, decoupling=decoupling, 
-        pretraining=pretrain, finetune=finetune, normalization_factor=args.normalization_factor, 
-        aggregation_method=args.aggregation_method, property_pred=args.property_pred, 
-        target_property=args.target_property, freeze_gradient=args.freeze_gradient, 
-        prediction_threshold_t=args.prediction_threshold_t, 
-        basic_prob=args.basic_prob if "basic_prob" in args else False,
-        atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
-        branch_layers_num=args.branch_layers_num if "branch_layers_num" in args else 0,
-        bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,        
-        sample_steps=args.sample_steps if 'sample_steps' in args else 1000,
-        use_get=args.use_get if 'use_get' in args else False,
-        bond_pred=args.bond_pred if 'bond_pred' in args else False,)
+    if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new':
+        net_dynamics = EGNN_dynamics_MP20(
+            in_node_nf=dynamics_in_node_nf, context_node_nf=args.context_node_nf,
+            n_dims=3, device=device, hidden_nf=args.nf, act_fn=torch.nn.SiLU(), n_layers=args.n_layers,
+            attention=args.attention, tanh=args.tanh, mode=args.model, norm_constant=args.norm_constant,
+            condition_decoupling=condition_decoupling, uni_diffusion=uni_diffusion, use_basis=use_basis, 
+            inv_sublayers=args.inv_sublayers, sin_embedding=args.sin_embedding, decoupling=decoupling, 
+            pretraining=pretrain, finetune=finetune, normalization_factor=args.normalization_factor, 
+            aggregation_method=args.aggregation_method, property_pred=args.property_pred, 
+            target_property=args.target_property, freeze_gradient=args.freeze_gradient, 
+            prediction_threshold_t=args.prediction_threshold_t, 
+            basic_prob=args.basic_prob if "basic_prob" in args else False,
+            atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
+            branch_layers_num=args.branch_layers_num if "branch_layers_num" in args else 0,
+            bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,        
+            sample_steps=args.sample_steps if 'sample_steps' in args else 1000,
+            use_get=args.use_get if 'use_get' in args else False,
+            bond_pred=args.bond_pred if 'bond_pred' in args else False,)
     # with open("qm9_model.txt", "w") as f:
     #     f.write(str(net_dynamics))
     # print(net_dynamics)
+    elif args.probabilistic_model == 'diffusion_another':
+        net_dynamics = EGNN_dynamics_MP20_another(
+            in_node_nf=dynamics_in_node_nf, context_node_nf=args.context_node_nf,
+            n_dims=3, device=device, hidden_nf=args.nf, act_fn=torch.nn.SiLU(), n_layers=args.n_layers,
+            attention=args.attention, tanh=args.tanh, mode=args.model, norm_constant=args.norm_constant,
+            condition_decoupling=condition_decoupling, uni_diffusion=uni_diffusion, use_basis=use_basis, 
+            inv_sublayers=args.inv_sublayers, sin_embedding=args.sin_embedding, decoupling=decoupling, 
+            pretraining=pretrain, finetune=finetune, normalization_factor=args.normalization_factor, 
+            aggregation_method=args.aggregation_method, property_pred=args.property_pred, 
+            target_property=args.target_property, freeze_gradient=args.freeze_gradient, 
+            prediction_threshold_t=args.prediction_threshold_t, 
+            basic_prob=args.basic_prob if "basic_prob" in args else False,
+            atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
+            branch_layers_num=args.branch_layers_num if "branch_layers_num" in args else 0,
+            bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,        
+            sample_steps=args.sample_steps if 'sample_steps' in args else 1000,
+            use_get=args.use_get if 'use_get' in args else False,
+            bond_pred=args.bond_pred if 'bond_pred' in args else False,)
+    else:
+        raise ValueError(args.probabilistic_model)
 
     if args.probabilistic_model == 'diffusion':
         vdm = EnVariationalDiffusion(
@@ -136,6 +158,48 @@ def get_model(args, device, dataset_info, dataloader_train,
             temp_index=args.temp_index if "temp_index" in args else 0,
             lambda_l=args.lambda_l, lambda_a=args.lambda_a,
             )
+        
+        return vdm, nodes_dist, prop_dist
+        
+    elif args.probabilistic_model == 'diffusion_another':
+        vdm = EnVariationalDiffusion_another(
+            n_dims=3, device=device,
+            dynamics=net_dynamics,
+            in_node_nf=in_node_nf,
+            pre_training=pretrain,
+            uni_diffusion=uni_diffusion,
+            timesteps=args.diffusion_steps,
+            property_pred=args.property_pred,
+            freeze_gradient=args.freeze_gradient,
+            target_property=args.target_property,
+            noise_schedule=args.diffusion_noise_schedule,
+            noise_precision=args.diffusion_noise_precision,
+            loss_type=args.diffusion_loss_type,
+            norm_values=args.normalize_factors,
+            norm_biases= args.normalize_biases,
+            include_charges=args.include_charges,
+            prediction_threshold_t=args.prediction_threshold_t,
+            use_prop_pred=args.use_prop_pred if hasattr(args, 'use_prop_pred') else 1,
+            unnormal_time_step=args.unnormal_time_step if "unnormal_time_step" in args else False,
+            only_noisy_node=args.only_noisy_node if "only_noisy_node" in args else False,
+            half_noisy_node=args.half_noisy_node if "half_noisy_node" in args else False,
+            sep_noisy_node=args.sep_noisy_node if "sep_noisy_node" in args else False,
+            atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
+            bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,
+            bond_pred=args.bond_pred if "bond_pred" in args else False,
+            atom_types=len(dataset_info['atom_decoder']),
+            bfn_str=args.bfn_str if "bfn_str" in args else False,
+            optimal_sampling=args.optimal_sampling if "optimal_sampling" in args else False,
+            str_loss_type=args.str_loss_type if "str_loss_type" in args else "denoise_loss",
+            str_sigma_x=args.str_sigma_x if "str_sigma_x" in args else 0.05,
+            str_sigma_h=args.str_sigma_h if "str_sigma_h" in args else 0.05,
+            str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
+            temp_index=args.temp_index if "temp_index" in args else 0,
+            lambda_l=args.lambda_l, lambda_a=args.lambda_a,
+            )
+        
+        return vdm, nodes_dist, prop_dist
+    
     else:
         raise ValueError(args.probabilistic_model)
 
