@@ -116,6 +116,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         
         if 'error' in loss_dict:
             wandb.log({"denoise_x_l_a": loss_dict['error'].mean().item()}, commit=True)
+        if 'lattice_loss' in loss_dict:
+            wandb.log({"lattice_loss": loss_dict['lattice_loss'].mean().item()}, commit=True)
         if 'pred_loss' in loss_dict:
             if isinstance(loss_dict['pred_loss'], torch.Tensor):
                 wandb.log({"pred_loss": loss_dict['pred_loss'].mean().item(), "pred_rate": loss_dict['pred_rate'].mean().item()}, commit=True)
@@ -158,8 +160,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                     f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
                     # f"RegTerm: {reg_term.item():.1f}, "
                     f"GradNorm: {grad_norm:.1f}, "
-                    f"denoise x,l,a: {loss_dict['error'].mean().item():.3f} ", 
-                    end='' if args.property_pred or args.model == "PAT" else '\n')
+                    f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
+                    end = '')
             else:  # BFN
                 print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
                     f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
@@ -167,6 +169,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                     f"posloss: {loss_dict['posloss'].mean().item():.3f}, "
                     f"charge_loss: {loss_dict['charge_loss'].mean().item():.3f}, "
                     f"GradNorm: {grad_norm:.1f}", end='' if args.property_pred or args.model == "PAT" else '\n')
+            if 'lattice_loss' in loss_dict:
+                print(f", lattice_loss: {loss_dict['lattice_loss'].mean():.3f}", end='\n')
             if args.bond_pred:
                 print(f", bond_loss: {loss_dict['bond_loss'].mean():.3f}", end='')
             if args.property_pred:

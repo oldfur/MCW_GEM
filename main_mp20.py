@@ -46,7 +46,10 @@ def get_dataloaders(args, dataset):
     ntest = args.num_test
     train_indices = indices[:ntrain]
     val_indices = indices[ntrain : ntrain+nval]
-    test_indices = indices[ntrain+nval:]
+    if ntest == -1: # include the whole dataset, for training
+        test_indices = indices[ntrain+nval:]
+    else: # for debug
+        test_indices = indices[ntrain+nval:ntrain+nval+ntest]
     train_dataset = Subset(dataset, train_indices)
     val_dataset = Subset(dataset, val_indices)
     test_dataset = Subset(dataset, test_indices)

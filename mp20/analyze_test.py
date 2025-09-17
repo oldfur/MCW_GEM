@@ -324,7 +324,6 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
 
             # transform batch through flow
             # print(x.shape, h['categorical'].shape, h['integer'].shape, lengths.shape, angles.shape)
-            # torch.Size([B, N, 3]) torch.Size([B, N, 88]) torch.Size([B, N, 1]) torch.Size([B, 3]) torch.Size([B, 3])
             nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, x, h, lengths, angles,
                                                 node_mask, edge_mask, context, bond_info=bond_info,
                                                 property_label=props[args.target_property].to(device, dtype) \
@@ -338,6 +337,7 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                 print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
                       f"NLL: {nll_epoch/n_samples:.2f}")
                 print(f"error: {loss_dict['error'].mean().item():.3f}, "
+                      f"lattice_loss: {loss_dict['lattice_loss'].mean().item():.3f}, "
                       f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
                       f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
                       f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
