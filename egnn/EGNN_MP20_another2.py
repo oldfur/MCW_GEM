@@ -802,8 +802,9 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 pred = pred.squeeze(1)
             
             # lattice prediction
-            lx_final, lh_final = x_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1), \
-                h_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1)
+            # lx_final, lh_final = x_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1), \
+            #     h_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1)
+            lx_final, lh_final = x_final.view(bs*n_nodes, -1), h_final.view(bs*n_nodes, -1)
             lh_final = lh_final[:, :self.in_node_nf - 1] # remove time
             lattice_input = torch.cat([self.x_embed(lx_final), 
                                     self.h_embed(lh_final)], dim=1) # (bs*n_nodes, hidden*2)
