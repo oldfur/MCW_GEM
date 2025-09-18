@@ -7,7 +7,7 @@ from egnn.models_mp20 import EGNN_dynamics_MP20
 from equivariant_diffusion.en_diffusion_mp20 import EnVariationalDiffusion
 from equivariant_diffusion.en_diffusion_mp20_new import EnVariationalDiffusion_new
 from equivariant_diffusion.en_diffusion_another import EnVariationalDiffusion_another 
-from egnn.EGNN_MP20_another import EGNN_dynamics_MP20_another
+from egnn.EGNN_MP20_another2 import EGNN_dynamics_MP20_another2
 from mp20.utils import extract_attribute_safe, extract_property_safe
 
 
@@ -60,7 +60,7 @@ def get_model(args, device, dataset_info, dataloader_train,
     #     f.write(str(net_dynamics))
     # print(net_dynamics)
     elif args.probabilistic_model == 'diffusion_another':
-        net_dynamics = EGNN_dynamics_MP20_another(
+        net_dynamics = EGNN_dynamics_MP20_another2(
             in_node_nf=dynamics_in_node_nf, context_node_nf=args.context_node_nf,
             n_dims=3, device=device, hidden_nf=args.nf, act_fn=torch.nn.SiLU(), n_layers=args.n_layers,
             attention=args.attention, tanh=args.tanh, mode=args.model, norm_constant=args.norm_constant,

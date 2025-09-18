@@ -2,7 +2,7 @@ from equivariant_diffusion import utils
 import numpy as np
 import math
 import torch
-from egnn import EGNN_MP20_another
+from egnn import EGNN_MP20_another2
 from torch.nn import functional as F
 from equivariant_diffusion import utils as diffusion_utils
 from equivariant_diffusion.mlp import DiffusionMLP
@@ -263,7 +263,7 @@ class EnVariationalDiffusion_another(torch.nn.Module):
     """
     def __init__(
             self,
-            dynamics: EGNN_MP20_another.EGNN_dynamics_MP20_another, in_node_nf: int, n_dims: int,
+            dynamics: EGNN_MP20_another2.EGNN_dynamics_MP20_another2, in_node_nf: int, n_dims: int,
             timesteps: int = 1000, parametrization='eps', noise_schedule='learned',
             noise_precision=1e-4, loss_type='vlb', norm_values=(1., 1., 1.),
             norm_biases=(None, 0., 0., 0., 0.), include_charges=True, 
