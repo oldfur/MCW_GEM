@@ -28,6 +28,7 @@ class EGNN_dynamics_MP20_another(nn.Module):
                  **kwargs):
         super().__init__()
         self.mode = mode
+        self.n_dims = n_dims
         
         self.uni_diffusion = uni_diffusion
         self.use_basis = use_basis
@@ -658,7 +659,7 @@ class EGNN_dynamics_MP20_another(nn.Module):
         lh_final = lh_final[:, :self.in_node_nf - 1] # remove time
         lattice_input = torch.cat([self.x_embed(lx_final), 
                                    self.h_embed(lh_final)], dim=1) # (bs*n_nodes, hidden*2)
-        lattice_input = lattice_input.view(bs, self.hidden_nf * 2) * node_mask.view(bs, n_nodes, 1)
+        lattice_input = lattice_input.view(bs, n_nodes, self.hidden_nf * 2) * node_mask.view(bs, n_nodes, 1)
         lattice_dec = torch.mean(lattice_input, dim=1) # (bs, 2* hidden)
         out = self.lattice_mlp(lattice_dec)  # (bs,6)
         lengths = F.softplus(out[:, :3])  # >0
