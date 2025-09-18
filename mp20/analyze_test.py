@@ -70,8 +70,8 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
 
         # charges = charges[i][mask].detach().cpu().numpy()
 
-        # print("sampled lengths:", length[i])
-        # print("sampled angles:", angle[i])
+        print("sampled lengths:", length[i])
+        print("sampled angles:", angle[i])
         # print("sampled atom types:", atom_types)
 
         mp20_evaluator.append_pred_array(

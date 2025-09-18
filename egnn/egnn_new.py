@@ -298,16 +298,12 @@ class EGNN(nn.Module):
                 h1, x1 = self._modules["branch_%d" % (i - self.n_layers + self.branch_layers_num)](h1, x1, edge_index, node_mask=node_mask1, edge_mask=edge_mask1, edge_attr=distances1)
 
         
-        
-        
-        
         if self.condition_decoupling:
             h = torch.cat([h, condition], dim=1)
             h, x = self._modules["condition_module"](h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask, edge_attr=distances)
         # Important, the bias of the last linear might be non-zero
         org_h = h
         h = self.embedding_out(h)
-        
         
         
         if node_mask is not None:

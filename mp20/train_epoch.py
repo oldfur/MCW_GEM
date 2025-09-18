@@ -46,6 +46,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         # lattices = data['lattices'].to(device, dtype)
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
+
         # if i == 0:
         #   print("lengths for training: ", lengths[:2])
         #   print("angles for training: ", angles[:2])

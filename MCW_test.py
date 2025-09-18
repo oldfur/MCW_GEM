@@ -23,3 +23,6 @@ e = []
 f = [1,2,3,4]
 e.append(f)
 print(e)
+
+a = torch.ones((2,3))
+print(a[:, :2])

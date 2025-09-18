@@ -210,8 +210,21 @@ class EGNN_dynamics_MP20_another(nn.Module):
                 nn.Linear(hidden_nf, pred_dim),
             )
 
-            self.crystal_mlp = nn.Sequential(
+
+            self.x_embed = nn.Sequential(
+                nn.Linear(self.n_dims, hidden_nf),
+                nn.SiLU(),
                 nn.Linear(hidden_nf, hidden_nf),
+            )
+
+            self.h_embed = nn.Sequential(
+                nn.Linear(self.in_node_nf - 1, hidden_nf),
+                nn.SiLU(),
+                nn.Linear(hidden_nf, hidden_nf),
+            )
+
+            self.lattice_mlp = nn.Sequential(
+                nn.Linear(hidden_nf * 2, hidden_nf),
                 nn.SiLU(),
                 nn.Linear(hidden_nf, hidden_nf),
                 nn.SiLU(),
@@ -641,8 +654,13 @@ class EGNN_dynamics_MP20_another(nn.Module):
         pred = pred.squeeze(1)
 
         # lattice prediction
-        lattice_dec = torch.mean(node_dec, dim=1) # (bs, hidden)
-        out = self.crystal_mlp(lattice_dec)  # (B,6)
+        lx_final, lh_final = x_final.view(bs*n_nodes, -1), h_final.view(bs*n_nodes, -1)
+        lh_final = lh_final[:, :self.in_node_nf - 1] # remove time
+        lattice_input = torch.cat([self.x_embed(lx_final), 
+                                   self.h_embed(lh_final)], dim=1) # (bs*n_nodes, hidden*2)
+        lattice_input = lattice_input.view(bs, self.hidden_nf * 2) * node_mask.view(bs, n_nodes, 1)
+        lattice_dec = torch.mean(lattice_input, dim=1) # (bs, 2* hidden)
+        out = self.lattice_mlp(lattice_dec)  # (bs,6)
         lengths = F.softplus(out[:, :3])  # >0
         angles = torch.sigmoid(out[:, 3:]) * 180.0  # (0,180)
         
@@ -694,3 +712,30 @@ class EGNN_dynamics_MP20_another(nn.Module):
         else:
             self._edges_dict[n_nodes] = {}
             return self.get_adj_matrix(n_nodes, batch_size, device)
+    
+    def predict_lattice(self, xh, node_mask):
+        '''
+        use the graph_dec to predict the lattice
+        '''
+        assert self.mode == "DGAP", "DGAP mode should be used"
+        bs, n_nodes, dims = xh.shape
+        h_dims = dims - self.n_dims
+        node_mask = node_mask.view(bs*n_nodes, 1)
+        xh = xh.view(bs*n_nodes, -1).clone() * node_mask
+        assert h_dims == 6, "h_dims should be 6"
+        h = xh[:, self.n_dims:].clone()
+        
+        if self.condition_time:
+            h = h[:, :-1] # remove time
+        
+        h = torch.cat([h, node_mask], dim=1) # add mask info
+        
+        node_dec = self.node_dec(h)
+        node_dec = node_dec.view(bs, n_nodes, self.hidden_nf)
+        node_dec = node_dec * node_mask.reshape(bs, n_nodes, 1)
+        node_dec = torch.sum(node_dec, dim=1)
+        out = self.crystal_mlp(node_dec)  # (B,6)
+        lengths = F.softplus(out[:, :3])  # >0
+        angles = torch.sigmoid(out[:, 3:]) * 180.0  # (0,180)
+        
+        return lengths, angles
