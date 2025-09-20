@@ -268,6 +268,43 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     #     return nll, reg_term, mean_abs_z, loss_dict
     # return nll, reg_term, mean_abs_z
 
+def compute_loss_and_nll_pure_x(args, generative_model, nodes_dist, x, h, 
+                                node_mask, edge_mask, context, uni_diffusion=False, 
+                                mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+    """
+    负对数似然NLL和正则化项的计算
+    """
+    bs, n_nodes, n_dims = x.size()
+
+    if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new' \
+        or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_pure_x':
+        
+        edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
+        assert_correctly_masked(x, node_mask)
+        
+        if uni_diffusion:
+            nll, loss_dict = generative_model(x, h, node_mask, edge_mask, context, mask_indicator=mask_indicator)
+            # 默认的loss_dict是一个字典里面有很多个loss,此处调用了forward函数
+        else:
+            nll, loss_dict = generative_model(x, h, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
+                                              expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
+
+        if args.bfn_schedule:
+            return nll, torch.tensor([0], device=nll.device), torch.tensor([0], device=nll.device), loss_dict
+
+        N = node_mask.squeeze(2).sum(1).long()
+        log_pN = nodes_dist.log_prob(N)
+        assert nll.size() == log_pN.size()
+        nll = nll - log_pN
+        # Average over batch.
+        nll = nll.mean(0)
+        reg_term = torch.tensor([0.]).to(nll.device)
+        mean_abs_z = 0.
+    else:
+        raise ValueError(args.probabilistic_model)
+
+    return nll, reg_term, mean_abs_z, loss_dict
+    
 
 def compute_loss_and_nll_epoch(args, epoch, generative_model, nodes_dist, x, h, lengths, angles,
                          node_mask, edge_mask, context, uni_diffusion=False, mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):

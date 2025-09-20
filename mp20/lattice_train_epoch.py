@@ -115,6 +115,39 @@ def lattice_val(args, loader, info, epoch, eval_model):
     
     return epoch_loss / n_iterations
 
+def lattice_test(args, loader, info, epoch, eval_model):
+    print(f"Validating at epoch {epoch}...")
+    one_hot_shape = max(info['atom_encoder'].values())
+    device = args.device
+    dtype = args.dtype
+    eval_model.eval()
+    with torch.no_grad():
+
+        for i, data in enumerate(loader):
+            data = reshape(data, device, dtype, include_charges=True)
+            x = data['positions'].to(device, dtype) 
+            lengths = data['lengths'].to(device, dtype)
+            angles = data['angles'].to(device, dtype)
+            node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
+            edge_mask = data['edge_mask'].to(device, dtype)
+            one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype)
+            charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
+            
+            x = remove_mean_with_mask(x, node_mask)
+            check_mask_correct([x, one_hot, charges], node_mask)
+            assert_mean_zero_with_mask(x, node_mask)
+            h = {'categorical': one_hot, 'integer': charges}
+
+            # transform batch through flow
+            xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+            pred_lengths, pred_angles = eval_model.lattice_pred(xh, node_mask, edge_mask)
+            # standard nll from forward KL
+
+            print("pred lengths: ", pred_lengths[0].detach().cpu().numpy())
+            print("true lengths: ", lengths[0].detach().cpu().numpy())
+            print("pred angles: ", pred_angles[0].detach().cpu().numpy())
+            print("true angles: ", angles[0].detach().cpu().numpy())
+
 
 def lattice_compute_loss(args, model_dp, x, h, true_lengths, true_angles, node_mask, edge_mask):
     # x, h -> xh

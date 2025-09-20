@@ -2,10 +2,11 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
-from mp20.sample_epoch import sample
-from mp20.crystal import lattice_matrix, cart_to_frac, array_dict_to_crystal
+from mp20.sample_epoch import sample, sample_pure_x
+from mp20.crystal import lattice_matrix, cart_to_frac, frac_to_cart, array_dict_to_crystal
 from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_loss_and_nll,\
-    assert_correctly_masked, remove_mean_with_mask, assert_mean_zero_with_mask, check_mask_correct
+    assert_correctly_masked, remove_mean_with_mask, assert_mean_zero_with_mask, check_mask_correct,\
+    compute_loss_and_nll_pure_x
 from mp20.ase_tools.viewer import AseView
 from mp20.batch_reshape import reshape
 from pymatgen.analysis.structure_matcher import StructureMatcher
@@ -49,30 +50,45 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     # sample the crystal structures
     nodesxsample = nodes_dist.sample(batch_size)
     if args.property_pred:
-        one_hot, charges, x, node_mask, pred, length, angle = sample(args, device, model_sample, prop_dist=prop_dist,
+        if args.frac_coords_mode:
+            one_hot, charges, frac_coords, node_mask, pred, length, angle = sample(args, device, model_sample, prop_dist=prop_dist,
                                             nodesxsample=nodesxsample, dataset_info=dataset_info)
+        else:
+            one_hot, charges, x, node_mask, pred, length, angle = sample(args, device, model_sample, prop_dist=prop_dist,
+                                                nodesxsample=nodesxsample, dataset_info=dataset_info)
     else:
-        one_hot, charges, x, node_mask, length, angle = sample(args, device, model_sample, prop_dist=prop_dist,
+        if args.frac_coords_mode:
+            one_hot, charges, frac_coords, node_mask, length, angle = sample(args, device, model_sample, prop_dist=prop_dist,
                                             nodesxsample=nodesxsample, dataset_info=dataset_info)
+        else:
+            one_hot, charges, x, node_mask, length, angle = sample(args, device, model_sample, prop_dist=prop_dist,
+                                                nodesxsample=nodesxsample, dataset_info=dataset_info)
     length = length.detach().cpu().numpy()
-    angle = angle.detach().cpu().numpy()
+    angle = angle.detach().cpu().numpy() 
 
     for i in range(int(batch_size)):
         
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
                                     angle[i, 0], angle[i, 0], angle[i, 0])
         mask = node_mask[i].squeeze(-1).bool()
-        x_valid = x[i][mask].detach().cpu().numpy()
-        frac_coords = cart_to_frac(x_valid, lattice)
+
+        if args.frac_coords_mode:
+            frac_coords = frac_coords[i][mask].detach().cpu().numpy()
+            x_valid = frac_to_cart(frac_coords, lattice)
+        else: 
+            x_valid = x[i][mask].detach().cpu().numpy()
+            frac_coords = cart_to_frac(x_valid, lattice)
+
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
-        # 注意，这里不需要+1,因为mp20中的one-hot是从0开始的，H对应1的one-hot是[0,1,0,...]
-
         # charges = charges[i][mask].detach().cpu().numpy()
 
-        print("sampled lengths:", length[i])
-        print("sampled angles:", angle[i])
-        # print("sampled atom types:", atom_types)
+        if i <=3:
+            pass
+            # print("sampled frac_coords:", frac_coords)
+            # print("sampled lengths:", length[i])
+            # print("sampled angles:", angle[i])
+            # print("sampled atom types:", atom_types)
 
         mp20_evaluator.append_pred_array(
                 {
@@ -107,6 +123,97 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     return metrics_dict
 
 
+def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info, 
+                     prop_dist, evaluate_condition_generation, lattice_pred_model):
+    print(f'Analyzing crystal validity at epoch {epoch}...')
+    batch_size = args.sample_batch_size
+    device = args.device
+    mp20_evaluator = CrystalGenerationEvaluator(
+            dataset_cif_list=pd.read_csv(
+                os.path.join(args.dataset_folder_path, f"all.csv")
+            )["cif"].tolist()
+        )
+
+    # sample the crystal structures
+    nodesxsample = nodes_dist.sample(batch_size)
+    if args.property_pred:
+        one_hot, charges, x, node_mask, pred= sample_pure_x(args, device, model_sample, prop_dist=prop_dist,
+                                            nodesxsample=nodesxsample, dataset_info=dataset_info)
+    else:
+        one_hot, charges, x, node_mask= sample_pure_x(args, device, model_sample, prop_dist=prop_dist,
+                                            nodesxsample=nodesxsample, dataset_info=dataset_info)
+
+    
+    x = remove_mean_with_mask(x, node_mask)
+    check_mask_correct([x, one_hot, charges], node_mask)
+    assert_mean_zero_with_mask(x, node_mask)
+    h = {'categorical': one_hot, 'integer': charges}
+    xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+    atom_mask = (h['integer'].squeeze(-1)) > 0
+    edge_mask = atom_mask.unsqueeze(1) * atom_mask.unsqueeze(2)
+    diag_mask = ~torch.eye(edge_mask.size(1), dtype=torch.bool).unsqueeze(0)
+    edge_mask *= diag_mask.to(edge_mask.device)
+    
+    # predict the length, angle with the lattice_pred_model
+    lattice_pred_model.eval()
+    with torch.no_grad():
+        length, angle = lattice_pred_model.lattice_pred(xh, node_mask, edge_mask)
+    length = length.detach().cpu().numpy()
+    angle = angle.detach().cpu().numpy() 
+
+    for i in range(int(batch_size)):
+        
+        lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+                                    angle[i, 0], angle[i, 0], angle[i, 0])
+        mask = node_mask[i].squeeze(-1).bool()
+
+        if args.frac_coords_mode:
+            frac_coords = frac_coords[i][mask].detach().cpu().numpy()
+            x_valid = frac_to_cart(frac_coords, lattice)
+        else: 
+            x_valid = x[i][mask].detach().cpu().numpy()
+            frac_coords = cart_to_frac(x_valid, lattice)
+
+        one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
+        atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
+        # charges = charges[i][mask].detach().cpu().numpy()
+
+        if i <=2:
+            print("sampled lengths:", length[i])
+            print("sampled angles:", angle[i])
+            # print("sampled atom types:", atom_types)
+
+        mp20_evaluator.append_pred_array(
+                {
+                    "atom_types": atom_types,
+                    "pos": x_valid,
+                    "frac_coords": frac_coords,
+                    "lengths": length[i],
+                    "angles": angle[i],
+                    "sample_idx": f"epoch_{epoch}_sample_{i}"
+                }
+            )
+
+    # Compute generation metrics
+    metrics_dict = mp20_evaluator.get_metrics(
+        save=args.visualize,
+        save_dir=args.save_dir + f"/epoch_{epoch}",
+    )   # warning!
+
+
+    for k, v in metrics_dict.items():
+        print(f"{k}: {v.tolist() if isinstance(v, torch.Tensor) else v}")
+
+    wandb.log(metrics_dict)
+    wandb.log({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+               'Uniqueness': metrics_dict["unique_rate"], 
+               'Novelty': metrics_dict["novel_rate"]})
+    
+    print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+               'Uniqueness': metrics_dict["unique_rate"], 
+               'Novelty': metrics_dict["novel_rate"]})
+
+    return metrics_dict
 
 #######################################################################################################
 
@@ -295,6 +402,7 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
             props = data.propertys # 理化性质, a list of dict
             data = reshape(data, device, dtype, include_charges=True)
             x = data['positions'].to(device, dtype) 
+            frac_coords = data['frac_coords'].to(device, dtype)
             lengths = data['lengths'].to(device, dtype)
             angles = data['angles'].to(device, dtype)
             batch_size = x.size(0)
@@ -324,10 +432,17 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
 
             # transform batch through flow
             # print(x.shape, h['categorical'].shape, h['integer'].shape, lengths.shape, angles.shape)
-            nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, x, h, lengths, angles,
-                                                node_mask, edge_mask, context, bond_info=bond_info,
+            if args.frac_coords_mode:
+                # print("using frac_coords to compute loss")
+                nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, 
+                                                frac_coords, h, lengths, angles, node_mask, edge_mask, context,
                                                 property_label=props[args.target_property].to(device, dtype) \
-                                                    if args.target_property in props else None)
+                                                    if args.target_property in props else None,)
+            else:
+                nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, x, h, lengths, angles,
+                                                    node_mask, edge_mask, context, bond_info=bond_info,
+                                                    property_label=props[args.target_property].to(device, dtype) \
+                                                        if args.target_property in props else None)
         
             # standard nll from forward KL
 
@@ -336,9 +451,10 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
             if i % args.n_report_steps == 0:
                 print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
                       f"NLL: {nll_epoch/n_samples:.2f}")
-                print(f"error: {loss_dict['error'].mean().item():.3f}, "
-                      f"lattice_loss: {loss_dict['lattice_loss'].mean().item():.3f}, "
-                      f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
+                print(f"error: {loss_dict['error'].mean().item():.3f}, ", end='')
+                if 'lattice_loss' in loss_dict:
+                    print(f"lattice_loss: {loss_dict['lattice_loss'].mean().item():.3f}, ", end='')
+                print(f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
                       f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
                       f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
                       f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
@@ -350,4 +466,70 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
 
     return nll_epoch/n_samples
  
- 
+
+def test_pure_x(args, loader, info, epoch, eval_model, property_norms, nodes_dist, partition='Test'):
+    print(f"Testing {partition} at epoch {epoch}...")
+    one_hot_shape = max(info['atom_encoder'].values())
+    device = args.device
+    dtype = args.dtype
+    eval_model.eval()
+    with torch.no_grad():
+        nll_epoch = 0
+        n_samples = 0
+
+        n_iterations = len(loader)
+
+        for i, data in enumerate(loader):
+            props = data.propertys # 理化性质, a list of dict
+            data = reshape(data, device, dtype, include_charges=True)
+            x = data['positions'].to(device, dtype) 
+            batch_size = x.size(0)
+            node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2)
+            edge_mask = data['edge_mask'].to(device, dtype)
+            one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype)
+            charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype)
+            
+            if args.bond_pred:
+                edge_index = data['edge_index'].to(device, dtype)
+                edge_attr = data['edge_attr'].to(device, dtype)
+                bond_info = {'edge_index': edge_index, 'edge_attr': edge_attr}
+            else:
+                bond_info = None
+
+            x = remove_mean_with_mask(x, node_mask)
+            check_mask_correct([x, one_hot, charges], node_mask)
+            assert_mean_zero_with_mask(x, node_mask)
+
+            h = {'categorical': one_hot, 'integer': charges}
+
+            if len(args.conditioning) > 0:
+                context = prepare_context_test(args.conditioning, data, props, property_norms).to(device, dtype)
+                assert_correctly_masked(context, node_mask)
+            else:
+                context = None
+
+            # transform batch through flow
+            nll, _, _, loss_dict = compute_loss_and_nll_pure_x(args, eval_model, nodes_dist, x, h,
+                                            node_mask, edge_mask, context, bond_info=bond_info,
+                                            property_label=props[args.target_property].to(device, dtype) \
+                                                if args.target_property in props else None)
+        
+            # standard nll from forward KL
+
+            nll_epoch += nll.item() * batch_size
+            n_samples += batch_size
+            if i % args.n_report_steps == 0:
+                print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
+                      f"NLL: {nll_epoch/n_samples:.2f}")
+                print(f"error: {loss_dict['error'].mean().item():.3f}, "
+                      f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
+                      f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
+                      f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
+                      f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
+                      f"loss: {loss_dict['loss'].mean().item():.3f}, ",
+                      f"loss_t: {loss_dict['loss_t'].mean().item():.3f}, "
+                      f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}, ",
+                      f"atom_type_loss: {loss_dict['atom_type_loss'].mean().item():.3f}"
+                      )
+
+    return nll_epoch/n_samples

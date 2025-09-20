@@ -17,7 +17,7 @@ from mp20.shared_args import setup_shared_args
 from mp20.mp20 import MP20
 from mp20.get_model import get_model
 from mp20.utils import *
-from mp20.lattice_train_epoch import lattice_train_epoch, lattice_val
+from mp20.lattice_train_epoch import lattice_train_epoch, lattice_val, lattice_test
 from egnn.EGNN_MP20_another2 import EGNN_dynamics_MP20_another2
 
 def get_dataset(args):
@@ -101,7 +101,7 @@ def get_dataset_info(args):
     return dataset_info
 
 
-def construct_model(args, dataset_info, dataloader_train):
+def construct_lattice_model(args, dataset_info):
     # Create model
     device = args.device
     histogram = dataset_info['n_nodes']
@@ -260,10 +260,11 @@ def main(args):
         
 
         # 9 optional: load model
-        # model = MyModel()
-        # model.load_state_dict(torch.load("best_model.pth"))
-        # model.eval()
-
+        test_model, _, _ = construct_lattice_model(args, dataset_info)
+        filename = f"lattice_checkpoints/epoch_210_val_loss_35.3340.pth"
+        print("load model for test: ", filename)
+        test_model.load_state_dict(torch.load(filename))
+        lattice_test(args, dataloaders['test'], dataset_info, epoch, test_model)
 
 
 if __name__ == '__main__':

@@ -42,7 +42,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         x = data['positions'].to(device, dtype)
         # batch_size, 简写B;  num_atoms, 简写N: 1~20都有可能 
         # x shape: torch.Size([B, N, 3]), 
-        # frac_coords = data['frac_coords'].to(device, dtype)
+        frac_coords = data['frac_coords'].to(device, dtype)
         # lattices = data['lattices'].to(device, dtype)
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
@@ -82,7 +82,6 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             eps = sample_center_gravity_zero_gaussian_with_mask(x.size(), x.device, node_mask)
             x = x + eps * args.augment_noise
 
-        x = remove_mean_with_mask(x, node_mask)
         if args.data_augmentation:
             x = utils.random_rotation(x).detach()
 
@@ -111,12 +110,18 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
         # 只需坐标、晶胞长度、角度，就可以计算晶体结构的loss
         # print(x.shape, h['categorical'].shape, h['integer'].shape, lengths.shape, angles.shape)
-        nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
-                                                            x, h, lengths, angles, node_mask, edge_mask, context,
-                                                            property_label=property_label, bond_info=bond_info)
+        if args.frac_coords_mode:
+            # print("using frac_coords to compute loss")
+            nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
+                                                                frac_coords, h, lengths, angles, node_mask, edge_mask, context,
+                                                                property_label=property_label, bond_info=bond_info)
+        else:
+            nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
+                                                                x, h, lengths, angles, node_mask, edge_mask, context,
+                                                                property_label=property_label, bond_info=bond_info)
         
         if 'error' in loss_dict:
-            wandb.log({"denoise_x_l_a": loss_dict['error'].mean().item()}, commit=True)
+            wandb.log({"denoise_coords_l_a": loss_dict['error'].mean().item()}, commit=True)
         if 'lattice_loss' in loss_dict:
             wandb.log({"lattice_loss": loss_dict['lattice_loss'].mean().item()}, commit=True)
         if 'pred_loss' in loss_dict:
@@ -144,7 +149,6 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             else:
                 grad_norm = 0.
 
-            optim.step()
         except Exception as e:
             grad_norm = 0.
             print('Error in backward pass(may occure loss zero), skipping batch')

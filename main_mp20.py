@@ -19,7 +19,9 @@ from mp20.mp20 import MP20
 from mp20.get_model import get_model
 from mp20.utils import *
 from mp20.train_epoch import train_epoch
-from mp20.analyze_test import analyze_and_save, test
+from mp20.train_epoch_pure_x import train_epoch_pure_x
+from mp20.analyze_test import analyze_and_save, test, analyze_and_save_pure_x, test_pure_x
+from train_lattice_egnn import construct_lattice_model
 
 
 def get_dataset(args):
@@ -223,10 +225,14 @@ def main(args):
     best_nll_test = 1e8
     for epoch in range(args.start_epoch, args.n_epochs):
         start_epoch = time.time()
-
-        train_epoch(args=args, dataloader=dataloaders['train'], epoch=epoch, model=model, model_dp=model_dp,
-                    model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
-                    dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
+        if args.probabilistic_model == 'diffusion_pure_x':
+            train_epoch_pure_x(args=args, dataloader=dataloaders['train'], epoch=epoch, model=model, model_dp=model_dp,
+                        model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
+                        dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
+        else:
+            train_epoch(args=args, dataloader=dataloaders['train'], epoch=epoch, model=model, model_dp=model_dp,
+                        model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
+                        dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
 
         print(f"Epoch took {time.time() - start_epoch:.1f} seconds.")
 
@@ -239,16 +245,26 @@ def main(args):
                 wandb.log(model.log_info(), commit=True)
 
             # 分析与保存
-            if not args.break_train_epoch:
+
+            if args.probabilistic_model == 'diffusion_pure_x':
+                lattice_pred_model, _, _ = construct_lattice_model(args, dataset_info)
+                filename = f"lattice_checkpoints/epoch_210_val_loss_35.3340.pth"
+                print("load model for test: ", filename)
+                lattice_pred_model.load_state_dict(torch.load(filename))
+                analyze_and_save_pure_x(args, epoch, model_ema, nodes_dist,
+                            dataset_info, prop_dist, args.evaluate_condition_generation, lattice_pred_model=lattice_pred_model)
+                nll_val = test_pure_x(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
+                               property_norms, nodes_dist, partition='Val')
+                nll_test = test_pure_x(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
+                                property_norms, nodes_dist, partition='Test')
+            else:
                 analyze_and_save(args, epoch, model_ema, nodes_dist,
                                 dataset_info, prop_dist, args.evaluate_condition_generation)
-                
-            nll_val = test(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
-                           property_norms, nodes_dist, partition='Val')
-            nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
-                            property_norms, nodes_dist, partition='Test')
+                nll_val = test(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
+                            property_norms, nodes_dist, partition='Val')
+                nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
+                                property_norms, nodes_dist, partition='Test')
                         
-
             if nll_val < best_nll_val:
                 best_nll_val = nll_val
                 best_nll_test = nll_test
@@ -418,6 +434,7 @@ if __name__ == '__main__':
     # visulaize_epoch之后打印所需的实验信息
     # parser.add_argument("--record_more_info", type=int, default=1, help="record more information about loss in visulaize_epoch")
     parser.add_argument("--n_samples", type=int, default=10, help="number of samples for visualization")
+    parser.add_argument("--frac_coords_mode", type=int, default=0, help="whether use frac_coords")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()
