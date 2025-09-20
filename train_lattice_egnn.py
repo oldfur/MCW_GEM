@@ -179,7 +179,7 @@ def main(args):
 
     # 3 Load model and create optimizer
     # 如果没有设置预训练模型，则直接使用当前模型的参数进行训练
-    model, nodes_dist, prop_dist = construct_model(args, dataset_info, dataloaders['train'])
+    model, nodes_dist, prop_dist = construct_lattice_model(args, dataset_info, dataloaders['train'])
     if prop_dist is not None:
         prop_dist.set_normalizer(property_norms)
 
