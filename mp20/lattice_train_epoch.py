@@ -86,6 +86,7 @@ def lattice_val(args, loader, info, epoch, eval_model):
     with torch.no_grad():
 
         n_iterations = len(loader)
+        epoch_loss = 0
 
         for i, data in enumerate(loader):
             data = reshape(data, device, dtype, include_charges=True)
@@ -103,15 +104,16 @@ def lattice_val(args, loader, info, epoch, eval_model):
             h = {'categorical': one_hot, 'integer': charges}
 
             # transform batch through flow
-            _, loss_dict = lattice_compute_loss(args, eval_model, x, h, lengths, angles, node_mask, edge_mask)
-        
+            loss, loss_dict = lattice_compute_loss(args, eval_model, x, h, lengths, angles, node_mask, edge_mask)
+            loss = loss.mean().item()
+            epoch_loss += loss
             # standard nll from forward KL
 
             if i % args.n_report_steps == 0:
                 print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, ", end='')
                 print(f"lattice_loss: {loss_dict['lattice_loss'].mean():.3f}", end='\n')
     
-    return loss_dict['lattice_loss'].mean().item()
+    return epoch_loss / n_iterations
 
 
 def lattice_compute_loss(args, model_dp, x, h, true_lengths, true_angles, node_mask, edge_mask):

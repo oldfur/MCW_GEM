@@ -248,15 +248,23 @@ def main(args):
             start_epoch = time.time()
             val_loss = lattice_val(args, dataloaders['val'], dataset_info, epoch, model_dp)
             print(f"Validate took {time.time() - start_epoch:.1f} seconds.")
+
         # 8 Save
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                print(f"New best model with val_loss {best_val_loss:.4f}.")
                 os.makedirs("lattice_checkpoints", exist_ok=True)
                 filename = f"lattice_checkpoints/epoch_{epoch}_val_loss_{val_loss:.4f}.pth"
                 torch.save(model.state_dict(), filename)
                 print(f"Saved best model to {filename}.")
-
         
+
+        # 9 optional: load model
+        # model = MyModel()
+        # model.load_state_dict(torch.load("best_model.pth"))
+        # model.eval()
+
+
 
 if __name__ == '__main__':
     # Parse arguments
