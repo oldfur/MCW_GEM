@@ -144,7 +144,7 @@ def train_epoch_pure_x(args, model, model_dp, model_ema, ema, dataloader, datase
                     # f"RegTerm: {reg_term.item():.1f}, "
                     f"GradNorm: {grad_norm:.1f}, "
                     f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
-                    end = '')
+                    end = '\n')
             else:  # BFN
                 print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
                     f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "

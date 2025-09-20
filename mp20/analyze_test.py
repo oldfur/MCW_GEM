@@ -519,8 +519,8 @@ def test_pure_x(args, loader, info, epoch, eval_model, property_norms, nodes_dis
             nll_epoch += nll.item() * batch_size
             n_samples += batch_size
             if i % args.n_report_steps == 0:
-                print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
-                      f"NLL: {nll_epoch/n_samples:.2f}")
+                print(f"\r {partition} NLL epoch: {epoch}, iter: {i}/{n_iterations}, "
+                      f"NLL: {nll_epoch/n_samples:.2f}", end='\n')
                 print(f"error: {loss_dict['error'].mean().item():.3f}, "
                       f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
                       f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
