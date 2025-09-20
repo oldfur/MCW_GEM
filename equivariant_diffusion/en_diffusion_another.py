@@ -441,7 +441,7 @@ class EnVariationalDiffusion_another(torch.nn.Module):
                 net_out, lengths, angles = self.dynamics._forward(t, x, node_mask, edge_mask, context, t2=t2, mask_y=mask_y)
             else:
                 print("relay_sampling t: ", t)
-                assert isinstance(self.second_dynamics, EGNN_MP20_another.EGNN_dynamics_MP20_another), \
+                assert isinstance(self.second_dynamics, EGNN_MP20_another2.EGNN_dynamics_MP20_another2), \
                     "second_dynamics should be an instance of models.EGNN_dynamics_MP20"
                 net_out, lengths, angles = self.second_dynamics._forward(t, x, node_mask, edge_mask, context, t2=t2, mask_y=mask_y)
 

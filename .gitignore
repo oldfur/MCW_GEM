@@ -6,3 +6,4 @@ wandb/
 *.pyc
 .vscode/
 __pycache__/
+lattice_checkpoints/

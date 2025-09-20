@@ -19,7 +19,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                  n_dims, hidden_nf=64, device='cpu',
                  act_fn=torch.nn.SiLU(), n_layers=4, attention=False,
                  condition_time=True, tanh=False, mode='egnn_dynamics', norm_constant=0,
-                 inv_sublayers=2, sin_embedding=False, normalization_factor=100, aggregation_method='sum', condition_decoupling=False,
+                 inv_sublayers=2, sin_embedding=False, normalization_factor=100, 
+                 aggregation_method='sum', condition_decoupling=False,
                  uni_diffusion=False, use_basis=False, decoupling=False, 
                  freeze_gradient=False, # if freeze_gradient, the gradient of property prediciton don't influence the generation model
                  atom_type_pred = False, # if atom_type_pred, the model will predict the atom type, even under the DGAP mode
@@ -65,7 +66,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
                 inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
                 normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, context_basis_dim=context_basis_dim)
+                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, 
+                context_basis_dim=context_basis_dim)
 
             if self.decoupling:
                 self.egnn2 = EGNN(
@@ -74,7 +76,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                     n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
                     inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
                     normalization_factor=normalization_factor,
-                    aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, context_basis_dim=context_basis_dim)
+                    aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, 
+                    context_basis_dim=context_basis_dim)
             
             
             self.in_node_nf = in_node_nf
@@ -163,7 +166,9 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                     n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
                     inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
                     normalization_factor=normalization_factor,
-                    aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, context_basis_dim=context_basis_dim, branch_layers_num=branch_layers_num, condition=context_node_nf, bfn_schedule=bfn_schedule, 
+                    aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, 
+                    context_basis_dim=context_basis_dim, branch_layers_num=branch_layers_num, 
+                    condition=context_node_nf, bfn_schedule=bfn_schedule, 
                     prediction_threshold_t=kwargs.get('prediction_threshold_t', 10),
                     sample_steps=kwargs.get('sample_steps', 1000))
             
@@ -197,6 +202,11 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 nn.SiLU(),
                 nn.Linear(hidden_nf, hidden_nf),
             )
+            self.lattice_h_embed = nn.Sequential(
+                nn.Linear(in_node_nf, hidden_nf),
+                nn.SiLU(),
+                nn.Linear(hidden_nf, hidden_nf),
+            )
             self.lattice_mlp = nn.Sequential(
                 nn.Linear(hidden_nf * 2, hidden_nf),
                 nn.SiLU(),
@@ -210,7 +220,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 self.node_dec2 = nn.Sequential(
                     nn.Linear(hidden_nf, hidden_nf),
                     act_fn,
-                    nn.Linear(hidden_nf,  in_node_nf + context_node_nf), # in_node_nf = 6 contains time; context_node_nf: conditional generation
+                    nn.Linear(hidden_nf,  in_node_nf + context_node_nf), 
+                    # in_node_nf = 6 contains time; context_node_nf: conditional generation
                 ) # for atom prediction 
             
             if self.bond_pred:
@@ -231,6 +242,20 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 act_fn,
                 nn.Linear(hidden_nf,  pred_dim),
             )
+
+            self.lattice_egnn = EGNN(
+                in_node_nf=in_node_nf + context_node_nf, in_edge_nf=1,
+                hidden_nf=hidden_nf, device=device, act_fn=act_fn,
+                n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
+                inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
+                normalization_factor=normalization_factor,
+                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, 
+                context_basis_dim=context_basis_dim, branch_layers_num=branch_layers_num, 
+                condition=context_node_nf, bfn_schedule=bfn_schedule, 
+                prediction_threshold_t=kwargs.get('prediction_threshold_t', 10),
+                sample_steps=kwargs.get('sample_steps', 1000)
+                )
+            
         elif mode == "PAT":
             '''
             PAT = DGAP - graph_dec
@@ -253,7 +278,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 n_layers=n_layers, attention=attention, tanh=tanh, norm_constant=norm_constant,
                 inv_sublayers=inv_sublayers, sin_embedding=sin_embedding,
                 normalization_factor=normalization_factor,
-                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, context_basis_dim=context_basis_dim)
+                aggregation_method=aggregation_method, condition_decoupling=condition_decoupling, 
+                context_basis_dim=context_basis_dim)
             #7 0 3
             #in_node_nf: 7 = 5 + 1 + 1(one-hot + charges + time)
             self.node_dec = nn.Sequential(
@@ -359,10 +385,12 @@ class EGNN_dynamics_MP20_another2(nn.Module):
         
         
         if self.use_basis:
-            h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, context_basis=context_basis)
+            h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, 
+                                                edge_mask=edge_mask, context_basis=context_basis)
         else:
             # print("h_shape: ", h.shape)
-            h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
+            h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, 
+                                                edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
                 
         if self.decoupling:
             _, _, org_h = self.egnn2(h, x, edges, node_mask=node_mask, edge_mask=edge_mask)
@@ -493,7 +521,9 @@ class EGNN_dynamics_MP20_another2(nn.Module):
             context = context.view(bs*n_nodes, self.context_node_nf)
             h = torch.cat([h, context], dim=1)
         
-        h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes) # TODO, org_h maybe used for the property prediction
+        h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, 
+                                            edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes) 
+        # TODO, org_h maybe used for the property prediction
         
         if self.property_pred:
             node_dec = self.node_dec(org_h)
@@ -579,7 +609,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
         #     assert h_dims == 6, "h_dims should be 6"
         if h_dims == 0:
             if self.atom_type_pred:
-                h = torch.ones(bs*n_nodes, self.in_node_nf - 1).to(self.device) # erase the time, self in_node_nf contains the time
+                h = torch.ones(bs*n_nodes, self.in_node_nf - 1).to(self.device) 
+                # erase the time, self in_node_nf contains the time
                 h = h * node_mask
                 xh = torch.cat([x, h], dim=1)
             else:
@@ -646,7 +677,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
             通过 EGNN 模型处理图结构数据，更新节点特征和坐标，并在单一扩散模型的情况下生成属性预测值
             """
             if self.use_basis:
-                h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, context_basis=context_basis)
+                h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, 
+                                                    edge_mask=edge_mask, context_basis=context_basis)
                 """
                 输入:
                     h: 初始的节点特征。
@@ -733,7 +765,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
             # print('batch')
         elif self.mode == "DGAP":
             if self.use_basis:
-                h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, context_basis=context_basis)
+                h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, 
+                                                    edge_mask=edge_mask, context_basis=context_basis)
             else:
                 if self.use_get:
                     node_mask_b = node_mask.reshape(bs, n_nodes)
@@ -753,7 +786,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                         batch_lst.append(current_lst)
                     batch = torch.cat(batch_lst).to(pos.device)
                     if self.bond_pred:
-                        xo, vo, z, pos, batch, edge_feat_knn, edge_index_knn = self.egnn(z, pos, batch=batch, half_batch_num=half_batch_num)
+                        xo, vo, z, pos, batch, edge_feat_knn, edge_index_knn = \
+                            self.egnn(z, pos, batch=batch, half_batch_num=half_batch_num)
                     else:
                         xo, vo, z, pos, batch = self.egnn(z, pos, batch=batch, half_batch_num=half_batch_num)
                     noise_pred = self.noise_out.pre_reduce(xo, vo, z, pos, batch)
@@ -764,8 +798,8 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                     vel = torch.zeros_like(x)
                     vel[node_mask.squeeze().to(torch.bool)] = noise_pred
                 else:
-                    h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
-                
+                    h_final, x_final, org_h = self.egnn(h, x, edges, node_mask=node_mask, edge_mask=edge_mask, 
+                                                        batch_size=bs, n_nodes=n_nodes)
                 
                 
                 
@@ -802,9 +836,9 @@ class EGNN_dynamics_MP20_another2(nn.Module):
                 pred = pred.squeeze(1)
             
             # lattice prediction
-            # lx_final, lh_final = x_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1), \
-            #     h_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1)
-            lx_final, lh_final = x_final.view(bs*n_nodes, -1), h_final.view(bs*n_nodes, -1)
+            lx_final, lh_final = x_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1), \
+                h_final.clone().detach().requires_grad_(True).view(bs*n_nodes, -1)
+            # lx_final, lh_final = x_final.view(bs*n_nodes, -1), h_final.view(bs*n_nodes, -1)
             lh_final = lh_final[:, :self.in_node_nf - 1] # remove time
             lattice_input = torch.cat([self.x_embed(lx_final), 
                                     self.h_embed(lh_final)], dim=1) # (bs*n_nodes, hidden*2)
@@ -875,3 +909,42 @@ class EGNN_dynamics_MP20_another2(nn.Module):
         else:
             self._edges_dict[n_nodes] = {}
             return self.get_adj_matrix(n_nodes, batch_size, device)
+        
+    def lattice_pred(self, xh, node_mask, edge_mask):
+        bs, n_nodes, _ = xh.shape
+        edges = self.get_adj_matrix(n_nodes, bs, self.device)
+        edges = [x.to(self.device) for x in edges]
+        node_mask = node_mask.view(bs*n_nodes, 1)
+        edge_mask = edge_mask.view(bs*n_nodes*n_nodes, 1)
+        xh = xh.view(bs*n_nodes, -1).clone() * node_mask
+        x = xh[:, 0:self.n_dims].clone()
+        h = xh[:, self.n_dims:].clone()
+
+        h_final, x_final, org_h = self.lattice_egnn(h, x, edges, node_mask=node_mask, 
+                                            edge_mask=edge_mask, batch_size=bs, n_nodes=n_nodes)
+            
+        h_final = self.node_dec2(org_h)
+        h_final = h_final.view(bs*n_nodes, -1)
+                
+        # lattice prediction
+        lx_final, lh_final = x_final.view(bs*n_nodes, -1), h_final.view(bs*n_nodes, -1)
+        lattice_input = torch.cat([self.x_embed(lx_final), 
+                                self.lattice_h_embed(lh_final)], dim=1) # (bs * n_nodes, hidden * 2)
+        lattice_input = lattice_input.view(bs, n_nodes, self.hidden_nf * 2) * node_mask.view(bs, n_nodes, 1)
+        lattice_dec = torch.mean(lattice_input, dim=1) # (bs, 2* hidden)
+        out = self.lattice_mlp(lattice_dec)  # (bs,6)
+        lengths = F.softplus(out[:, :3])  # >0
+        angles = torch.sigmoid(out[:, 3:]) * 180.0  # (0,180)
+            
+        return lengths, angles
+    
+    def compute_lattice_loss(self, pred_lengths, pred_angles, true_lengths, true_angles):
+        '''
+        pred_lengths: (bs, 3)
+        pred_angles: (bs, 3)
+        true_lengths: (bs, 3)
+        true_angles: (bs, 3)
+        '''
+        length_loss = F.mse_loss(pred_lengths, true_lengths)
+        angle_loss = F.mse_loss(pred_angles, true_angles)
+        return length_loss + angle_loss
