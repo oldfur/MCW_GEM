@@ -1178,12 +1178,13 @@ class EnVariationalDiffusion_concat(torch.nn.Module):
         lattice_loss_mask = (t_int <= self.prediction_threshold_t).float() # [B, 1]] 
         lattice_loss_mask = lattice_loss_mask.squeeze(1) # [B]
         lattice_loss = self.lambda_l * loss_l2(l_mean, lengths) + \
-            self.lambda_a * loss_l2(a_mean, angles)
-        lattice_loss = lattice_loss.sum(dim=1)
+            self.lambda_a * loss_l2(a_mean, angles)  # [B, 3]
+        lattice_loss = lattice_loss.sum(dim=1)  # [B]
         if lattice_loss_mask.sum() > 0:
             lattice_loss = lattice_loss * lattice_loss_mask
         else:
             lattice_loss = torch.zeros_like(lattice_loss, device=lattice_loss.device)
+        
         loss_dict['lattice_loss'] = lattice_loss
         loss += lattice_loss
 

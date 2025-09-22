@@ -173,16 +173,14 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                     f"charge_loss: {loss_dict['charge_loss'].mean().item():.3f}, "
                     f"GradNorm: {grad_norm:.1f}", end='' if args.property_pred or args.model == "PAT" else '\n')
             if 'lattice_loss' in loss_dict:
-                print(f", lattice_loss: {loss_dict['lattice_loss'].mean():.3f}", end='\n')
-            if args.bond_pred:
-                print(f", bond_loss: {loss_dict['bond_loss'].mean():.3f}", end='')
+                print(f", lattice_loss: {loss_dict['lattice_loss'].mean():.3f}", end='')
+            if 'atom_type_loss' in loss_dict:
+                print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
             if args.property_pred:
                 if not isinstance(loss_dict['pred_loss'], int):
                     print(f", pred_loss: {loss_dict['pred_loss'].mean():.3f}", end='')
                 print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
-            if args.model == "PAT":
-                print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='')
-                print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
+                
         nll_epoch.append(nll.item())
 
  
