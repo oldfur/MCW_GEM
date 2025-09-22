@@ -83,11 +83,10 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
         # charges = charges[i][mask].detach().cpu().numpy()
 
-        if i <=3:
-            pass
+        if i <= 5:
             # print("sampled frac_coords:", frac_coords)
-            # print("sampled lengths:", length[i])
-            # print("sampled angles:", angle[i])
+            print("sampled lengths:", length[i])
+            print("sampled angles:", angle[i])
             # print("sampled atom types:", atom_types)
 
         mp20_evaluator.append_pred_array(

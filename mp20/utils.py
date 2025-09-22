@@ -234,7 +234,7 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     bs, n_nodes, n_dims = x.size()
 
     if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new' \
-        or args.probabilistic_model == 'diffusion_another':
+        or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_concat':
         
         edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
         assert_correctly_masked(x, node_mask)

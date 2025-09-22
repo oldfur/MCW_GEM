@@ -143,12 +143,10 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
         try:
             loss.backward()
-
             if args.clip_grad:
                 grad_norm = utils.gradient_clipping(model, gradnorm_queue)
             else:
                 grad_norm = 0.
-
         except Exception as e:
             grad_norm = 0.
             print('Error in backward pass(may occure loss zero), skipping batch')
