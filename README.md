@@ -106,6 +106,16 @@ CUDA_VISIBLE_DEVICES=0 python main_mp20.py --exp_name train_mp20 --n_epochs 300 
 
 ## CrystalGRW 运行
 
+![CrystalGRM-GPT](CrystalGRM架构.png){: style="display:block; margin:0 auto;" width=50%}
+
 ```
 export PYTHONPATH=./src
+python scripts/train.py --config_path conf/mp20_condition.yaml --output_path output_dir --ddp False
+```
+
+
+## debug diffusion_transformer
+
+```
+python main_mp20.py --device cpu --no-cuda --exp_name debug_mp20 --n_epochs 2 --batch_size 2  --test_epochs 1 --visulaize_epoch 1 --wandb_usr maochenwei-ustc --no_wandb --model DGAP  --atom_type_pred 1 --visualize_every_batch 10000 --num_train 100  --num_val 100 --num_test 100 --lambda_l 1.0 --lambda_a 1.0 --frac_coords_mode 1 --probabilistic_model diffusion_transformer --include_charges False
 ```

@@ -73,11 +73,11 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
         mask = node_mask[i].squeeze(-1).bool()
 
         if args.frac_coords_mode:
-            frac_coords = frac_coords[i][mask].detach().cpu().numpy()
-            x_valid = frac_to_cart(frac_coords, lattice)
+            frac_coords_valid = frac_coords[i][mask].detach().cpu().numpy()
+            x_valid = frac_to_cart(frac_coords_valid, lattice)
         else: 
             x_valid = x[i][mask].detach().cpu().numpy()
-            frac_coords = cart_to_frac(x_valid, lattice)
+            frac_coords_valid = cart_to_frac(x_valid, lattice)
 
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
@@ -93,7 +93,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
                 {
                     "atom_types": atom_types,
                     "pos": x_valid,
-                    "frac_coords": frac_coords,
+                    "frac_coords": frac_coords_valid,
                     "lengths": length[i],
                     "angles": angle[i],
                     "sample_idx": f"epoch_{epoch}_sample_{i}"
@@ -448,20 +448,37 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
             nll_epoch += nll.item() * batch_size
             n_samples += batch_size
             if i % args.n_report_steps == 0:
-                print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
-                      f"NLL: {nll_epoch/n_samples:.2f}")
-                print(f"error: {loss_dict['error'].mean().item():.3f}, ", end='')
-                if 'lattice_loss' in loss_dict:
-                    print(f"lattice_loss: {loss_dict['lattice_loss'].mean().item():.3f}, ", end='')
-                print(f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
-                      f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
-                      f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
-                      f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
-                      f"loss: {loss_dict['loss'].mean().item():.3f}, ",
-                      f"loss_t: {loss_dict['loss_t'].mean().item():.3f}, "
-                      f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}, ",
-                      f"atom_type_loss: {loss_dict['atom_type_loss'].mean().item():.3f}"
-                      )
+                if args.probabilistic_model == 'diffusion_transformer':
+                    if 'total_error' in loss_dict:
+                        print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
+                              f"NLL: {nll_epoch/n_samples:.2f}", end='')
+                        print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}, " 
+                              f"denoise l: {loss_dict['l_error'].mean().item():.3f}, "
+                              f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
+                              f"total xla denoise: {loss_dict['total_error'].mean().item():.3f}", 
+                              end = '')
+                    if 'atom_type_loss' in loss_dict:
+                        print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                    if args.property_pred:
+                        if not isinstance(loss_dict['pred_loss'], int):
+                            print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
+                        print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
+
+                else: # other models
+                    print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
+                        f"NLL: {nll_epoch/n_samples:.2f}")
+                    print(f"error: {loss_dict['error'].mean().item():.3f}, ", end='')
+                    if 'lattice_loss' in loss_dict:
+                        print(f"lattice_loss: {loss_dict['lattice_loss'].mean().item():.3f}, ", end='')
+                    print(f"kl_prior: {loss_dict['kl_prior'].mean().item():.3f}, "
+                        f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
+                        f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
+                        f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
+                        f"loss: {loss_dict['loss'].mean().item():.3f}, ",
+                        f"loss_t: {loss_dict['loss_t'].mean().item():.3f}, "
+                        f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}, ",
+                        f"atom_type_loss: {loss_dict['atom_type_loss'].mean().item():.3f}"
+                        )
 
     return nll_epoch/n_samples
  

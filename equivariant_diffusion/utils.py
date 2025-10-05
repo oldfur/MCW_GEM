@@ -116,6 +116,13 @@ def sample_center_gravity_zero_gaussian_with_mask(size, device, node_mask):
     return x_projected
 
 
+def sample_frac_gaussian_with_mask(size, device, node_mask):
+    assert len(size) == 3
+    x = torch.randn(size, device=device)
+    x_masked = x * node_mask
+    return x_masked
+
+
 def standard_gaussian_log_likelihood(x):
     # Normalizing constant and logpx are computed:
     log_px = sum_except_batch(-0.5 * x * x - 0.5 * np.log(2*np.pi))

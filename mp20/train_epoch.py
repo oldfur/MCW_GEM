@@ -17,6 +17,7 @@ def check_mask_correct(variables, node_mask):
             assert_correctly_masked(variable, node_mask)
 
 
+
 def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info, property_norms, 
                 nodes_dist, gradnorm_queue, optim, epoch, prop_dist):
     # model_dp.train()
@@ -110,7 +111,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
         # 只需坐标、晶胞长度、角度，就可以计算晶体结构的loss
         # print(x.shape, h['categorical'].shape, h['integer'].shape, lengths.shape, angles.shape)
-        if args.frac_coords_mode:
+        if args.frac_coords_mode or args.probabilistic_model == 'diffusion_transformer':
             # print("using frac_coords to compute loss")
             nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
                                                                 frac_coords, h, lengths, angles, node_mask, edge_mask, context,
@@ -119,27 +120,41 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
                                                                 x, h, lengths, angles, node_mask, edge_mask, context,
                                                                 property_label=property_label, bond_info=bond_info)
-        
-        if 'error' in loss_dict:
-            wandb.log({"denoise_coords_l_a": loss_dict['error'].mean().item()}, commit=True)
-        if 'lattice_loss' in loss_dict:
-            wandb.log({"lattice_loss": loss_dict['lattice_loss'].mean().item()}, commit=True)
-        if 'pred_loss' in loss_dict:
-            if isinstance(loss_dict['pred_loss'], torch.Tensor):
-                wandb.log({"pred_loss": loss_dict['pred_loss'].mean().item(), "pred_rate": loss_dict['pred_rate'].mean().item()}, commit=True)
-        if 'atom_type_loss' in loss_dict:
-            wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
-        if 'posloss' in loss_dict:
-            wandb.log({"posloss": loss_dict['posloss'].mean().item()}, commit=True)
-        if 'charge_loss' in loss_dict:
-            wandb.log({"charge_loss": loss_dict['charge_loss'].mean().item()}, commit=True)
-        if 'bond_loss' in loss_dict:
-            wandb.log({"bond_loss": loss_dict['bond_loss'].mean().item()}, commit=True)
-            nll += loss_dict['bond_loss'].mean()
 
-        # standard nll from forward KL
-        loss = nll + args.ode_regularization * reg_term
-        # loss.backward()
+        if args.probabilistic_model == 'diffusion_transformer':    
+            if 'x_error' in loss_dict:
+                wandb.log({"denoise_coords": loss_dict['x_error'].mean().item()}, commit=True)
+            if 'l_error' in loss_dict:
+                wandb.log({"denoise_lengths": loss_dict['l_error'].mean().item()}, commit=True)
+            if 'a_error' in loss_dict:
+                wandb.log({"denoise_angles": loss_dict['a_error'].mean().item()}, commit=True)
+            if 'atom_type_loss' in loss_dict:
+                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)    
+        else:
+            if 'error' in loss_dict:
+                wandb.log({"denoise_coords_l_a": loss_dict['error'].mean().item()}, commit=True)
+            if 'lattice_loss' in loss_dict:
+                wandb.log({"lattice_loss": loss_dict['lattice_loss'].mean().item()}, commit=True)
+            if 'pred_loss' in loss_dict:
+                if isinstance(loss_dict['pred_loss'], torch.Tensor):
+                    wandb.log({"pred_loss": loss_dict['pred_loss'].mean().item(), "pred_rate": loss_dict['pred_rate'].mean().item()}, commit=True)
+            if 'atom_type_loss' in loss_dict:
+                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
+            if 'posloss' in loss_dict:
+                wandb.log({"posloss": loss_dict['posloss'].mean().item()}, commit=True)
+            if 'charge_loss' in loss_dict:
+                wandb.log({"charge_loss": loss_dict['charge_loss'].mean().item()}, commit=True)
+            if 'bond_loss' in loss_dict:
+                wandb.log({"bond_loss": loss_dict['bond_loss'].mean().item()}, commit=True)
+                nll += loss_dict['bond_loss'].mean()
+
+
+        ##################################################
+    
+        loss = nll + args.ode_regularization * reg_term # standard nll from forward KL
+        
+        ##################################################
+
 
         try:
             loss.backward()
@@ -158,28 +173,46 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             ema.update_model_average(model_ema, model)
 
         if i % args.n_report_steps == 0:
-            if 'error' in loss_dict:
-                print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                    f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                    # f"RegTerm: {reg_term.item():.1f}, "
-                    f"GradNorm: {grad_norm:.1f}, "
-                    f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
-                    end = '')
-            else:  # BFN
-                print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
-                    f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
-                    # f"RegTerm: {reg_term.item():.1f}, "
-                    f"posloss: {loss_dict['posloss'].mean().item():.3f}, "
-                    f"charge_loss: {loss_dict['charge_loss'].mean().item():.3f}, "
-                    f"GradNorm: {grad_norm:.1f}", end='' if args.property_pred or args.model == "PAT" else '\n')
-            if 'lattice_loss' in loss_dict:
-                print(f", lattice_loss: {loss_dict['lattice_loss'].mean():.3f}", end='')
-            if 'atom_type_loss' in loss_dict:
-                print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
-            if args.property_pred:
-                if not isinstance(loss_dict['pred_loss'], int):
-                    print(f", pred_loss: {loss_dict['pred_loss'].mean():.3f}", end='')
-                print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
+            if args.probabilistic_model == 'diffusion_transformer':
+                if 'total_error' in loss_dict:
+                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                        # f"RegTerm: {reg_term.item():.1f}, "
+                        f"GradNorm: {grad_norm:.1f}, "
+                        f"denoise x: {loss_dict['x_error'].mean().item():.3f}, "
+                        f"denoise l: {loss_dict['l_error'].mean().item():.3f}, "
+                        f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
+                        f"total xla denoise: {loss_dict['total_error'].mean().item():.3f}", 
+                        end = '')
+                if 'atom_type_loss' in loss_dict:
+                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                if args.property_pred:
+                    if not isinstance(loss_dict['pred_loss'], int):
+                        print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
+                    print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
+            else :
+                if 'error' in loss_dict:
+                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                        # f"RegTerm: {reg_term.item():.1f}, "
+                        f"GradNorm: {grad_norm:.1f}, "
+                        f"denoise x: {loss_dict['error'].mean().item():.3f} ", 
+                        end = '')
+                else:  # BFN
+                    print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                        # f"RegTerm: {reg_term.item():.1f}, "
+                        f"posloss: {loss_dict['posloss'].mean().item():.3f}, "
+                        f"charge_loss: {loss_dict['charge_loss'].mean().item():.3f}, "
+                        f"GradNorm: {grad_norm:.1f}", end='' if args.property_pred or args.model == "PAT" else '\n')
+                if 'lattice_loss' in loss_dict:
+                    print(f", lattice_loss: {loss_dict['lattice_loss'].mean():.3f}", end='')
+                if 'atom_type_loss' in loss_dict:
+                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                if args.property_pred:
+                    if not isinstance(loss_dict['pred_loss'], int):
+                        print(f", pred_loss: {loss_dict['pred_loss'].mean():.3f}", end='')
+                    print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
                 
         nll_epoch.append(nll.item())
 
@@ -195,23 +228,13 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                 one_hot, charges, x, length, angle = save_and_sample_conditional(args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
                 # print(f"one_hot: {one_hot.shape}, charges: {charges.shape}, x: {x.shape}, length: {length.shape}, angle: {angle.shape}")
                 """
-                打印结果(10个样本 20个原子 88种原子类型):
                 one_hot: torch.Size([10, 20, 88]), charges: torch.Size([10, 20, 1]), x: torch.Size([10, 20, 3]), 
                 length: torch.Size([10, 3]), angle: torch.Size([10, 3])
                 """
 
-            # save_and_sample_chain(model_ema, args, device, dataset_info, prop_dist, epoch=epoch,
-            #                       batch_id=str(i))
-            # chain用来可视化，目前暂时不用
             sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
                                             prop_dist, n_samples=args.n_samples, epoch=epoch, batch_size=args.batch_size, batch_id=str(i))
             print(f'Sampling took {time.time() - start:.2f} seconds')
-
-            # vis.visualize(f"outputs/{args.exp_name}/epoch_{epoch}_{i}", dataset_info=dataset_info, wandb=wandb)
-            # vis.visualize_chain(f"outputs/{args.exp_name}/epoch_{epoch}_{i}/chain/", dataset_info, wandb=wandb)
-            # if len(args.conditioning) > 0 and not args.uni_diffusion:
-            #     vis.visualize_chain("outputs/%s/epoch_%d/conditional/" % (args.exp_name, epoch), dataset_info,
-            #                         wandb=wandb, mode='conditional')
 
         wandb.log({"Batch NLL": nll.item()}, commit=True)
         if args.break_train_epoch:
@@ -219,15 +242,12 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
     wandb.log({"Train Epoch NLL": np.mean(nll_epoch)}, commit=False)
 
 
+
 def save_and_sample_conditional(args, device, model, prop_dist, dataset_info, epoch=0, id_from=0):
     if args.property_pred:
         one_hot, charges, x, node_mask, pred, length, angle = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
     else:
         one_hot, charges, x, node_mask, length, angle = sample_sweep_conditional(args, device, model, dataset_info, prop_dist)
-    ## Save the sampled data
-    # vis.save_xyz_file(
-    #     'outputs/%s/epoch_%d/conditional/' % (args.exp_name, epoch), one_hot, charges, x, dataset_info,
-    #     id_from, name='conditional', node_mask=node_mask)
 
     return one_hot, charges, x, length, angle
 
@@ -268,8 +288,6 @@ def sample_different_sizes_and_save(model, nodes_dist, args, device, dataset_inf
             h = theta_traj[i][1].cpu()
             one_hot.append(charge_decode(h, dataset_info))
     
-    # 需要：分数坐标、晶胞长度、角度、样本索引、原子类型
-    # 根据欧式空间的3D坐标x，晶胞长度lengths，晶胞角度angles，可以计算出分数坐标frac_coords
     length = length.detach().cpu().numpy()
     angle = angle.detach().cpu().numpy()
 

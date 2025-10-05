@@ -234,7 +234,8 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     bs, n_nodes, n_dims = x.size()
 
     if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new' \
-        or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_concat':
+        or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_concat' \
+        or args.probabilistic_model == 'diffusion_transformer':
         
         edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
         assert_correctly_masked(x, node_mask)
@@ -243,7 +244,6 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
         
         if uni_diffusion:
             nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator)
-            # 默认的loss_dict是一个字典里面有很多个loss,此处调用了forward函数
         else:
             nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
                                               expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
@@ -277,7 +277,8 @@ def compute_loss_and_nll_pure_x(args, generative_model, nodes_dist, x, h,
     bs, n_nodes, n_dims = x.size()
 
     if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new' \
-        or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_pure_x':
+        or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_pure_x'\
+        or args.probabilistic_model == 'diffusion_transformer':
         
         edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
         assert_correctly_masked(x, node_mask)
