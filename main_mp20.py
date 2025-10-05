@@ -207,6 +207,7 @@ def main(args):
     # 5 Initialize EMA if enabled
     if args.ema_decay > 0:
         model_ema = copy.deepcopy(model)
+        model_ema = model_ema.to(args.device)
         ema = flow_utils.EMA(args.ema_decay)
         if args.dp and torch.cuda.device_count() > 1:
             model_ema_dp = torch.nn.DataParallel(model_ema)
