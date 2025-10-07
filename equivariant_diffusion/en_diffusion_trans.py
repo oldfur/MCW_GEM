@@ -1577,11 +1577,26 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         
         return new_context, mae
 
-    def forward(self, x, h, lengths, angles, node_mask=None, edge_mask=None, context=None, 
-                mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+    # def forward(self, x, h, lengths, angles, node_mask=None, edge_mask=None, context=None, 
+    #             mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+    def forward(self, *args, **kwargs):
         """
         Computes the loss (type l2 or NLL) if training. And if eval then always computes NLL.
         """
+        ################################################################
+        # 如果 DataParallel 传进来的是一个 tuple/list
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            args = args[0]
+        # 解包参数
+        x, h, lengths, angles, node_mask, edge_mask, context = args[:7]
+
+        mask_indicator = kwargs.get("mask_indicator", None)
+        expand_diff = kwargs.get("expand_diff", False)
+        property_label = kwargs.get("property_label", None)
+        bond_info = kwargs.get("bond_info", None)
+
+        ################################################################
+
         if self.property_pred:
             assert property_label is not None, "property_label should not be None in training"
         

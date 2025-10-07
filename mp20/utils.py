@@ -242,11 +242,17 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
         # Here x is a position tensor, and h is a dictionary with keys
         # 'categorical' and 'integer'.
         
-        if uni_diffusion:
-            nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator)
-        else:
-            nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
-                                              expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
+        inputs = (x, h, lengths, angles, node_mask, edge_mask, context)
+        nll, loss_dict = generative_model(
+            *inputs,
+            mask_indicator=mask_indicator,
+            expand_diff=args.expand_diff,
+            property_label=property_label,
+            bond_info=bond_info
+        )
+
+        # nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
+        #                                     expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
 
         if args.bfn_schedule:
             return nll, torch.tensor([0], device=nll.device), torch.tensor([0], device=nll.device), loss_dict

@@ -152,7 +152,11 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         ##################################################
     
         loss = nll + args.ode_regularization * reg_term # standard nll from forward KL
-        
+
+        if torch.isnan(loss):
+            print("Detected NaN in loss, skipping batch")
+            continue
+
         ##################################################
 
 
