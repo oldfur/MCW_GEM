@@ -104,19 +104,20 @@ def gaussian_KL(q_mu, q_sigma, p_mu, p_sigma, node_mask):
 
 
 def gaussian_KL_for_dimension(q_mu, q_sigma, p_mu, p_sigma, d):
-    """Computes the KL distance between two normal distributions.
-
-        Args:
-            q_mu: Mean of distribution q.
-            q_sigma: Standard deviation of distribution q.
-            p_mu: Mean of distribution p.
-            p_sigma: Standard deviation of distribution p.
-        Returns:
-            The KL distance, summed over all dimensions except the batch dim.
-        """
+    """Computes the KL distance between two normal distributions."""
     mu_norm2 = sum_except_batch((q_mu - p_mu)**2)
-    assert len(q_sigma.size()) == 1 , print("q_sigma.shape: ", q_sigma.shape)
-    assert len(p_sigma.size()) == 1 , print("p_sigma.shape: ", p_sigma.shape)
+
+    # [安全修复] 保证 q_sigma/p_sigma 至少为 1D
+    if q_sigma.dim() == 0:
+        q_sigma = q_sigma.unsqueeze(0)
+    elif q_sigma.dim() > 1:
+        q_sigma = q_sigma.view(-1)
+
+    if p_sigma.dim() == 0:
+        p_sigma = p_sigma.unsqueeze(0)
+    elif p_sigma.dim() > 1:
+        p_sigma = p_sigma.view(-1)
+
     return d * torch.log(p_sigma / q_sigma) + 0.5 * (d * q_sigma**2 + mu_norm2) / (p_sigma**2) - 0.5 * d
 
 
@@ -651,11 +652,15 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         alpha_T = self.alpha(gamma_T, xh)
         mu_T = alpha_T * xh
         mu_T_x, mu_T_h = mu_T[:, :, :self.n_dims], mu_T[:, :, self.n_dims:]
-        sigma_T_x = self.sigma(gamma_T, mu_T_x).squeeze()
+        sigma_T_x = self.sigma(gamma_T, mu_T_x)
+        if sigma_T_x.dim() > 1:
+            sigma_T_x = sigma_T_x.squeeze(-1)  # 只去掉最后一维，不会消除 batch 维
         sigma_T_h = self.sigma(gamma_T, mu_T_h)
         zeros, ones_tensor = torch.zeros_like(mu_T_h), torch.ones_like(sigma_T_h)
         kl_distance_h = gaussian_KL(mu_T_h, sigma_T_h, zeros, ones_tensor, node_mask)
-        zeros, ones_tensor = torch.zeros_like(mu_T_x), torch.ones_like(sigma_T_x)
+        zeros = torch.zeros_like(mu_T_x)
+        ones_tensor = torch.ones_like(mu_T_x)
+        sigma_T_x = sigma_T_x.view(-1)  # 展平维度，兼容 KL 函数
         subspace_d = self.subspace_dimensionality(node_mask)
         kl_distance_x = gaussian_KL_for_dimension(mu_T_x, sigma_T_x, zeros, ones_tensor, d=subspace_d)
         
