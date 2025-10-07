@@ -173,7 +173,8 @@ class CoefficientMappingModule(torch.nn.Module):
             length = 2 * l + 1
             rescale_factor = math.sqrt(length / (2 * mmax + 1))
             rotate_inv_rescale[:, start_idx : (start_idx + length), start_idx : (start_idx + length)] = rescale_factor
-        rotate_inv_rescale = rotate_inv_rescale[:, :, self.mask_indices_cache]        
+        device = rotate_inv_rescale.device
+        rotate_inv_rescale = rotate_inv_rescale[:, :, self.mask_indices_cache.to(device)]        
         self.rotate_inv_rescale_cache = rotate_inv_rescale
         return self.rotate_inv_rescale_cache
 
@@ -379,7 +380,8 @@ class SO3_Embedding():
                 x_res = self.embedding
             else:
                 x_res = self.embedding[:, offset : offset + num_coefficients].contiguous()
-            to_grid_mat = to_grid_mat_lmax[:, :, grid_mapping.coefficient_idx(self.lmax_list[i], self.lmax_list[i])]
+            device = to_grid_mat_lmax.device
+            to_grid_mat = to_grid_mat_lmax[:, :, grid_mapping.coefficient_idx(self.lmax_list[i], self.lmax_list[i]).to(device)]
             x_grid = torch.cat([x_grid, torch.einsum("bai, zic -> zbac", to_grid_mat, x_res)], dim=3)
             offset = offset + num_coefficients
 
@@ -397,7 +399,8 @@ class SO3_Embedding():
         offset = 0
         offset_channel = 0
         for i in range(self.num_resolutions):
-            from_grid_mat = from_grid_mat_lmax[:, :, grid_mapping.coefficient_idx(self.lmax_list[i], self.lmax_list[i])]
+            device = from_grid_mat_lmax.device
+            from_grid_mat = from_grid_mat_lmax[:, :, grid_mapping.coefficient_idx(self.lmax_list[i], self.lmax_list[i]).to(device)]
             if self.num_resolutions == 1:
                 temp = x_grid
             else:
