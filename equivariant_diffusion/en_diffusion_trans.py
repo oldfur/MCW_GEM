@@ -107,16 +107,11 @@ def gaussian_KL_for_dimension(q_mu, q_sigma, p_mu, p_sigma, d):
     """Computes the KL distance between two normal distributions."""
     mu_norm2 = sum_except_batch((q_mu - p_mu)**2)
 
-    # [安全修复] 保证 q_sigma/p_sigma 至少为 1D
     if q_sigma.dim() == 0:
         q_sigma = q_sigma.unsqueeze(0)
-    elif q_sigma.dim() > 1:
-        q_sigma = q_sigma.view(-1)
 
     if p_sigma.dim() == 0:
         p_sigma = p_sigma.unsqueeze(0)
-    elif p_sigma.dim() > 1:
-        p_sigma = p_sigma.view(-1)
 
     return d * torch.log(p_sigma / q_sigma) + 0.5 * (d * q_sigma**2 + mu_norm2) / (p_sigma**2) - 0.5 * d
 
@@ -658,9 +653,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         sigma_T_h = self.sigma(gamma_T, mu_T_h)
         zeros, ones_tensor = torch.zeros_like(mu_T_h), torch.ones_like(sigma_T_h)
         kl_distance_h = gaussian_KL(mu_T_h, sigma_T_h, zeros, ones_tensor, node_mask)
-        zeros = torch.zeros_like(mu_T_x)
-        ones_tensor = torch.ones_like(mu_T_x)
-        sigma_T_x = sigma_T_x.view(-1)  # 展平维度，兼容 KL 函数
+        zeros, ones_tensor = torch.zeros_like(mu_T_x), torch.ones_like(sigma_T_x)
         subspace_d = self.subspace_dimensionality(node_mask)
         kl_distance_x = gaussian_KL_for_dimension(mu_T_x, sigma_T_x, zeros, ones_tensor, d=subspace_d)
         
