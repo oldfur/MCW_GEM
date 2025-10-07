@@ -47,7 +47,10 @@ class CoefficientMappingModule(torch.nn.Module):
         self.num_resolutions = len(lmax_list)
 
 
-        self.device = next(self.parameters()).device
+        try:
+            self.device = next(self.parameters()).device
+        except StopIteration:
+            self.device = torch.device("cpu")
 
         
         # Compute the degree (l) and order (m) for each entry of the embedding
