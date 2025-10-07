@@ -46,8 +46,9 @@ class CoefficientMappingModule(torch.nn.Module):
         self.mmax_list = mmax_list
         self.num_resolutions = len(lmax_list)
 
-        # Temporarily use `cpu` as device and this will be overwritten.
-        self.device = 'cpu'
+
+        self.device = next(self.parameters()).device
+
         
         # Compute the degree (l) and order (m) for each entry of the embedding
         l_harmonic = torch.tensor([], device=self.device).long()
