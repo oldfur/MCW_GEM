@@ -451,11 +451,15 @@ class SO3_Rotation(torch.nn.Module):
     # Rotate the embedding by the inverse of the rotation matrix
     def rotate_inv(self, embedding, in_lmax, in_mmax):
         in_mask = self.mapping.coefficient_idx(in_lmax, in_mmax)
-        device = in_mask.device
-        self.wigner_inv = self.wigner_inv.to(device)
+
+        self.wigner_inv = self.wigner_inv.to(in_mask.device)    # dp
+
         wigner_inv = self.wigner_inv[:, :, in_mask]
         wigner_inv_rescale = self.mapping.get_rotate_inv_rescale(in_lmax, in_mmax)
         wigner_inv = wigner_inv * wigner_inv_rescale
+
+        wigner_inv = wigner_inv.to(embedding.device)    # dp
+
         return torch.bmm(wigner_inv, embedding)
 
 
