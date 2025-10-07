@@ -116,6 +116,7 @@ def gaussian_KL_for_dimension(q_mu, q_sigma, p_mu, p_sigma, d):
     return d * torch.log(p_sigma / q_sigma) + 0.5 * (d * q_sigma**2 + mu_norm2) / (p_sigma**2) - 0.5 * d
 
 
+
 class PositiveLinear(torch.nn.Module):
     """Linear layer with weights forced to be positive."""
 
@@ -648,10 +649,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         mu_T = alpha_T * xh
         mu_T_x, mu_T_h = mu_T[:, :, :self.n_dims], mu_T[:, :, self.n_dims:]
         sigma_T_x = self.sigma(gamma_T, mu_T_x)
-        print("sigma_T_x shape before squeeze: ", sigma_T_x.shape)
-        if sigma_T_x.dim() > 1:
-            sigma_T_x = sigma_T_x.squeeze(-1)  # 只去掉最后一维，不会消除 batch 维
-        print("sigma_T_x shape after squeeze: ", sigma_T_x.shape)
+        sigma_T_x = sigma_T_x.view(sigma_T_x.shape[0]) # [B]
         sigma_T_h = self.sigma(gamma_T, mu_T_h)
         zeros, ones_tensor = torch.zeros_like(mu_T_h), torch.ones_like(sigma_T_h)
         kl_distance_h = gaussian_KL(mu_T_h, sigma_T_h, zeros, ones_tensor, node_mask)
@@ -696,6 +694,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
             kl_distance_h = 0.0
 
         return kl_distance_x + kl_distance_h + kl_distance_length + kl_distance_angle
+
     
 
     def compute_x_pred(self, net_out, zt, gamma_t):
