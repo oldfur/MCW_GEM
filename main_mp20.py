@@ -58,10 +58,10 @@ def get_dataloaders(args, dataset):
 
     bs = args.batch_size
     n_workers = args.num_workers
-    # 构造 DataLoader
-    train_loader = DataLoader(train_dataset, batch_size=bs, num_workers=n_workers)
-    val_loader = DataLoader(val_dataset, batch_size=bs, num_workers=n_workers)
-    test_loader = DataLoader(test_dataset, batch_size=bs, num_workers=n_workers)
+    # 构造 DataLoader, 丢弃最后一个batch
+    train_loader = DataLoader(train_dataset, batch_size=bs, num_workers=n_workers, drop_last=True)  
+    val_loader = DataLoader(val_dataset, batch_size=bs, num_workers=n_workers, drop_last=True)
+    test_loader = DataLoader(test_dataset, batch_size=bs, num_workers=n_workers, drop_last=True)
 
     # Initialize dataloader
     dataloaders = {}
