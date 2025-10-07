@@ -648,8 +648,10 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         mu_T = alpha_T * xh
         mu_T_x, mu_T_h = mu_T[:, :, :self.n_dims], mu_T[:, :, self.n_dims:]
         sigma_T_x = self.sigma(gamma_T, mu_T_x)
+        print("sigma_T_x shape before squeeze: ", sigma_T_x.shape)
         if sigma_T_x.dim() > 1:
             sigma_T_x = sigma_T_x.squeeze(-1)  # 只去掉最后一维，不会消除 batch 维
+        print("sigma_T_x shape after squeeze: ", sigma_T_x.shape)
         sigma_T_h = self.sigma(gamma_T, mu_T_h)
         zeros, ones_tensor = torch.zeros_like(mu_T_h), torch.ones_like(sigma_T_h)
         kl_distance_h = gaussian_KL(mu_T_h, sigma_T_h, zeros, ones_tensor, node_mask)
@@ -659,7 +661,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         
         # lengths部分
         ones_length = torch.ones((lengths.size(0), 1), device=lengths.device)
-        gamma_T_length = self.gamma(ones_length)
+        gamma_T_length = self.gamma_lengths(ones_length)
         alpha_T_length = self.alpha(gamma_T_length, lengths)
         mu_T_length = alpha_T_length * lengths
         sigma_T_length = self.sigma(gamma_T_length, mu_T_length)
@@ -674,7 +676,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         
         # angles部分
         ones_angle = torch.ones((angles.size(0), 1), device=angles.device)
-        gamma_T_angle = self.gamma(ones_angle)
+        gamma_T_angle = self.gamma_angles(ones_angle)
         alpha_T_angle = self.alpha(gamma_T_angle, angles)
         mu_T_angle = alpha_T_angle * angles
         sigma_T_angle = self.sigma(gamma_T_angle, mu_T_angle)
