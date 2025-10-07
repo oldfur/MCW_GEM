@@ -141,7 +141,7 @@ class CoefficientMappingModule(torch.nn.Module):
         if (self.lmax_cache is not None) and (self.mmax_cache is not None):
             if (self.lmax_cache == lmax) and (self.mmax_cache == mmax):
                 if self.mask_indices_cache is not None:
-                    return self.mask_indices_cache.to(lmax.device)
+                    return self.mask_indices_cache.to('cpu')
 
         mask = torch.bitwise_and(
             self.l_harmonic.le(lmax), self.m_harmonic.le(mmax)
@@ -150,7 +150,7 @@ class CoefficientMappingModule(torch.nn.Module):
         mask_indices = torch.masked_select(indices, mask)
         self.lmax_cache, self.mmax_cache = lmax, mmax
         self.mask_indices_cache = mask_indices
-        return self.mask_indices_cache.to(lmax.device)
+        return self.mask_indices_cache.to('cpu')
     
 
     # Return the re-scaling for rotating back to original frame
