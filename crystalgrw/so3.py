@@ -141,7 +141,7 @@ class CoefficientMappingModule(torch.nn.Module):
         if (self.lmax_cache is not None) and (self.mmax_cache is not None):
             if (self.lmax_cache == lmax) and (self.mmax_cache == mmax):
                 if self.mask_indices_cache is not None:
-                    return self.mask_indices_cache.to('cpu')
+                    return self.mask_indices_cache
 
         mask = torch.bitwise_and(
             self.l_harmonic.le(lmax), self.m_harmonic.le(mmax)
@@ -150,7 +150,7 @@ class CoefficientMappingModule(torch.nn.Module):
         mask_indices = torch.masked_select(indices, mask)
         self.lmax_cache, self.mmax_cache = lmax, mmax
         self.mask_indices_cache = mask_indices
-        return self.mask_indices_cache.to('cpu')
+        return self.mask_indices_cache
     
 
     # Return the re-scaling for rotating back to original frame
@@ -443,6 +443,7 @@ class SO3_Rotation(torch.nn.Module):
     # Rotate the embedding
     def rotate(self, embedding, out_lmax, out_mmax):
         out_mask = self.mapping.coefficient_idx(out_lmax, out_mmax)
+        out_mask = out_mask.to(embedding.device)
         wigner = self.wigner[:, out_mask, :]
         return torch.bmm(wigner, embedding)
 
@@ -450,6 +451,7 @@ class SO3_Rotation(torch.nn.Module):
     # Rotate the embedding by the inverse of the rotation matrix
     def rotate_inv(self, embedding, in_lmax, in_mmax):
         in_mask = self.mapping.coefficient_idx(in_lmax, in_mmax)
+        in_mask = in_mask.to(embedding.device)
         wigner_inv = self.wigner_inv[:, :, in_mask]
         wigner_inv_rescale = self.mapping.get_rotate_inv_rescale(in_lmax, in_mmax)
         wigner_inv = wigner_inv * wigner_inv_rescale
@@ -528,7 +530,7 @@ class SO3_Grid(torch.nn.Module):
                 length = 2 * l + 1
                 rescale_factor = math.sqrt(length / (2 * mmax + 1))
                 to_grid_mat[:, :, start_idx : (start_idx + length)] = to_grid_mat[:, :, start_idx : (start_idx + length)] * rescale_factor
-        to_grid_mat = to_grid_mat[:, :, self.mapping.coefficient_idx(self.lmax, self.mmax)]
+        to_grid_mat = to_grid_mat[:, :, self.mapping.coefficient_idx(self.lmax, self.mmax).to(device)]
 
         from_grid = FromS2Grid(
             (self.lat_resolution, self.long_resolution),
@@ -546,7 +548,7 @@ class SO3_Grid(torch.nn.Module):
                 length = 2 * l + 1
                 rescale_factor = math.sqrt(length / (2 * mmax + 1))
                 from_grid_mat[:, :, start_idx : (start_idx + length)] = from_grid_mat[:, :, start_idx : (start_idx + length)] * rescale_factor
-        from_grid_mat = from_grid_mat[:, :, self.mapping.coefficient_idx(self.lmax, self.mmax)]
+        from_grid_mat = from_grid_mat[:, :, self.mapping.coefficient_idx(self.lmax, self.mmax).to(device)]
 
         # save tensors and they will be moved to GPU
         self.register_buffer('to_grid_mat',   to_grid_mat)
@@ -565,14 +567,16 @@ class SO3_Grid(torch.nn.Module):
 
     # Compute grid from irreps representation
     def to_grid(self, embedding, lmax, mmax):
-        to_grid_mat = self.to_grid_mat[:, :, self.mapping.coefficient_idx(lmax, mmax)]
+        device = embedding.device
+        to_grid_mat = self.to_grid_mat[:, :, self.mapping.coefficient_idx(lmax, mmax).to(device)]
         grid = torch.einsum("bai, zic -> zbac", to_grid_mat, embedding)
         return grid
 
 
     # Compute irreps from grid representation
     def from_grid(self, grid, lmax, mmax):
-        from_grid_mat = self.from_grid_mat[:, :, self.mapping.coefficient_idx(lmax, mmax)]
+        device = grid.device
+        from_grid_mat = self.from_grid_mat[:, :, self.mapping.coefficient_idx(lmax, mmax).to(device)]
         embedding = torch.einsum("bai, zbac -> zic", from_grid_mat, grid)
         return embedding
 
