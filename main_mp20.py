@@ -163,7 +163,6 @@ def main(args):
         prop_dist.set_normalizer(property_norms)
 
     optim = get_optim(args, model)
-    torch.autograd.set_detect_anomaly(True)  # 精确定位 NaN 源
     watcher = GradientWatcher(model, threshold=100.0, log_path="logs/grad_log.txt", verbose=False)
 
     if args.resume is not None:

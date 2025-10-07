@@ -62,7 +62,7 @@ class GradientWatcher:
             grad_norm = grad.norm(2).item()
             if grad_abs_max > self.threshold:
                 msg = f"[{timestamp}] ⚠️ Large grad in [{name}] | max={grad_abs_max:.2f}, norm={grad_norm:.2f}"
-                print(msg)
+                # print(msg)
                 self._log(msg)
 
             # 打印调试信息

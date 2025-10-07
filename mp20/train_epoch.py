@@ -185,7 +185,6 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             continue
 
         optim.step()
-        optim.zero_grad(set_to_none=True)
 
         ###########################################################################################
 

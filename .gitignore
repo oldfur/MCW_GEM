@@ -7,3 +7,4 @@ wandb/
 .vscode/
 __pycache__/
 lattice_checkpoints/
+logs/
