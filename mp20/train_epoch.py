@@ -149,16 +149,24 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
                 nll += loss_dict['bond_loss'].mean()
 
 
-        ##################################################
+        ############################################################################################
     
         loss = nll + args.ode_regularization * reg_term # standard nll from forward KL
 
-        if torch.isnan(loss):
-            print("Detected NaN in loss, skipping batch")
-            continue
+        if torch.isnan(loss): # 定位
+            print(f"Detected NaN in loss, skipping batch at epoch: {epoch}")
+            if torch.isnan(nll):
+                print("nll is nan")
+            if torch.isnan(loss_dict['x_error']):
+                print("x_error is nan")
+            if torch.isnan(loss_dict['l_error']):
+                print("l_error is nan")
+            if torch.isnan(loss_dict['a_error']):
+                print("a_error is nan")
+            if torch.isnan(loss_dict["atom_type_loss"]):
+                print("atom_type_loss is nan")
 
-        ##################################################
-
+        ############################################################################################
 
         try:
             loss.backward()
@@ -170,7 +178,16 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             grad_norm = 0.
             print('Error in backward pass(may occure loss zero), skipping batch')
 
+        # 检查 loss 是否有效
+        if not torch.isfinite(loss):
+            print("⚠️ Detected NaN in loss, skipping batch and resetting optimizer state")
+            optim.zero_grad(set_to_none=True)
+            continue
+
         optim.step()
+        optim.zero_grad(set_to_none=True)
+
+        ###########################################################################################
 
         # Update EMA if enabled.
         if args.ema_decay > 0:

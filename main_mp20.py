@@ -22,6 +22,7 @@ from mp20.train_epoch import train_epoch
 from mp20.train_epoch_pure_x import train_epoch_pure_x
 from mp20.analyze_test import analyze_and_save, test, analyze_and_save_pure_x, test_pure_x
 from train_lattice_egnn import construct_lattice_model
+from mp20.gradient_watcher import GradientWatcher
 
 
 def get_dataset(args):
@@ -162,6 +163,8 @@ def main(args):
         prop_dist.set_normalizer(property_norms)
 
     optim = get_optim(args, model)
+    torch.autograd.set_detect_anomaly(True)  # 精确定位 NaN 源
+    watcher = GradientWatcher(model, threshold=100.0, log_path="logs/grad_log.txt", verbose=False)
 
     if args.resume is not None:
         assert args.start_epoch > 0
