@@ -1352,7 +1352,8 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                 num_terms = self.T + 1  # Includes t = 0.
                 estimator_loss_terms = num_terms * loss_t
 
-            assert kl_prior.size() == estimator_loss_terms.size()
+            assert kl_prior.size() == estimator_loss_terms.size(), \
+                print("kl_prior.size(), estimator_loss_terms.size(): ", kl_prior.size(), estimator_loss_terms.size())
             assert kl_prior.size() == neg_log_constants.size()
 
             loss = kl_prior + estimator_loss_terms + neg_log_constants
