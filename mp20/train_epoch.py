@@ -184,6 +184,9 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             optim.zero_grad(set_to_none=True)
             continue
 
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)  # 再裁剪一次  
+
+
         optim.step()
 
         ###########################################################################################
