@@ -157,13 +157,13 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             print(f"Detected NaN in loss, skipping batch at epoch: {epoch}")
             if torch.isnan(nll):
                 print("nll is nan")
-            if torch.isnan(loss_dict['x_error']):
+            if torch.isnan(loss_dict['x_error'].mean()):
                 print("x_error is nan")
-            if torch.isnan(loss_dict['l_error']):
+            if torch.isnan(loss_dict['l_error'].mean()):
                 print("l_error is nan")
-            if torch.isnan(loss_dict['a_error']):
+            if torch.isnan(loss_dict['a_error'].mean()):
                 print("a_error is nan")
-            if torch.isnan(loss_dict["atom_type_loss"]):
+            if torch.isnan(loss_dict["atom_type_loss"].mean()):
                 print("atom_type_loss is nan")
 
         ############################################################################################
