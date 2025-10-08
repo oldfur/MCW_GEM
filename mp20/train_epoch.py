@@ -20,8 +20,8 @@ def check_mask_correct(variables, node_mask):
 
 def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info, property_norms, 
                 nodes_dist, gradnorm_queue, optim, epoch, prop_dist):
-    # model_dp.train()
-    model.train()
+    model_dp.train()
+    # model.train()
     nll_epoch = []
     n_iterations = len(dataloader)
     mask_indicator = False
@@ -171,7 +171,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
         try:
             loss.backward()
             if args.clip_grad:
-                grad_norm = utils.gradient_clipping(model, gradnorm_queue)
+                # grad_norm = utils.gradient_clipping(model, gradnorm_queue)
+                grad_norm = utils.gradient_clipping(model_dp, gradnorm_queue)
             else:
                 grad_norm = 0.
         except Exception as e:
@@ -184,8 +185,7 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
             optim.zero_grad(set_to_none=True)
             continue
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)  # 再裁剪一次  
-
+        # torch.nn.utils.clip_grad_norm_(model_dp.parameters(), max_norm=5.0)  # 再裁剪一次  
 
         optim.step()
 
@@ -193,7 +193,8 @@ def train_epoch(args, model, model_dp, model_ema, ema, dataloader, dataset_info,
 
         # Update EMA if enabled.
         if args.ema_decay > 0:
-            ema.update_model_average(model_ema, model)
+            # ema.update_model_average(model_ema, model)
+            ema.update_model_average(model_ema, model_dp)
 
         if i % args.n_report_steps == 0:
             if args.probabilistic_model == 'diffusion_transformer':
