@@ -1090,6 +1090,7 @@ class BaseDynamics(nn.Module):
             if self.condition_time == "embed":
                 assert len(t.shape) == 1
                 time_emb = get_timestep_embedding(t, self.time_dim)
+                time_emb = time_emb.float()
                 time_emb = self.fc_time(time_emb)
             elif self.condition_time == "constant":
                 time_emb = t
