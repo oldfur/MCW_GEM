@@ -251,6 +251,7 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
             bond_info=bond_info
         )
 
+
         # nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
         #                                     expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
 
@@ -654,3 +655,44 @@ class RankedLogger(logging.LoggerAdapter):
                     self.logger.log(level, msg, *args, **kwargs)
                 elif current_rank == rank:
                     self.logger.log(level, msg, *args, **kwargs)
+
+
+
+def add_first_nan_detector(model):
+    """
+    注册 forward hooks，在模型 forward 中检测第一个产生 NaN/Inf 的层。
+    一旦发现，立即打印详细信息并停止执行。
+    """
+    first_nan_found = {"flag": False}  # 用闭包保存检测状态
+
+    def _hook_fn(module, input, output):
+        # 如果已经找到第一个 NaN，就不再检测
+        if first_nan_found["flag"]:
+            return
+
+        # 统一处理成列表
+        outputs = output if isinstance(output, (tuple, list)) else [output]
+        for o in outputs:
+            if not isinstance(o, torch.Tensor):
+                continue
+            if torch.isnan(o).any() or torch.isinf(o).any():
+                first_nan_found["flag"] = True
+                print("\n🚨 Detected NaN/Inf in forward pass!")
+                print(f"   ├─ Layer: {module._get_name()}")
+                print(f"   ├─ Module path: {getattr(module, '_debug_name', '(unnamed)')}")
+                print(f"   ├─ Output shape: {tuple(o.shape)}")
+                print(f"   ├─ Output stats: min={torch.nan_to_num(o).min().item():.3e}, "
+                      f"max={torch.nan_to_num(o).max().item():.3e}, mean={torch.nan_to_num(o).mean().item():.3e}")
+                print("   └─ Stopping execution for debugging.\n")
+
+                # 抛出异常，方便 traceback 定位源文件行号
+                raise RuntimeError(f"NaN detected in layer: {module._debug_name}")
+                break
+
+    # 为每个子模块注册 hook
+    for name, module in model.named_modules():
+        module._debug_name = name
+        module.register_forward_hook(_hook_fn)
+
+    print("✅ NaN 追踪已开启：一旦某层输出出现 NaN，将立即打印该层信息并终止 forward。")
+    return model

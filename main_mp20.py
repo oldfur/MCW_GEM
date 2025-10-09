@@ -159,11 +159,13 @@ def main(args):
     # 3 Load model and create optimizer
     # 如果没有设置预训练模型，则直接使用当前模型的参数进行训练
     model, nodes_dist, prop_dist = construct_model(args, dataset_info, dataloaders['train'])
+    model = add_first_nan_detector(model)
+
     if prop_dist is not None:
         prop_dist.set_normalizer(property_norms)
 
     optim = get_optim(args, model)
-    watcher = GradientWatcher(model, threshold=100.0, log_path="logs/grad_log.txt", verbose=False)
+    # watcher = GradientWatcher(model, threshold=100.0, log_path="logs/grad_log.txt", verbose=False)
 
     if args.resume is not None:
         assert args.start_epoch > 0
