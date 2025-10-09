@@ -899,34 +899,20 @@ class EquiformerV2(BaseModel):
 #     return emb
 
 def get_timestep_embedding(timesteps, embedding_dim, max_positions=10000):
-    """
-    Numerically stable version of sinusoidal time embedding.
-    - Clamps timesteps to [0, 1]
-    - Uses double precision for intermediate computation
-    - Prevents exp overflow
-    """
-    # --- ensure finite, normalized timesteps ---
-    timesteps = torch.nan_to_num(timesteps, nan=0.0, posinf=1.0, neginf=0.0)
-    timesteps = torch.clamp(timesteps, 0.0, 1.0)  # if you use continuous diffusion
-    # if timesteps are discrete [0, T], normalize
-    if timesteps.max() > 1.5:
-        timesteps = timesteps / (timesteps.max() + 1e-8)
-
+    timesteps = timesteps.to(torch.get_default_dtype())
     half_dim = embedding_dim // 2
-    # use double precision for exponent part
-    exp_scale = math.log(max_positions) / (half_dim - 1)
-    freqs = torch.exp(-exp_scale * torch.arange(half_dim, device=timesteps.device, dtype=torch.float64))
-    # keep values within float32 range
-    freqs = torch.clamp(freqs, 1e-8, 1e4)
-    args = timesteps.to(torch.float64)[:, None] * freqs[None, :]
-    # prevent overflow/underflow in sin/cos
-    args = torch.clamp(args, min=-1e4, max=1e4)
+    # 指数衰减因子
+    emb_scale = math.log(max_positions) / (half_dim - 1)
+    freqs = torch.exp(-emb_scale * torch.arange(half_dim, device=timesteps.device, dtype=torch.get_default_dtype()))
+    freqs = torch.clamp(freqs, 1e-8, 1e4)  # 防止极端值
+    args = timesteps[:, None] * freqs[None, :]
+    args = torch.clamp(args, min=-1e4, max=1e4)  # 防止 sin/cos overflow
     emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
-    emb = emb.to(torch.float32)
+
     if embedding_dim % 2 == 1:
         emb = F.pad(emb, (0, 1), mode='constant')
-    return emb
 
+    return emb
 
 
 def variance_scaling(scale, mode, distribution,
@@ -1090,7 +1076,6 @@ class BaseDynamics(nn.Module):
             if self.condition_time == "embed":
                 assert len(t.shape) == 1
                 time_emb = get_timestep_embedding(t, self.time_dim)
-                time_emb = time_emb.float()
                 time_emb = self.fc_time(time_emb)
             elif self.condition_time == "constant":
                 time_emb = t
