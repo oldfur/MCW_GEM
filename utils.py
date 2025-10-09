@@ -68,32 +68,52 @@ class Queue():
 #     return grad_norm
 
 
+# def gradient_clipping(flow, gradnorm_queue, min_clip=100.0, safety_factor=1.5):
+#     """
+#     自适应梯度剪裁函数，兼容你的 Queue 类。
+#     参数:
+#         flow: 模型
+#         gradnorm_queue: Queue 对象，记录最近梯度范数
+#         min_clip: 队列未积累够数据时使用的最小梯度阈值
+#         safety_factor: 队列均值的放大系数
+#     """
+#     # 队列均值与标准差
+#     queue_mean = gradnorm_queue.mean() if len(gradnorm_queue) > 0 else 0.0
+#     queue_std = gradnorm_queue.std() if len(gradnorm_queue) > 0 else 0.0
+#     # 最大梯度阈值
+#     max_grad_norm = max(safety_factor * queue_mean + 2 * queue_std, min_clip)
+#     # 梯度剪裁
+#     grad_norm = torch.nn.utils.clip_grad_norm_(flow.parameters(), max_norm=max_grad_norm, norm_type=2.0)
+#     # 更新队列
+#     gradnorm_queue.add(min(float(grad_norm), float(max_grad_norm)))
+#     # 打印剪裁信息
+#     if grad_norm > max_grad_norm:
+#         print(f'Clipped gradient with value {grad_norm:.1f} while allowed {max_grad_norm:.1f}')
+#     return grad_norm
+
 def gradient_clipping(flow, gradnorm_queue, min_clip=100.0, safety_factor=1.5):
     """
-    自适应梯度剪裁函数，兼容你的 Queue 类。
-    
-    参数:
-        flow: 模型
-        gradnorm_queue: Queue 对象，记录最近梯度范数
-        min_clip: 队列未积累够数据时使用的最小梯度阈值
-        safety_factor: 队列均值的放大系数
+    自适应梯度剪裁函数（修正版）
+    - 支持 torch.nn.DataParallel
+    - 支持 Queue 动态阈值
     """
+    # 兼容 DataParallel
+    if isinstance(flow, torch.nn.DataParallel):
+        params = flow.module.parameters()
+    else:
+        params = flow.parameters()
     # 队列均值与标准差
     queue_mean = gradnorm_queue.mean() if len(gradnorm_queue) > 0 else 0.0
     queue_std = gradnorm_queue.std() if len(gradnorm_queue) > 0 else 0.0
-
-    # 最大梯度阈值
+    # 动态计算最大梯度阈值
     max_grad_norm = max(safety_factor * queue_mean + 2 * queue_std, min_clip)
-
-    # 梯度剪裁
-    grad_norm = torch.nn.utils.clip_grad_norm_(flow.parameters(), max_norm=max_grad_norm, norm_type=2.0)
-
+    # 实际梯度裁剪
+    grad_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm, norm_type=2.0)
     # 更新队列
     gradnorm_queue.add(min(float(grad_norm), float(max_grad_norm)))
-
-    # 打印剪裁信息
+    # 打印日志
     if grad_norm > max_grad_norm:
-        print(f'Clipped gradient with value {grad_norm:.1f} while allowed {max_grad_norm:.1f}')
+        print(f'⚠️ Clipped gradient with value {grad_norm:.1f} while allowed {max_grad_norm:.1f}')
 
     return grad_norm
 

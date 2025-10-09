@@ -233,7 +233,7 @@ def main(args):
                         model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
                         dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
         else:
-            train_epoch(args=args, dataloader=dataloaders['train'], epoch=epoch, model=model, model_dp=model_dp,
+            train_epoch(args=args, dataloader=dataloaders['train'], epoch=epoch, model_dp=model_dp,
                         model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
                         dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
 
@@ -244,8 +244,8 @@ def main(args):
 
             print('Evaluating model at epoch %d' % epoch)
             
-            if isinstance(model, en_diffusion.EnVariationalDiffusion):
-                wandb.log(model.log_info(), commit=True)
+            # if isinstance(model, en_diffusion.EnVariationalDiffusion):
+            #     wandb.log(model.log_info(), commit=True)
 
             # 分析与保存
 

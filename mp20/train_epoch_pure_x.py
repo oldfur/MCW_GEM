@@ -18,8 +18,7 @@ def check_mask_correct(variables, node_mask):
 
 def train_epoch_pure_x(args, model, model_dp, model_ema, ema, dataloader, dataset_info, property_norms, 
                 nodes_dist, gradnorm_queue, optim, epoch, prop_dist):
-    # model_dp.train()
-    model.train()
+    model_dp.train()
     nll_epoch = []
     n_iterations = len(dataloader)
     mask_indicator = False
@@ -123,7 +122,7 @@ def train_epoch_pure_x(args, model, model_dp, model_ema, ema, dataloader, datase
             loss.backward()
 
             if args.clip_grad:
-                grad_norm = utils.gradient_clipping(model, gradnorm_queue)
+                grad_norm = utils.gradient_clipping(model_dp, gradnorm_queue)
             else:
                 grad_norm = 0.
 
@@ -135,7 +134,7 @@ def train_epoch_pure_x(args, model, model_dp, model_ema, ema, dataloader, datase
 
         # Update EMA if enabled.
         if args.ema_decay > 0:
-            ema.update_model_average(model_ema, model)
+            ema.update_model_average(model_ema, model_dp)
 
         if i % args.n_report_steps == 0:
             if 'error' in loss_dict:
