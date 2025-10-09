@@ -1,6 +1,7 @@
 import logging
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch_geometric.nn import radius_graph
 import logging
 import time
@@ -882,20 +883,50 @@ class EquiformerV2(BaseModel):
         return set(no_wd_list)
 
 
+# def get_timestep_embedding(timesteps, embedding_dim, max_positions=10000):
+#     """
+#     From https://github.com/yang-song/score_sde_pytorch
+#     """
+#     half_dim = embedding_dim // 2
+#     # magic number 10000 is from transformers
+#     emb = math.log(max_positions) / (half_dim - 1)
+#     emb = torch.exp(torch.arange(half_dim, device=timesteps.device) * -emb)
+#     emb = timesteps.to(torch.get_default_dtype())[:, None] * emb[None, :]
+#     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
+#     if embedding_dim % 2 == 1:  # zero pad
+#         emb = nn.functional.pad(emb, (0, 1), mode='constant')
+#     assert emb.shape == (timesteps.shape[0], embedding_dim)
+#     return emb
+
 def get_timestep_embedding(timesteps, embedding_dim, max_positions=10000):
     """
-    From https://github.com/yang-song/score_sde_pytorch
+    Numerically stable version of sinusoidal time embedding.
+    - Clamps timesteps to [0, 1]
+    - Uses double precision for intermediate computation
+    - Prevents exp overflow
     """
+    # --- ensure finite, normalized timesteps ---
+    timesteps = torch.nan_to_num(timesteps, nan=0.0, posinf=1.0, neginf=0.0)
+    timesteps = torch.clamp(timesteps, 0.0, 1.0)  # if you use continuous diffusion
+    # if timesteps are discrete [0, T], normalize
+    if timesteps.max() > 1.5:
+        timesteps = timesteps / (timesteps.max() + 1e-8)
+
     half_dim = embedding_dim // 2
-    # magic number 10000 is from transformers
-    emb = math.log(max_positions) / (half_dim - 1)
-    emb = torch.exp(torch.arange(half_dim, device=timesteps.device) * -emb)
-    emb = timesteps.to(torch.get_default_dtype())[:, None] * emb[None, :]
-    emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
-    if embedding_dim % 2 == 1:  # zero pad
-        emb = nn.functional.pad(emb, (0, 1), mode='constant')
-    assert emb.shape == (timesteps.shape[0], embedding_dim)
+    # use double precision for exponent part
+    exp_scale = math.log(max_positions) / (half_dim - 1)
+    freqs = torch.exp(-exp_scale * torch.arange(half_dim, device=timesteps.device, dtype=torch.float64))
+    # keep values within float32 range
+    freqs = torch.clamp(freqs, 1e-8, 1e4)
+    args = timesteps.to(torch.float64)[:, None] * freqs[None, :]
+    # prevent overflow/underflow in sin/cos
+    args = torch.clamp(args, min=-1e4, max=1e4)
+    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
+    emb = emb.to(torch.float32)
+    if embedding_dim % 2 == 1:
+        emb = F.pad(emb, (0, 1), mode='constant')
     return emb
+
 
 
 def variance_scaling(scale, mode, distribution,
@@ -992,13 +1023,24 @@ class BaseDynamics(nn.Module):
             self.time_dim = time_dim
             # Condition on noise levels.
             # self.fc_time = nn.Embedding(self.timesteps, self.time_dim)
-            self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),
-                                         nn.ReLU(),
-                                         nn.Linear(self.time_dim * 4, self.time_dim)
-                                         )
-            for i in [0, 2]:
-                self.fc_time[i].weight.data = default_init()(self.fc_time[i].weight.data.shape)
-                nn.init.zeros_(self.fc_time[i].bias)
+            # self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),
+            #                              nn.ReLU(),
+            #                              nn.Linear(self.time_dim * 4, self.time_dim)
+            #                             )
+            self.fc_time = nn.Sequential(nn.LayerNorm(self.time_dim),                      # 🔹 normalize before MLP
+                                        nn.Linear(self.time_dim, self.time_dim * 4),
+                                        nn.SiLU(),                                        # 🔹 smoother than ReLU
+                                        nn.Linear(self.time_dim * 4, self.time_dim),
+                                        nn.LayerNorm(self.time_dim)                       # 🔹 optional output norm
+                                        )
+            # for i in [0, 2]:
+            #     self.fc_time[i].weight.data = default_init()(self.fc_time[i].weight.data.shape)
+            #     nn.init.zeros_(self.fc_time[i].bias)            
+            for m in self.fc_time:
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('silu'))
+                    nn.init.constant_(m.bias, 0.0)
+
 
         if self.embed_noisy_types:
             noisy_atom_dim = hidden_dim
