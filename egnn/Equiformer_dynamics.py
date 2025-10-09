@@ -1038,7 +1038,7 @@ class BaseDynamics(nn.Module):
             #     nn.init.zeros_(self.fc_time[i].bias)            
             for m in self.fc_time:
                 if isinstance(m, nn.Linear):
-                    nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('silu'))
+                    nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
                     nn.init.constant_(m.bias, 0.0)
 
 
