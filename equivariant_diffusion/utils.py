@@ -145,3 +145,8 @@ def sample_gaussian_with_mask(size, device, node_mask):
     x = torch.randn(size, device=device)
     x_masked = x * node_mask
     return x_masked
+
+def print_memory(prefix=""):
+        allocated = torch.cuda.memory_allocated() / 1024 ** 2
+        reserved = torch.cuda.memory_reserved() / 1024 ** 2
+        print(f"{prefix} [GPU Mem] Allocated: {allocated:.2f} MB | Reserved: {reserved:.2f} MB")

@@ -1936,24 +1936,35 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         # self.T = 50 ## optimal sampling change timestep
         print('sample T',self.T)
         for s in reversed(range(0, self.T)):
-            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-            t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
-                            
-            if self.atom_type_pred:
-                z[:, :, self.n_dims:] = 1
-                z[:, :, :self.n_dims] = z[:, :, :self.n_dims] % 1.0 # keep the frac coord in 0-1
-                z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], z_l, z_a, node_mask, edge_mask, 
-                                              context, fix_noise=fix_noise, pesudo_context=pesudo_context)
-            else:
-                z[:, :, :self.n_dims] = z[:, :, :self.n_dims] % 1.0
-                z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z, z_l, z_a, node_mask, edge_mask, 
-                                              context, fix_noise=fix_noise)
-            
-            if z_l.sum() == 0 and z_a.sum() ==0 and z.sum() == 0:
-                print('all zero z, break')
-                break
+            try:
+                s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
+                t_array = s_array + 1
+                s_array = s_array / self.T
+                t_array = t_array / self.T
+                                
+                if self.atom_type_pred:
+                    z[:, :, self.n_dims:] = 1
+                    z[:, :, :self.n_dims] = z[:, :, :self.n_dims] % 1.0 # keep the frac coord in 0-1
+                    z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], z_l, z_a, node_mask, edge_mask, 
+                                                context, fix_noise=fix_noise, pesudo_context=pesudo_context)
+                    
+                else:
+                    z[:, :, :self.n_dims] = z[:, :, :self.n_dims] % 1.0
+                    z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z, z_l, z_a, node_mask, edge_mask, 
+                                                context, fix_noise=fix_noise)
+                    
+                if z_l.sum() == 0 and z_a.sum() ==0 and z.sum() == 0:
+                    print('all zero z, break')
+                    break
+
+                torch.cuda.synchronize()
+
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"Out Of Memory occurred at step {s}")
+                    utils.print_memory("Before crash")
+                    torch.cuda.empty_cache()
+                    raise
                 
         # Finally sample p(x, h | z_0).
         if self.property_pred:
