@@ -1077,6 +1077,13 @@ class BaseDynamics(nn.Module):
                 if torch.isnan(time_emb).any():
                     print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
                     time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
+                
+                print("time_emb stats before fc_time:",
+                    "min:", time_emb.min().item(),
+                    "max:", time_emb.max().item(),
+                    "mean:", time_emb.mean().item(),
+                    "std:", time_emb.std().item())
+
 
                 # debug: 在调用 self.fc_time 前加入
                 for name, p in self.fc_time.named_parameters():
