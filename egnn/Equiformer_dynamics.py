@@ -51,7 +51,7 @@ from crystalgrw.transformer_block import (
     TransBlockV2, 
 )
 from crystalgrw.input_block import EdgeDegreeEmbedding
-
+from mp20.utils import save_nan_debug_info
 
 # constants
 MAX_ATOMIC_NUM = 89  # MP20 dataset 1-89, initial 100
@@ -1053,6 +1053,15 @@ class BaseDynamics(nn.Module):
         elif condition_time == 'embed':
             self.time_dim = time_dim
             self.fc_time = StableTimeMLP(time_dim=self.time_dim)
+            # 使用方法：
+            # 假设你的层是 self.fc_time
+            handle = self.fc_time.register_forward_hook(
+                lambda module, input, output: save_nan_debug_info(module, input, output, layer_name='fc_time')
+            )
+
+            # 训练结束后，如果不想保留 hook，可以移除：
+            # handle.remove()
+            
             # Condition on noise levels.
             # self.fc_time = nn.Embedding(self.timesteps, self.time_dim)
             # self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),

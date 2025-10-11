@@ -696,3 +696,43 @@ def add_first_nan_detector(model):
 
     print("✅ NaN 追踪已开启：一旦某层输出出现 NaN，将立即打印该层信息并终止 forward。")
     return model
+
+
+def save_nan_debug_info(module, input, output, layer_name=None):
+    """
+    module: 当前层
+    input: forward 输入 (tuple)
+    output: forward 输出 (tensor)
+    layer_name: 层名称，用于文件命名
+    """
+    # 检查输入或输出是否包含非有限值
+    inputs_nan = any([not torch.isfinite(x).all() for x in input if isinstance(x, torch.Tensor)])
+    output_nan = isinstance(output, torch.Tensor) and not torch.isfinite(output).all()
+
+    if inputs_nan or output_nan:
+        print(f"⚠️ NaN/Inf detected in layer: {layer_name or module.__class__.__name__}")
+        
+        # 保存层权重
+        params = {name: p.detach().cpu() for name, p in module.named_parameters() if p is not None}
+        
+        # 保存输入输出
+        inputs = [x.detach().cpu() if isinstance(x, torch.Tensor) else x for x in input]
+        output_cpu = output.detach().cpu() if isinstance(output, torch.Tensor) else output
+
+        # 构造保存路径
+        save_path = f"./nan_debug_{layer_name or module.__class__.__name__}.pt"
+        try:
+            torch.save({
+                'layer_name': layer_name or module.__class__.__name__,
+                'parameters': params,
+                'input': inputs,
+                'output': output_cpu,
+            }, save_path)
+            print(f"📝 Debug info saved to {save_path}")
+        except Exception as e:
+            print("❌ Failed to save debug info:", e)
+        
+        # 可以选择抛异常停止训练
+        raise RuntimeError(f"NaN/Inf detected in layer: {layer_name or module.__class__.__name__}")
+
+
