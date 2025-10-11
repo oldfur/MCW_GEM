@@ -1013,11 +1013,9 @@ class BaseDynamics(nn.Module):
             #                              nn.ReLU(),
             #                              nn.Linear(self.time_dim * 4, self.time_dim)
             #                             )
-            self.fc_time = nn.Sequential(nn.LayerNorm(self.time_dim),                      # 🔹 normalize before MLP
-                                        nn.Linear(self.time_dim, self.time_dim * 4),
-                                        nn.SiLU(),                                        # 🔹 smoother than ReLU
+            self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),
+                                        nn.SiLU(),  # smoother than ReLU
                                         nn.Linear(self.time_dim * 4, self.time_dim),
-                                        nn.LayerNorm(self.time_dim)                       # 🔹 optional output norm
                                         )
             # for i in [0, 2]:
             #     self.fc_time[i].weight.data = default_init()(self.fc_time[i].weight.data.shape)
@@ -1079,7 +1077,23 @@ class BaseDynamics(nn.Module):
                 if torch.isnan(time_emb).any():
                     print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
                     time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
+
+                # debug: 在调用 self.fc_time 前加入
+                for name, p in self.fc_time.named_parameters():
+                    if not torch.isfinite(p).all():
+                        print(f"⚠️ Non-finite param in fc_time: {name}, min={p.min().item()}, max={p.max().item()}")
+                        # 保存全模型和优化器状态以便离线分析（如果你在此作用域能访问 optimizer）
+                        try:
+                            torch.save({
+                                'model_state': self.state_dict(),
+                                # 'optimizer_state': optimizer.state_dict(),  # 如果可访问则保存
+                            }, '/tmp/nan_fc_time_params.pt')
+                        except Exception as e:
+                            print("save failed:", e)
+                        break
+
                 time_emb = self.fc_time(time_emb)
+
             elif self.condition_time == "constant":
                 time_emb = t
             elif self.condition_time == "neglect":
