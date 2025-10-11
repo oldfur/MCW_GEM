@@ -1076,6 +1076,9 @@ class BaseDynamics(nn.Module):
             if self.condition_time == "embed":
                 assert len(t.shape) == 1
                 time_emb = get_timestep_embedding(t, self.time_dim)
+                if torch.isnan(time_emb).any():
+                    print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
+                    time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
                 time_emb = self.fc_time(time_emb)
             elif self.condition_time == "constant":
                 time_emb = t
@@ -1110,37 +1113,39 @@ class BaseDynamics(nn.Module):
     def forward(self, t, frac_coords, atom_types, natoms, lattices=None,
                 noisy_atom_types=None, lengths=None, angles=None,
                 z=None, cond_feat=None, batch=None):
+        
+        pass
 
-        if batch is None:
-            batch = torch.arange(
-                natoms.size(0), device=natoms.device
-            ).repeat_interleave(natoms, dim=0)
+        # if batch is None:
+        #     batch = torch.arange(
+        #         natoms.size(0), device=natoms.device
+        #     ).repeat_interleave(natoms, dim=0)
 
-        node_feats = self.bundle_feats(z, t, noisy_atom_types,
-                                       lattices, cond_feat, natoms)
+        # node_feats = self.bundle_feats(z, t, noisy_atom_types,
+        #                                lattices, cond_feat, natoms)
 
-        if lattices is not None:
-            assert lattices.shape[-1] == 3
-            lengths, angles = lattice_params_from_matrix(lattices)
+        # if lattices is not None:
+        #     assert lattices.shape[-1] == 3
+        #     lengths, angles = lattice_params_from_matrix(lattices)
 
-        outs = self.gnn(
-            node_feats=node_feats,
-            pos=frac_coords,
-            atomic_numbers=atom_types - 1,  # set an atom index to start from zero.
-            natoms=natoms,
-            lengths=lengths,
-            angles=angles,
-            edge_index=None,
-            to_jimages=None,
-            nbonds=None,
-            batch=batch,
-        )
+        # outs = self.gnn(
+        #     node_feats=node_feats,
+        #     pos=frac_coords,
+        #     atomic_numbers=atom_types - 1,  # set an atom index to start from zero.
+        #     natoms=natoms,
+        #     lengths=lengths,
+        #     angles=angles,
+        #     edge_index=None,
+        #     to_jimages=None,
+        #     nbonds=None,
+        #     batch=batch,
+        # )
 
-        outs = self.key_map(outs)
+        # outs = self.key_map(outs)
 
-        if self.regress_atoms:
-            outs["atom_types"] = torch.softmax(outs["atom_types"], dim=1)
-        return outs
+        # if self.regress_atoms:
+        #     outs["atom_types"] = torch.softmax(outs["atom_types"], dim=1)
+        # return outs
 
 
 class EquiformerV2Dynamics(BaseDynamics):

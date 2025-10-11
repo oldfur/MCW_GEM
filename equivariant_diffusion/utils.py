@@ -150,3 +150,7 @@ def print_memory(prefix=""):
         allocated = torch.cuda.memory_allocated() / 1024 ** 2
         reserved = torch.cuda.memory_reserved() / 1024 ** 2
         print(f"{prefix} [GPU Mem] Allocated: {allocated:.2f} MB | Reserved: {reserved:.2f} MB")
+
+def safe_synchronize():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()

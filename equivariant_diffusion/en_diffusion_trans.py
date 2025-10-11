@@ -440,9 +440,18 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
     def phi(self, x, lengths, angles, t, node_mask, edge_mask, context, t2=None, mask_y=None):
         # noise predict network
         x = x[:, :, :self.n_dims]  # [B, N, 3]
+
         # inputs prepare
         frac_pos, atom_types, natoms, lengths, angles, batch = \
             self.prepare_inputs_for_equiformer(t, x, lengths, angles, node_mask)
+        
+        # print("input frac_pos: ", frac_pos) []
+        # print("input t: ", t)
+        # print("input lengths: ", lengths)
+        # print("input angles: ", angles)
+        # print("input natoms: ", natoms)
+        # print("input batch: ", batch)
+        # print("input atom_types shape: ", atom_types.shape)
 
         # dynamics forward
         outs = self.dynamics(t, frac_pos, atom_types, natoms, \
@@ -490,12 +499,11 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         return (number_of_nodes - 1) * self.n_dims
 
     def normalize(self, x, h, node_mask):
-        x = x / self.norm_values[0]
-        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0])
+        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(1) # frac_pos , norm_values=1
 
         # Casting to float in case h still has long or int type.
-        h_cat = (h['categorical'].float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
-        h_int = (h['integer'].float() - self.norm_biases[2]) / self.norm_values[2]
+        h_cat = h['categorical'].float() * node_mask
+        h_int = h['integer'].float()
         if self.include_charges:
             h_int = h_int * node_mask
 
@@ -506,14 +514,11 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
     
     def normalize_lengths_angles(self, lengths, angles):
         """
-        对 lengths 和 angles 进行归一化，假设 norm_values[3]、norm_values[4] 
-        和 norm_biases[3]、norm_biases[4] 已定义。
+        frac mode, no normalize
         """
-        lengths_norm = (lengths - self.norm_biases[3]) / self.norm_values[3]
-        angles_norm = (angles - self.norm_biases[4]) / self.norm_values[4]
-        delta_log_pl = -self.len_dim * np.log(self.norm_values[3])
-        delta_log_pa = -self.angle_dim * np.log(self.norm_values[4])
-        return lengths_norm, angles_norm, delta_log_pl, delta_log_pa
+        delta_log_pl = -self.len_dim * np.log(1)
+        delta_log_pa = -self.angle_dim * np.log(1)
+        return lengths, angles, delta_log_pl, delta_log_pa
     
     
     def unnormalize(self, x, h_cat, h_int, node_mask):
@@ -1223,12 +1228,12 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         if self.atom_type_pred:
-            z_t = alpha_t * x + sigma_t * eps  
+            z_t = (alpha_t * x + sigma_t * eps) % 1  
             z_t = torch.cat([z_t, fix_h], dim=2)
             z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
             z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
         else:
-            z_t = alpha_t * xh + sigma_t * eps
+            z_t = (alpha_t * xh + sigma_t * eps) % 1
             z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
             z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
         
@@ -1957,7 +1962,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                     print('all zero z, break')
                     break
 
-                torch.cuda.synchronize()
+                utils.safe_synchronize()
 
             except RuntimeError as e:
                 if "out of memory" in str(e):
