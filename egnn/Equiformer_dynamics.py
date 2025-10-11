@@ -60,6 +60,49 @@ _AVG_NUM_NODES  = 77.81317
 _AVG_DEGREE     = 23.395238876342773    # IS2RE: 100k, max_radius = 5, max_neighbors = 100
 
 
+class StableTimeMLP(nn.Module):
+    def __init__(self, time_dim, hidden_mult=4, eps=1e-6, clamp_val=1e3, add_noise=True):
+        super().__init__()
+        self.time_dim = time_dim
+        self.hidden_dim = time_dim * hidden_mult
+        self.eps = eps
+        self.clamp_val = clamp_val
+        self.add_noise = add_noise
+
+        # 输入 LayerNorm
+        self.norm_in = nn.LayerNorm(time_dim)
+
+        # MLP
+        self.fc1 = nn.Linear(time_dim, self.hidden_dim)
+        self.act = nn.SiLU()
+        self.norm_hidden = nn.LayerNorm(self.hidden_dim)
+        self.fc2 = nn.Linear(self.hidden_dim, time_dim)
+
+        # 权重初始化
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, time_emb):
+        # 输入归一化
+        x = self.norm_in(time_emb)
+        # 可选加微小噪声，防止常数向量
+        if self.add_noise:
+            x = x + self.eps * torch.randn_like(x)
+        # 第一层 Linear + 激活 + LayerNorm
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.norm_hidden(x)
+        # 第二层 Linear
+        x = self.fc2(x)
+        # 输出 clamp，防止极端数值
+        x = torch.clamp(x, -self.clamp_val, self.clamp_val)
+
+        return x
+
+
+
 class BaseModel(nn.Module):
     def __init__(self, num_atoms=None, bond_feat_dim=None, num_targets=None):
         super(BaseModel, self).__init__()
@@ -1007,23 +1050,16 @@ class BaseDynamics(nn.Module):
             self.time_dim = 1
         elif condition_time == 'embed':
             self.time_dim = time_dim
+            self.fc_time = StableTimeMLP(time_dim=self.time_dim)
             # Condition on noise levels.
             # self.fc_time = nn.Embedding(self.timesteps, self.time_dim)
             # self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),
             #                              nn.ReLU(),
             #                              nn.Linear(self.time_dim * 4, self.time_dim)
             #                             )
-            self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),
-                                        nn.SiLU(),  # smoother than ReLU
-                                        nn.Linear(self.time_dim * 4, self.time_dim),
-                                        )
             # for i in [0, 2]:
             #     self.fc_time[i].weight.data = default_init()(self.fc_time[i].weight.data.shape)
             #     nn.init.zeros_(self.fc_time[i].bias)            
-            for m in self.fc_time:
-                if isinstance(m, nn.Linear):
-                    nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
-                    nn.init.constant_(m.bias, 0.0)
 
 
         if self.embed_noisy_types:
@@ -1074,17 +1110,12 @@ class BaseDynamics(nn.Module):
             if self.condition_time == "embed":
                 assert len(t.shape) == 1
                 time_emb = get_timestep_embedding(t, self.time_dim)
-                if torch.isnan(time_emb).any():
+
+                # debug: time_emb中是否有nan
+                if torch.isnan(time_emb).any(): 
                     print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
                     time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
                 
-                print("time_emb stats before fc_time:",
-                    "min:", time_emb.min().item(),
-                    "max:", time_emb.max().item(),
-                    "mean:", time_emb.mean().item(),
-                    "std:", time_emb.std().item())
-
-
                 # debug: 在调用 self.fc_time 前加入
                 for name, p in self.fc_time.named_parameters():
                     if not torch.isfinite(p).all():
@@ -1098,8 +1129,6 @@ class BaseDynamics(nn.Module):
                         except Exception as e:
                             print("save failed:", e)
                         break
-                
-                print("AMP enabled:", torch.is_autocast_enabled())
 
                 time_emb = self.fc_time(time_emb)
 
