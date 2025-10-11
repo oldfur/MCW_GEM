@@ -1098,6 +1098,8 @@ class BaseDynamics(nn.Module):
                         except Exception as e:
                             print("save failed:", e)
                         break
+                
+                print("AMP enabled:", torch.is_autocast_enabled())
 
                 time_emb = self.fc_time(time_emb)
 
