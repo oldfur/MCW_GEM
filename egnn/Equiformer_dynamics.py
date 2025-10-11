@@ -85,11 +85,13 @@ class StableTimeMLP(nn.Module):
         nn.init.zeros_(self.fc2.bias)
 
     def forward(self, time_emb):
-        # 输入归一化
-        x = self.norm_in(time_emb)
         # 可选加微小噪声，防止常数向量
         if self.add_noise:
-            x = x + self.eps * torch.randn_like(x)
+            time_emb = time_emb + self.eps * torch.randn_like(time_emb)
+
+        # 输入归一化
+        x = self.norm_in(time_emb)
+        
         # 第一层 Linear + 激活 + LayerNorm
         x = self.fc1(x)
         x = self.act(x)
