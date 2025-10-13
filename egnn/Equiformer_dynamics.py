@@ -646,13 +646,12 @@ class EquiformerV2(BaseModel):
 
 
     @conditional_grad(torch.enable_grad())
-    def forward(self,  pos, atomic_numbers, natoms,
+    def forward(self, pos, atomic_numbers, natoms,
                 lengths, angles, edge_index, to_jimages, nbonds,
                 node_feats=None, z=None, lat_mat=None, batch=None):
+        # now use cart pos
         self.batch_size = len(natoms)
         self.dtype = pos.dtype
-
-        pos = frac_to_cart_coords(pos, lengths, angles, natoms)
         if lat_mat is None:
             lat_mat = lattice_params_to_matrix_torch(lengths, angles)
 
@@ -1038,7 +1037,7 @@ class BaseDynamics(nn.Module):
         self.embed_lattices = embed_lattices
         self.embed_coord = embed_coord
         self.is_decode = is_decode
-        self.keys = {"forces": "frac_coords", "atoms": "atom_types",
+        self.keys = {"forces": "coords", "atoms": "atom_types",
                      "lattices": "lattices"}
 
         if is_decode:
@@ -1061,7 +1060,7 @@ class BaseDynamics(nn.Module):
 
             # 训练结束后，如果不想保留 hook，可以移除：
             # handle.remove()
-            
+
             # Condition on noise levels.
             # self.fc_time = nn.Embedding(self.timesteps, self.time_dim)
             # self.fc_time = nn.Sequential(nn.Linear(self.time_dim, self.time_dim * 4),
@@ -1354,13 +1353,12 @@ class EquiformerV2Dynamics(BaseDynamics):
             weight_init=weight_init,
         )
 
-    def forward(self, t, frac_coords, atom_types, natoms, 
+    def forward(self, t, pos, atom_types, natoms, 
                 lattices=None, noisy_atom_types=None, 
                 lengths=None, angles=None, z=None, 
                 cond_feat=None, batch=None):
         # t: [B,1]
         t = t.squeeze(-1) # [B]
-        frac_coords = frac_coords % 1.0
         
         if batch is None:
             batch = torch.arange(
@@ -1381,7 +1379,7 @@ class EquiformerV2Dynamics(BaseDynamics):
 
         outs = self.gnn(
             node_feats=node_feats,
-            pos=frac_coords,
+            pos=pos,
             atomic_numbers=atom_types - 1,  # set an atom index to start from zero.
             natoms=natoms,
             lengths=lengths,

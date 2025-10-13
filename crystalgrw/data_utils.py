@@ -288,6 +288,35 @@ def frac_to_cart_coords(
     return pos
 
 
+def frac_to_cart_coords_batched(frac_coords, lengths, angles, node_mask=None):
+    """
+    将分数坐标 (fractional coordinates) 转换为笛卡尔坐标 (Cartesian coordinates)
+    支持批量 (batched) 输入与 node_mask。
+    
+    Args:
+        frac_coords: [B, N, 3] 张量，分数坐标
+        lengths: [B, 3] 张量，每个晶胞的 (a, b, c)
+        angles: [B, 3] 张量，每个晶胞的 (alpha, beta, gamma)，单位可为度或弧度
+        node_mask: [B, N] 张量，可选，用于屏蔽填充的无效原子 (1=有效, 0=无效)
+    
+    Returns:
+        cart_coords: [B, N, 3] 张量，对应笛卡尔坐标
+    """
+    # === 1. 构造晶格矩阵 ===
+    lattice = lattice_params_to_matrix_torch(lengths, angles)  # [B, 3, 3]
+    
+    # === 2. 分数坐标转笛卡尔坐标 ===
+    # 等价于 frac_coords @ lattice.T
+    cart_coords = torch.einsum('bni,bij->bnj', frac_coords, lattice)
+    
+    # === 3. 可选：应用 mask ===
+    if node_mask is not None:
+        node_mask = node_mask.unsqueeze(-1)  # [B, N, 1]
+        cart_coords = cart_coords * node_mask
+    
+    return cart_coords
+
+
 def cart_to_frac_coords(
     cart_coords,
     lengths,
@@ -300,6 +329,36 @@ def cart_to_frac_coords(
     inv_lattice_nodes = torch.repeat_interleave(inv_lattice, num_atoms, dim=0)
     frac_coords = torch.einsum('bi,bij->bj', cart_coords, inv_lattice_nodes)
     return bound_frac(frac_coords) #(frac_coords % 1.)
+
+
+def cart_to_frac_coords_batched(cart_coords, lengths, angles, node_mask=None):
+    """
+    将笛卡尔坐标 (Cartesian) 转换为分数坐标 (Fractional)
+    支持批量输入与 node_mask。
+    
+    Args:
+        cart_coords: [B, N, 3] 张量，笛卡尔坐标
+        lengths: [B, 3] 张量，每个晶胞的 (a, b, c)
+        angles: [B, 3] 张量，每个晶胞的 (alpha, beta, gamma)，单位可为度或弧度
+        node_mask: [B, N] 张量，可选，用于屏蔽无效原子 (1=有效, 0=无效)
+    
+    Returns:
+        frac_coords: [B, N, 3] 张量，分数坐标
+    """
+    lattice = lattice_params_to_matrix_torch(lengths, angles)  # [B, 3, 3]
+    
+    # 计算逆矩阵 (A^{-1})，用来从笛卡尔坐标还原分数坐标
+    lattice_inv = torch.inverse(lattice)  # [B, 3, 3]
+    
+    # 等价于 cart_coords @ lattice_inv.T
+    frac_coords = torch.einsum('bni,bij->bnj', cart_coords, lattice_inv)
+    
+    if node_mask is not None:
+        node_mask = node_mask.unsqueeze(-1)
+        frac_coords = frac_coords * node_mask
+    
+    return frac_coords
+
 
 
 def get_pbc_distances(

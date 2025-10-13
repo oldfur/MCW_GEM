@@ -110,8 +110,7 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
 
         # 只需坐标、晶胞长度、角度，就可以计算晶体结构的loss
         # print(x.shape, h['categorical'].shape, h['integer'].shape, lengths.shape, angles.shape)
-        if args.frac_coords_mode or args.probabilistic_model == 'diffusion_transformer':
-            # print("using frac_coords to compute loss")
+        if args.frac_coords_mode:
             nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
                                                                 frac_coords, h, lengths, angles, node_mask, edge_mask, context,
                                                                 property_label=property_label, bond_info=bond_info)

@@ -333,6 +333,8 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         self.uni_diffusion = uni_diffusion
         self.norm_values = norm_values
         self.norm_biases = norm_biases
+        print("norm_values: ", norm_values)
+        print("norm biases: ", norm_biases)
         self.register_buffer('buffer', torch.zeros(1))
         
         self.pre_training = pre_training
@@ -437,15 +439,25 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                 f'large with sigma_0 {sigma_0:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
 
-    def phi(self, x, lengths, angles, t, node_mask, edge_mask, context, t2=None, mask_y=None):
-        # noise predict network
-        x = x[:, :, :self.n_dims]  # [B, N, 3]
+    def phi(self, z, lengths, angles, t, node_mask, edge_mask, context, t2=None, mask_y=None):
+        """noise predict network"""   
+        # h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
+        # h_cat = self.phi_unnormalize_h_cat(h_cat, node_mask)
+        # h_int = z[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
+        #     if self.include_charges else torch.zeros(0).to(z.device) # [B, N, 1]
+        
+        x = z[:, :, :self.n_dims]  # [B, N, 3]
+
+        # unnormalize, for that gnn dynamics works on physical space
+        x = self.phi_unnormalize_x(x)
+        lengths, angles = self.phi_unnormalize_la(lengths, angles)
 
         # inputs prepare
-        frac_pos, atom_types, natoms, lengths, angles, batch = \
+        pos, atom_types, natoms, lengths, angles, batch = \
             self.prepare_inputs_for_equiformer(t, x, lengths, angles, node_mask)
+        # 这里 atom_types 默认全是1，作为dynamics的输入
         
-        # print("input frac_pos: ", frac_pos) []
+        # print("input pos: ", pos) []
         # print("input t: ", t)
         # print("input lengths: ", lengths)
         # print("input angles: ", angles)
@@ -454,13 +466,18 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         # print("input atom_types shape: ", atom_types.shape)
 
         # dynamics forward
-        outs = self.dynamics(t, frac_pos, atom_types, natoms, \
+        outs = self.dynamics(t, pos, atom_types, natoms, \
                 lengths=lengths, angles=angles, batch=batch)
         # outputs reshape
         pred_x, pred_h, pred_lengths, pred_angles = self.reshape_outputs(
             outs, B=x.size(0), N=x.size(1), node_mask=node_mask)
+        
+        # normalize, cause dynamics works on physical space, so its output is unnormalized
+        pred_x, pred_h = self.phi_normalize_xh(pred_x, pred_h, node_mask)
         pred_xh = torch.cat([pred_x, pred_h], dim=2) # [B, N, 3 + num_classes]
+        pred_lengths, pred_angles = self.phi_normalize_la(pred_lengths, pred_angles)
 
+        # print("after normalize: ")
         # print(pred_x.shape)       # [B, N, 3]
         # print(pred_h.shape)  # [B, N, num_classes]
         # print(pred_lengths.shape) # [B, 3]
@@ -499,7 +516,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         return (number_of_nodes - 1) * self.n_dims
 
     def normalize(self, x, h, node_mask):
-        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(1) # frac_pos , norm_values=1
+        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0]) 
 
         # Casting to float in case h still has long or int type.
         h_cat = h['categorical'].float() * node_mask
@@ -512,13 +529,61 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
         return x, h, delta_log_px
     
+    def normalize_cartesian_pos_with_h(self, x, h, node_mask):
+        x = x / self.norm_values[0]
+        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0])
+
+        # Casting to float in case h still has long or int type.
+        h_cat = (h['categorical'].float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
+        h_int = (h['integer'].float() - self.norm_biases[2]) / self.norm_values[2]
+
+        if self.include_charges:
+            h_int = h_int * node_mask
+
+        # Create new h dictionary.
+        h = {'categorical': h_cat, 'integer': h_int}
+
+        return x, h, delta_log_px
+    
+
+    def phi_normalize_xh(self, x, h, node_mask=None):
+        x = x / self.norm_values[0]
+        if node_mask is not None:
+            h = (h.float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
+        else :
+            h = (h.float() - self.norm_biases[1]) / self.norm_values[1]
+
+        return x, h
+
+
+    def phi_unnormalize_x(self, x):
+        x = x * self.norm_values[0]
+        return x
+    
+    def phi_unnormalize_h_cat(self, h_cat, node_mask):
+        h_cat = h_cat * self.norm_values[1] + self.norm_biases[1]
+        h_cat = h_cat * node_mask
+        return h_cat
+
+
+    def phi_unnormalize_la(self, l, a):
+        l = l * self.norm_values[3] + self.norm_biases[3]
+        a = a * self.norm_values[4] + self.norm_biases[4]
+        return l, a
+
+
+    def phi_normalize_la(self, l, a):
+        l_norm = (l - self.norm_biases[3]) / self.norm_values[3]
+        a_norm = (a - self.norm_biases[4]) / self.norm_values[4]
+        return l, a
+
+
     def normalize_lengths_angles(self, lengths, angles):
-        """
-        frac mode, no normalize
-        """
-        delta_log_pl = -self.len_dim * np.log(1)
-        delta_log_pa = -self.angle_dim * np.log(1)
-        return lengths, angles, delta_log_pl, delta_log_pa
+        lengths_norm = (lengths - self.norm_biases[3]) / self.norm_values[3]
+        angles_norm = (angles - self.norm_biases[4]) / self.norm_values[4]
+        delta_log_pl = -self.len_dim * np.log(self.norm_values[3])
+        delta_log_pa = -self.angle_dim * np.log(self.norm_values[4])
+        return lengths_norm, angles_norm, delta_log_pl, delta_log_pa
     
     
     def unnormalize(self, x, h_cat, h_int, node_mask):
@@ -533,10 +598,6 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         return x, h_cat, h_int
 
     def unnormalize_lengths_angles(self, lengths, angles):
-        """
-        对 lengths 和 angles 进行反归一化，假设 norm_values[3]、norm_values[4] 
-        和 norm_biases[3]、norm_biases[4] 已定义。
-        """
         lengths = lengths * self.norm_values[3] + self.norm_biases[3]
         angles = angles * self.norm_values[4] + self.norm_biases[4]
         return lengths, angles
@@ -816,52 +877,18 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
-    def sample_p_xh_given_z0(self, z0, node_mask, edge_mask, context, fix_noise=False):
-        """Samples x ~ p(x|z0)."""
-        zeros = torch.zeros(size=(z0.size(0), 1), device=z0.device)
-        gamma_0 = self.gamma(zeros)
-        # Computes sqrt(sigma_0^2 / alpha_0^2)
-        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
-        
-        if self.property_pred:
-            net_out, pred = self.phi(z0, zeros, node_mask, edge_mask, context)
-        else:
-            net_out = self.phi(z0, zeros, node_mask, edge_mask, context)
-
-        # Compute mu for p(zs | zt).
-        mu_x = self.compute_x_pred(net_out, z0, gamma_0)
-        if self.atom_type_pred:
-            xh = self.sample_normal(mu=mu_x[:,:,:3], sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
-        else:
-            xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
-        x = xh[:, :, :self.n_dims]
-
-        h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        if self.atom_type_pred:
-            h_cat = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
-            h_int = net_out[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+1]
-        else:
-            x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
-        # print(f"h_cat: {h_cat.shape}, h_int: {h_int.shape}")
-        # print(f"h_cat: {h_cat}, h_int: {h_int}")
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        h_int = torch.round(h_int).long() * node_mask
-
-        h = {'integer': h_int, 'categorical': h_cat}
-        
-        if self.property_pred:
-            return x, h, pred
-        return x, h
     
     def sample_p_xh_lengths_angles_given_z0(self, z0, z0_l, z0_a, node_mask, edge_mask, context, fix_noise=False):
         """Samples x,h,l,a ~ p(x|z0,z0_l,z0_a)."""
         bs = z0.size(0)
         zeros = torch.zeros(size=(bs, 1), device=z0.device)
         gamma_0 = self.gamma(zeros)
+        gamma_0_l = self.gamma_lengths(zeros)
+        gamma_0_a = self.gamma_angles(zeros)
         # 这里的sigma计算方式与compute_loss里的不同,后续有待研究？
         sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
-        sigma_l = self.SNR(-0.5 * gamma_0)
-        sigma_a = self.SNR(-0.5 * gamma_0)
+        sigma_l = self.SNR(-0.5 * gamma_0_l)
+        sigma_a = self.SNR(-0.5 * gamma_0_a)
 
         if self.property_pred:
             (net_out, pred), l_out, a_out = self.phi(z0, z0_l, z0_a, zeros, node_mask, edge_mask, context)
@@ -881,11 +908,13 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         x = xh[:, :, :self.n_dims]
 
         h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        if self.atom_type_pred:
+        if self.atom_type_pred: # no include_charges
             h_cat = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
-            h_int = net_out[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+1]
         else:
-            x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
+            h_cat = z0[:, :, self.n_dims:-1]
+
+        # unnormalize x,h
+        x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
 
         h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
         h_int = torch.round(h_int).long() * node_mask
@@ -895,6 +924,8 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         # Sample lengths and angles
         lengths = self.sample_normal_length(mu=mu_l, sigma=sigma_l, fix_noise=fix_noise)
         angles = self.sample_normal_angle(mu=mu_a, sigma=sigma_a, fix_noise=fix_noise)
+
+        # unnormalize l,a
         lengths, angles = self.unnormalize_lengths_angles(lengths, angles)
 
         if self.property_pred:
@@ -1228,14 +1259,16 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         if self.atom_type_pred:
-            z_t = (alpha_t * x + sigma_t * eps) % 1  
+            z_t = alpha_t * x + sigma_t * eps   
             z_t = torch.cat([z_t, fix_h], dim=2)
             z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
             z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
         else:
-            z_t = (alpha_t * xh + sigma_t * eps) % 1
+            z_t = alpha_t * xh + sigma_t * eps
             z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
             z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
+
+        diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
         
         # phi: noise prediction model
         if self.property_pred:
@@ -1329,11 +1362,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
             # Combine all terms.
             loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
-            # print("kl_prior: ", kl_prior.sum(0))
-            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0)) # main loss term!!!!!
-            ## print("neg_log_constants: ", neg_log_constants.sum(0))
-            # print("loss_term_0: ", loss_term_0.sum(0)) 
-
+            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0)) # main loss term
 
         else:
             # Computes the L_0 term (even if gamma_t is not actually gamma_0)
@@ -1347,7 +1376,6 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
             loss_t = loss_term_0 * t_is_zero.squeeze() + t_is_not_zero.squeeze() * loss_t_larger_than_zero
             # print("loss_term_0: ", loss_term_0.sum(0))  # main loss term
-            # print("loss_t_larger_than_zero: ", loss_t_larger_than_zero.sum(0))
 
             # Only upweigh estimator if using the vlb objective.
             if self.training and self.loss_type == 'l2':
@@ -1361,9 +1389,6 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
             assert kl_prior.size() == neg_log_constants.size()
 
             loss = kl_prior + estimator_loss_terms + neg_log_constants
-            # print("kl_prior: ", kl_prior.sum(0))
-            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))    # main loss term
-            ## print("neg_log_constants: ", neg_log_constants.sum(0))
          
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
@@ -1393,9 +1418,6 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                 pred_loss = loss_l1(property_pred, property_label)
                 if pred_loss.dim() > 1 and pred_loss.size(1) == 53: # basic prob
                     pred_loss = pred_loss.mean(dim=1)
-                # print("property_label: ", property_label)
-                # print("property_pred: ", property_pred)
-                # print("pred_loss", pred_loss)
             else:
                 # 0 loss for prediction
                 pred_loss = torch.zeros_like(property_pred)
@@ -1436,10 +1458,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
             pred_loss_weight = 1
             
             loss_dict['pred_loss'] = pred_loss * pred_loss_weight
-            loss += pred_loss
-            
-            # loss_dict = {'t': t_int.squeeze(), 'loss_t': loss.squeeze(),
-            #       'error': error.squeeze(), "pred_loss": pred_loss, "pred_rate": pred_rate}                
+            loss += pred_loss              
 
         if self.atom_type_pred: # True !
             pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
@@ -1589,36 +1608,35 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         Computes the loss (type l2 or NLL) if training. And if eval then always computes NLL.
         """
         ################################################################
+
         # 如果 DataParallel 传进来的是一个 tuple/list
         if len(args) == 1 and isinstance(args[0], (tuple, list)):
             args = args[0]
         # 解包参数
         x, h, lengths, angles, node_mask, edge_mask, context = args[:7]
-
         mask_indicator = kwargs.get("mask_indicator", None)
         expand_diff = kwargs.get("expand_diff", False)
         property_label = kwargs.get("property_label", None)
         bond_info = kwargs.get("bond_info", None)
 
-        ################################################################
-
         if self.property_pred:
             assert property_label is not None, "property_label should not be None in training"
-        
-        # Normalize data.
-        x, h, delta_log_px = self.normalize(x, h, node_mask)
+
+        ################################################################
+
+        x, h, delta_log_px = self.normalize_cartesian_pos_with_h(x, h, node_mask)
         lengths, angles, delta_log_pl, delta_log_pa = self.normalize_lengths_angles(lengths, angles)
         delta_log_pl = torch.tensor(delta_log_pl, device=lengths.device, dtype=lengths.dtype)
         delta_log_pa = torch.tensor(delta_log_pa, device=angles.device, dtype=angles.dtype)
-        # print("x.shape: ", x.shape, "x[0]", x[0])
-        # print("h[categorical].shape: ", h["categorical"].shape, "h[0]", h["categorical"][0])
-        # print("h[integer].shape: ", h["integer"].shape, "h[0]", h["integer"][0])
 
         # Reset delta_log_px if not vlb objective.
         if self.training and self.loss_type == 'l2':
             delta_log_px = torch.zeros_like(delta_log_px)
             delta_log_pl = torch.zeros_like(delta_log_pl)
             delta_log_pa = torch.zeros_like(delta_log_pa)
+
+        ###############################################################
+        # compute loss
 
         if self.training:
             loss, loss_dict = self.compute_loss(x, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
@@ -1674,10 +1692,8 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
             # if pesudo_context is not None:
             #     zt = zt.clone().detach().requires_grad_(True)
                 # zt.requires_grad = True
-            zt[:,:,:self.n_dims] = zt[:,:,:self.n_dims] % 1.0  # keep the coord in [0,1]
             (eps_t, pred), eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, node_mask, edge_mask, context)
         else:
-            zt[:,:,:self.n_dims] = zt[:,:,:self.n_dims] % 1.0
             eps_t, eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, node_mask, edge_mask, context)
 
         # Compute mu for p(zs | zt).
@@ -1872,7 +1888,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
         """
-        z_x = utils.sample_frac_gaussian_with_mask(
+        z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
             size=(n_samples, n_nodes, self.n_dims), device=node_mask.device,
             node_mask=node_mask)
         z_h = utils.sample_gaussian_with_mask(
@@ -1912,7 +1928,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
         """
-        z_x = utils.sample_frac_gaussian_with_mask(
+        z_x = utils.sample_center_gravity_zero_gaussian_with_mask(
             size=(n_samples, n_nodes, self.n_dims), device=node_mask.device,
             node_mask=node_mask)
         return z_x
@@ -1948,13 +1964,11 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                 t_array = t_array / self.T
                                 
                 if self.atom_type_pred:
-                    z[:, :, self.n_dims:] = 1
-                    z[:, :, :self.n_dims] = z[:, :, :self.n_dims] % 1.0 # keep the frac coord in 0-1
+                    z[:, :, self.n_dims:] = 1 # 默认 h_cat 全为 1，不起作用
                     z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], z_l, z_a, node_mask, edge_mask, 
                                                 context, fix_noise=fix_noise, pesudo_context=pesudo_context)
                     
                 else:
-                    z[:, :, :self.n_dims] = z[:, :, :self.n_dims] % 1.0
                     z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z, z_l, z_a, node_mask, edge_mask, 
                                                 context, fix_noise=fix_noise)
                     
@@ -1974,19 +1988,17 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         # Finally sample p(x, h | z_0).
         if self.property_pred:
             if self.atom_type_pred:
-                z[:,:,self.n_dims:] = 1    
+                z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
             x, h, pred, length, angle = self.sample_p_xh_lengths_angles_given_z0(
                 z, z_l, z_a, node_mask, edge_mask, context, fix_noise=fix_noise
                 )
         else:
             if self.atom_type_pred:
-                z[:,:,self.n_dims:] = 1 
+                z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
             x, h, length, angle = self.sample_p_xh_lengths_angles_given_z0(
                 z, z_l, z_a, node_mask, edge_mask, context, fix_noise=fix_noise
             )
 
-
-        x = x % 1.0  # keep the frac coord in 0-1
 
         if self.property_pred:
             return x, h, pred, length, angle
@@ -2045,7 +2057,7 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
         device = node_mask.device
         pred_x = torch.zeros(B, N, 3, device=device)
-        pred_x[node_mask.squeeze(-1).bool()] = outs["frac_coords"].view(-1, 3)
+        pred_x[node_mask.squeeze(-1).bool()] = outs["coords"].view(-1, 3)
 
         # 晶格参数 (模型输出 lattices -> [B, 9])
         pred_lattices = outs["lattices"].view(B, 3, 3)

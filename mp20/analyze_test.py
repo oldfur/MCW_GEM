@@ -83,8 +83,9 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
         # charges = charges[i][mask].detach().cpu().numpy()
 
-        if i <= 5:
-            # print("sampled frac_coords:", frac_coords)
+        if i <= 3:
+            # print("sampled frac_coords:", frac_coords_valid)
+            print("sampled x", x_valid)
             print("sampled lengths:", length[i])
             print("sampled angles:", angle[i])
             # print("sampled atom types:", atom_types)
@@ -438,10 +439,10 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                                                 property_label=props[args.target_property].to(device, dtype) \
                                                     if args.target_property in props else None,)
             else:
-                nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, x, h, lengths, angles,
-                                                    node_mask, edge_mask, context, bond_info=bond_info,
-                                                    property_label=props[args.target_property].to(device, dtype) \
-                                                        if args.target_property in props else None)
+                nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, 
+                                                x, h, lengths, angles, node_mask, edge_mask, context, 
+                                                bond_info=bond_info, property_label=props[args.target_property].to(device, dtype) \
+                                                    if args.target_property in props else None)
         
             # standard nll from forward KL
 
@@ -450,8 +451,8 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
             if i % args.n_report_steps == 0:
                 if args.probabilistic_model == 'diffusion_transformer':
                     if 'total_error' in loss_dict:
-                        print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
-                              f"NLL: {nll_epoch/n_samples:.2f}", end='')
+                        print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
+                              f"NLL: {nll_epoch/n_samples:.2f}", end=', ')
                         print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}, " 
                               f"denoise l: {loss_dict['l_error'].mean().item():.3f}, "
                               f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
@@ -465,7 +466,7 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                         print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
 
                 else: # other models
-                    print(f"\r {partition} NLL \t epoch: {epoch}, iter: {i}/{n_iterations}, "
+                    print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, "
                         f"NLL: {nll_epoch/n_samples:.2f}")
                     print(f"error: {loss_dict['error'].mean().item():.3f}, ", end='')
                     if 'lattice_loss' in loss_dict:
