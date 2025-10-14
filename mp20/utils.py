@@ -700,39 +700,63 @@ def add_first_nan_detector(model):
 
 def save_nan_debug_info(module, input, output, layer_name=None):
     """
-    module: 当前层
-    input: forward 输入 (tuple)
-    output: forward 输出 (tensor)
-    layer_name: 层名称，用于文件命名
+    Enhanced NaN/Inf debug hook.
+    Detects invalid values in inputs/outputs/parameters,
+    recursively scans all submodules, and saves detailed info.
     """
-    # 检查输入或输出是否包含非有限值
-    inputs_nan = any([not torch.isfinite(x).all() for x in input if isinstance(x, torch.Tensor)])
+    # 确定层名
+    layer_name = layer_name or module.__class__.__name__
+
+    # 检查输入/输出是否含 NaN/Inf
+    inputs_nan = any([isinstance(x, torch.Tensor) and not torch.isfinite(x).all() for x in input])
     output_nan = isinstance(output, torch.Tensor) and not torch.isfinite(output).all()
 
     if inputs_nan or output_nan:
-        print(f"⚠️ NaN/Inf detected in layer: {layer_name or module.__class__.__name__}")
-        
-        # 保存层权重
-        params = {name: p.detach().cpu() for name, p in module.named_parameters() if p is not None}
-        
-        # 保存输入输出
-        inputs = [x.detach().cpu() if isinstance(x, torch.Tensor) else x for x in input]
+        print(f"\n🚨 Detected NaN/Inf in layer: {layer_name}")
+        print("--------------------------------------------------")
+
+        # 记录哪些输入/输出坏了
+        if inputs_nan:
+            print("⚠️  Some inputs contain NaN/Inf!")
+        if output_nan:
+            print("⚠️  Output contains NaN/Inf!")
+
+        # ✅ 递归遍历所有子层参数
+        nan_params = []
+        for name, param in module.named_parameters(recurse=True):
+            if param is not None and not torch.isfinite(param).all():
+                nan_count = (~torch.isfinite(param)).sum().item()
+                total = param.numel()
+                nan_params.append((name, nan_count, total))
+                print(f"❌ Parameter [{name}] contains NaN/Inf "
+                      f"({nan_count}/{total}, shape={tuple(param.shape)})")
+
+        if not nan_params:
+            print("✅ All parameters are finite (no NaN/Inf detected).")
+
+        # 保存调试信息
+        inputs_cpu = [x.detach().cpu() if isinstance(x, torch.Tensor) else x for x in input]
         output_cpu = output.detach().cpu() if isinstance(output, torch.Tensor) else output
 
-        # 构造保存路径
-        save_path = f"./nan_debug_{layer_name or module.__class__.__name__}.pt"
+        params_cpu = {
+            name: p.detach().cpu()
+            for name, p in module.named_parameters(recurse=True)
+            if p is not None
+        }
+
+        save_path = f"./nan_debug_{layer_name}.pt"
         try:
             torch.save({
-                'layer_name': layer_name or module.__class__.__name__,
-                'parameters': params,
-                'input': inputs,
-                'output': output_cpu,
+                "layer_name": layer_name,
+                "parameters": params_cpu,
+                "input": inputs_cpu,
+                "output": output_cpu,
+                "nan_params": nan_params,
             }, save_path)
-            print(f"📝 Debug info saved to {save_path}")
+            print(f"📝 Saved debug info to: {os.path.abspath(save_path)}")
         except Exception as e:
-            print("❌ Failed to save debug info:", e)
-        
-        # 可以选择抛异常停止训练
-        raise RuntimeError(f"NaN/Inf detected in layer: {layer_name or module.__class__.__name__}")
+            print(f"❌ Failed to save debug info: {e}")
 
+        # 停止训练，强制中断
+        raise RuntimeError(f"NaN/Inf detected in layer: {layer_name}")
 
