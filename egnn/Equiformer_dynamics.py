@@ -1051,7 +1051,8 @@ class BaseDynamics(nn.Module):
             self.time_dim = 1
         elif condition_time == 'embed':
             self.time_dim = time_dim
-            self.fc_time = StableTimeMLP(time_dim=self.time_dim)
+            # self.fc_time = StableTimeMLP(time_dim=self.time_dim)
+            self.fc_time = nn.Linear(self.time_dim, self.time_dim)
             # 使用方法：
             # 假设你的层是 self.fc_time
             handle = self.fc_time.register_forward_hook(
