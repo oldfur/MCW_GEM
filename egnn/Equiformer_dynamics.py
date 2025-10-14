@@ -60,49 +60,24 @@ _AVG_NUM_NODES  = 77.81317
 _AVG_DEGREE     = 23.395238876342773    # IS2RE: 100k, max_radius = 5, max_neighbors = 100
 
 
+
 class StableTimeMLP(nn.Module):
-    def __init__(self, time_dim, hidden_mult=4, eps=1e-6, clamp_val=1e3, add_noise=True):
+    def __init__(self, time_dim, hidden_mult=4, eps=1e-6, scale=0.01):
         super().__init__()
-        self.time_dim = time_dim
-        self.hidden_dim = time_dim * hidden_mult
-        self.eps = eps
-        self.clamp_val = clamp_val
-        self.add_noise = add_noise
-
-        # 输入 LayerNorm
-        self.norm_in = nn.LayerNorm(time_dim)
-
-        # MLP
-        self.fc1 = nn.Linear(time_dim, self.hidden_dim)
-        self.act = nn.SiLU()
-        self.norm_hidden = nn.LayerNorm(self.hidden_dim)
-        self.fc2 = nn.Linear(self.hidden_dim, time_dim)
-
-        # 权重初始化
-        nn.init.xavier_uniform_(self.fc1.weight)
+        self.fc1 = nn.Linear(time_dim, time_dim * hidden_mult)
+        self.fc2 = nn.Linear(time_dim * hidden_mult, time_dim)
+        self.act = nn.Tanh()
+        self.scale = scale
+        nn.init.xavier_uniform_(self.fc1.weight, gain=scale)
+        nn.init.xavier_uniform_(self.fc2.weight, gain=scale)
         nn.init.zeros_(self.fc1.bias)
-        nn.init.xavier_uniform_(self.fc2.weight)
         nn.init.zeros_(self.fc2.bias)
 
-    def forward(self, time_emb):
-        # 可选加微小噪声，防止常数向量
-        if self.add_noise:
-            time_emb = time_emb + self.eps * torch.randn_like(time_emb)
-
-        # 输入归一化
-        x = self.norm_in(time_emb)
-        
-        # 第一层 Linear + 激活 + LayerNorm
-        x = self.fc1(x)
+    def forward(self, t_emb):
+        x = self.fc1(t_emb)
         x = self.act(x)
-        x = self.norm_hidden(x)
-        # 第二层 Linear
         x = self.fc2(x)
-        # 输出 clamp，防止极端数值
-        x = torch.clamp(x, -self.clamp_val, self.clamp_val)
-
-        return x
-
+        return x.clamp(-10, 10)
 
 
 class BaseModel(nn.Module):
