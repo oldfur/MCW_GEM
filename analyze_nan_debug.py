@@ -1,87 +1,88 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Analyze NaN debug info saved by save_nan_debug_info()
-Usage:
-    python analyze_nan_debug.py nan_debug_fc_time.pt
-"""
-
-import sys
 import torch
-import matplotlib.pyplot as plt
+import os
 
-def analyze_tensor(name, tensor, plot=False):
-    """打印张量统计信息"""
-    if not isinstance(tensor, torch.Tensor):
-        print(f"❌ {name}: Not a tensor, type={type(tensor)}")
+def analyze_tensor(t, name, indent="  "):
+    """分析单个 Tensor 的统计信息"""
+    if not isinstance(t, torch.Tensor):
+        print(f"{indent}- {name}: (not a tensor, type={type(t)})")
         return
 
-    finite_mask = torch.isfinite(tensor)
-    numel = tensor.numel()
-    num_nan = (~finite_mask).sum().item()
+    total = t.numel()
+    n_nan = torch.isnan(t).sum().item()
+    n_inf = torch.isinf(t).sum().item()
+    n_finite = torch.isfinite(t).sum().item()
 
-    print(f"🔹 {name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}")
-    print(f"   finite={finite_mask.all().item()}, NaN/Inf count={num_nan}/{numel}")
-    
+    finite_ratio = n_finite / total if total > 0 else 0
+    summary = f"{indent}- {name}: shape={tuple(t.shape)}, dtype={t.dtype}"
+    print(summary)
+    print(f"{indent}  finite={finite_ratio*100:.2f}%, NaN={n_nan}, Inf={n_inf}")
 
-    if finite_mask.any():
-        t_valid = tensor[finite_mask]
-        print(f"   min={t_valid.min().item():.4e}, max={t_valid.max().item():.4e}, "
-              f"mean={t_valid.mean().item():.4e}, std={t_valid.std().item():.4e}")
-        absmax = t_valid.abs().max().item()
-        if absmax > 1e4:
-            print(f"   ⚠️  Large magnitude values detected! absmax={absmax:.2e}")
-    else:
-        print("   ⚠️ Entire tensor is NaN/Inf!")
-
-    if plot and finite_mask.any():
-        plt.figure()
-        plt.hist(t_valid.cpu().numpy().flatten(), bins=100)
-        plt.title(name)
-        plt.xlabel("Value")
-        plt.ylabel("Frequency")
-        plt.grid(True)
-        plt.show()
+    if n_finite > 0:
+        finite_vals = t[torch.isfinite(t)]
+        print(f"{indent}  min={finite_vals.min().item():.4e}, "
+              f"max={finite_vals.max().item():.4e}, "
+              f"mean={finite_vals.mean().item():.4e}, "
+              f"std={finite_vals.std().item():.4e}")
+    print()
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python analyze_nan_debug.py <debug_file.pt>")
-        sys.exit(1)
-
-    path = sys.argv[1]
-    print(f"📂 Loading: {path}")
+def analyze_debug_file(path):
+    print(f"📂 Loading debug info from: {path}")
     data = torch.load(path, map_location="cpu")
 
-    print("\n===== 🧭 Layer Info =====")
-    print(f"Layer name: {data.get('layer_name', 'Unknown')}")
+    # ===== Layer Info =====
+    layer_name = data.get("layer_name", "UnknownLayer")
+    print(f"\n===== 🧭 Layer: {layer_name} =====\n")
 
-    print("\n===== ⚙️ Parameters =====")
-    params = data.get("parameters", {})
-    if not params:
-        print("No parameters found.")
-    for name, p in params.items():
-        analyze_tensor(f"Param[{name}]", p)
-
-    print("\n===== 🎯 Inputs =====")
-    inputs = data.get("input", [])
-    if not inputs:
-        print("No inputs found.")
-    for i, x in enumerate(inputs):
-        if isinstance(x, torch.Tensor):
-            analyze_tensor(f"Input[{i}]", x)
-        else:
-            print(f"Input[{i}] is not a tensor (type={type(x)})")
-
-    print("\n===== 📤 Output =====")
-    output = data.get("output", None)
-    if isinstance(output, torch.Tensor):
-        analyze_tensor("Output", output, plot=True)
+    # ===== Parameter Summary =====
+    nan_params = data.get("nan_params", [])
+    if nan_params:
+        print("===== ❌ NaN/Inf Parameters Detected =====")
+        for name, nan_count, total in nan_params:
+            ratio = nan_count / total * 100
+            print(f"  - {name}: {nan_count}/{total} ({ratio:.2f}%) NaN/Inf")
+        print()
     else:
-        print(f"Output type: {type(output)}")
+        print("✅ All parameters were finite at save time.\n")
 
-    print("\n✅ Analysis complete.")
+    # ===== Parameters =====
+    params = data.get("parameters", {})
+    if params:
+        print("===== ⚙️ Parameter Statistics =====")
+        for name, tensor in params.items():
+            analyze_tensor(tensor, name)
+    else:
+        print("⚠️ No parameter tensors saved.\n")
+
+    # ===== Inputs =====
+    inputs = data.get("input", [])
+    print("===== 🎯 Inputs =====")
+    if not inputs:
+        print("⚠️ No inputs saved.\n")
+    else:
+        for i, t in enumerate(inputs):
+            analyze_tensor(t, f"input[{i}]")
+
+    # ===== Output =====
+    output = data.get("output", None)
+    print("===== 📤 Output =====")
+    if output is None:
+        print("⚠️ No output tensor saved.\n")
+    else:
+        analyze_tensor(output, "output")
+
+    print("✅ Analysis complete.\n")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python analyze_nan_debug_info.py <path_to_nan_debug.pt>")
+        exit(0)
+
+    path = sys.argv[1]
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        exit(1)
+
+    analyze_debug_file(path)

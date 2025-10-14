@@ -1053,8 +1053,6 @@ class BaseDynamics(nn.Module):
             self.time_dim = time_dim
             # self.fc_time = StableTimeMLP(time_dim=self.time_dim)
             self.fc_time = nn.Linear(self.time_dim, self.time_dim)
-            # 使用方法：
-            # 假设你的层是 self.fc_time
             handle = self.fc_time.register_forward_hook(
                 lambda module, input, output: save_nan_debug_info(module, input, output, layer_name='fc_time')
             )
@@ -1127,21 +1125,21 @@ class BaseDynamics(nn.Module):
                     print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
                     time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
                 
-                # debug: 在调用 self.fc_time 前加入
-                for name, p in self.fc_time.named_parameters():
-                    if not torch.isfinite(p).all():
-                        print(f"⚠️ Non-finite param in fc_time: {name}, min={p.min().item()}, max={p.max().item()}")
-                        # 保存全模型和优化器状态以便离线分析（如果你在此作用域能访问 optimizer）
-                        try:
-                            torch.save({
-                                'model_state': self.state_dict(),
-                                # 'optimizer_state': optimizer.state_dict(),  # 如果可访问则保存
-                            }, '/tmp/nan_fc_time_params.pt')
-                        except Exception as e:
-                            print("save failed:", e)
-                        break
+                # # debug: 在调用 self.fc_time 前加入
+                # for name, p in self.fc_time.named_parameters():
+                #     if not torch.isfinite(p).all():
+                #         print(f"⚠️ Non-finite param in fc_time: {name}, min={p.min().item()}, max={p.max().item()}")
+                #         # 保存全模型和优化器状态以便离线分析（如果你在此作用域能访问 optimizer）
+                #         try:
+                #             torch.save({
+                #                 'model_state': self.state_dict(),
+                #                 # 'optimizer_state': optimizer.state_dict(),  # 如果可访问则保存
+                #             }, '/tmp/nan_fc_time_params.pt')
+                #         except Exception as e:
+                #             print("save failed:", e)
+                #         break
 
-                time_emb = self.fc_time(time_emb)
+                # time_emb = self.fc_time(time_emb)
 
             elif self.condition_time == "constant":
                 time_emb = t
