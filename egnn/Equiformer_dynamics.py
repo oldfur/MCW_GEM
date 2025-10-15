@@ -1048,29 +1048,54 @@ class BaseDynamics(nn.Module):
 
         if self.embed_noisy_types:
             noisy_atom_dim = hidden_dim
-            self.noisy_atom_emb = nn.Sequential(nn.Linear(MAX_ATOMIC_NUM - 1, noisy_atom_dim * 4),
-                                                nn.ReLU(),
-                                                nn.Linear(noisy_atom_dim * 4, noisy_atom_dim)
-                                                )
-            for i in [0, 2]:
-                nn.init.xavier_uniform_(self.noisy_atom_emb[i].weight.data)
-                nn.init.zeros_(self.noisy_atom_emb[i].bias)
+            # self.noisy_atom_emb = nn.Sequential(nn.Linear(MAX_ATOMIC_NUM - 1, noisy_atom_dim * 4),
+            #                                     nn.ReLU(),
+            #                                     nn.Linear(noisy_atom_dim * 4, noisy_atom_dim)
+            #                                     )
+            # for i in [0, 2]:
+            #     nn.init.xavier_uniform_(self.noisy_atom_emb[i].weight.data)
+            #     nn.init.zeros_(self.noisy_atom_emb[i].bias)
+            self.noisy_atom_emb = nn.Sequential(
+                                            nn.LayerNorm(MAX_ATOMIC_NUM - 1),
+                                            nn.Linear(MAX_ATOMIC_NUM - 1, noisy_atom_dim * 4),
+                                            nn.SiLU(),
+                                            nn.LayerNorm(noisy_atom_dim * 4),
+                                            nn.Linear(noisy_atom_dim * 4, noisy_atom_dim),
+                                            nn.Tanh()  # 限幅输出
+                                            )
         else:
             noisy_atom_dim = 0
 
         if self.embed_lattices:
             lattice_dim = hidden_dim
-            self.lattice_emb = nn.Sequential(nn.Linear(9, lattice_dim),
-                                             nn.ReLU(),
-                                             nn.Linear(lattice_dim, lattice_dim))
+            # self.lattice_emb = nn.Sequential(nn.Linear(9, lattice_dim),
+            #                                  nn.ReLU(),
+            #                                  nn.Linear(lattice_dim, lattice_dim))
+            self.lattice_emb = nn.Sequential(
+                                            nn.LayerNorm(9),
+                                            nn.Linear(9, lattice_dim),
+                                            nn.SiLU(),
+                                            nn.LayerNorm(lattice_dim),
+                                            nn.Linear(lattice_dim, lattice_dim),
+                                            nn.Tanh()  # 限幅输出
+                                            )
+
         else:
             lattice_dim = 0
 
         if self.embed_coord:
             coord_dim = hidden_dim
-            self.coord_emb = nn.Sequential(nn.Linear(3, coord_dim),
-                                           nn.ReLU(),
-                                           nn.Linear(coord_dim, coord_dim))
+            # self.coord_emb = nn.Sequential(nn.Linear(3, coord_dim),
+            #                                nn.ReLU(),
+            #                                nn.Linear(coord_dim, coord_dim))
+            self.coord_emb = nn.Sequential(
+                                            nn.LayerNorm(3),
+                                            nn.Linear(3, coord_dim),
+                                            nn.SiLU(),
+                                            nn.LayerNorm(coord_dim),
+                                            nn.Linear(coord_dim, coord_dim),
+                                            nn.Tanh()
+                                            )
         else:
             coord_dim = 0
 
