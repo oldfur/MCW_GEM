@@ -47,9 +47,11 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
 
-        # if i == 0:
-        #   print("lengths for training: ", lengths[:2])
-        #   print("angles for training: ", angles[:2])
+        if i <= 1 and epoch <= 1:
+          print("lengths for training: ", lengths[:2])
+          print("angles for training: ", angles[:2])
+          print("x for training: ", x[:2])
+
         """
         输出:
         lengths for training:  tensor([[3.6849, 5.5324, 5.5324],

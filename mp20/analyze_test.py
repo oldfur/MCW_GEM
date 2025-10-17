@@ -458,8 +458,13 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                               f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
                               f"total xla denoise: {loss_dict['total_error'].mean().item():.3f}", 
                               end = '')
+                        wandb.log({f"{partition}_denoise_x": loss_dict['x_error'].mean().item()}, commit=True)
+                        wandb.log({f"{partition}_denoise_l": loss_dict['l_error'].mean().item()}, commit=True)
+                        wandb.log({f"{partition}_denoise_a": loss_dict['a_error'].mean().item()}, commit=True)
+                        wandb.log({f"{partition}_denoise_xla": loss_dict['total_error'].mean().item()}, commit=True)
                     if 'atom_type_loss' in loss_dict:
                         print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                        wandb.log({f"{partition}_denoise_atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
                     if args.property_pred:
                         if not isinstance(loss_dict['pred_loss'], int):
                             print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')

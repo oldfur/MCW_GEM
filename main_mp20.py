@@ -273,15 +273,15 @@ def main(args):
             if nll_val < best_nll_val:
                 best_nll_val = nll_val
                 best_nll_test = nll_test
-                # 先不保存模型
-                # if args.save_model:  # 保存
-                #     args.current_epoch = epoch + 1
-                #     utils.save_model(optim, 'outputs/%s/optim.npy' % args.exp_name)
-                #     utils.save_model(model, 'outputs/%s/generative_model.npy' % args.exp_name)
-                #     if args.ema_decay > 0:
-                #         utils.save_model(model_ema, 'outputs/%s/generative_model_ema.npy' % args.exp_name)
-                #     with open('outputs/%s/args.pickle' % args.exp_name, 'wb') as f:
-                #         pickle.dump(args, f)
+
+                if args.save_model and epoch >= args.save_epoch:  
+                    args.current_epoch = epoch + 1
+                    utils.save_model(optim, 'outputs/%s/optim.npy' % args.exp_name)
+                    utils.save_model(model, 'outputs/%s/generative_model.npy' % args.exp_name)
+                    if args.ema_decay > 0:
+                        utils.save_model(model_ema, 'outputs/%s/generative_model_ema.npy' % args.exp_name)
+                    with open('outputs/%s/args.pickle' % args.exp_name, 'wb') as f:
+                        pickle.dump(args, f)
 
             # if args.save_model:
             #     utils.save_model(optim, 'outputs/%s/optim_%d.npy' % (args.exp_name, epoch))
@@ -440,6 +440,7 @@ if __name__ == '__main__':
     # parser.add_argument("--record_more_info", type=int, default=1, help="record more information about loss in visulaize_epoch")
     parser.add_argument("--n_samples", type=int, default=10, help="number of samples for visualization")
     parser.add_argument("--frac_coords_mode", type=int, default=0, help="whether use frac_coords")
+    parser.add_argument("--save_epoch", type=int, default=150, help="begin to save model")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()

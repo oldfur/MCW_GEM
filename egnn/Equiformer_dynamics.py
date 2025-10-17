@@ -60,7 +60,6 @@ _AVG_NUM_NODES  = 77.81317
 _AVG_DEGREE     = 23.395238876342773    # IS2RE: 100k, max_radius = 5, max_neighbors = 100
 
 
-
 class StableTimeMLP(nn.Module):
     def __init__(self, time_dim, hidden_mult=4, eps=1e-6, scale=0.01):
         super().__init__()
@@ -78,6 +77,41 @@ class StableTimeMLP(nn.Module):
         x = self.act(x)
         x = self.fc2(x)
         return x.clamp(-10, 10)
+
+
+class LatticeDecoder(nn.Module):
+    """
+    将 9D 晶格矩阵 -> 6D 参数 (3长度 + 3角度)
+    lengths 单位 Å, angles 单位 degree
+    """
+    def __init__(self, hidden_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(9),
+            nn.Linear(9, hidden_dim),
+            nn.SiLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 6)
+        )
+
+        # 初始化
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, 9]
+        """
+        out = self.net(x)
+        lengths = out[:, :3]
+        angles = out[:, 3:]
+
+        return lengths, angles
 
 
 class BaseModel(nn.Module):
@@ -619,6 +653,8 @@ class EquiformerV2(BaseModel):
         self.apply(self._init_weights)
         self.apply(self._uniform_init_rad_func_linear_weights)
 
+        self.lattice_to_la = LatticeDecoder()
+
 
     @conditional_grad(torch.enable_grad())
     def forward(self, pos, atomic_numbers, natoms,
@@ -791,11 +827,15 @@ class EquiformerV2(BaseModel):
             # Invariant lattice
             L_t = self.lattice_block(x)
             L_t = L_t.embedding.narrow(1, 0, 1)
+            # print("L_t shape after .embedding.narrow(1,0,1): ", L_t.shape) # [N_total, 1, 9]
             L_t = scatter(L_t,
                           torch.arange(natoms.shape[0]).to(natoms.device).repeat_interleave(natoms),
                           dim=0,
                           reduce="max"
-                          )
+                          )         
+            # print(f"L_t shape is {L_t.shape} after scatter and n_atoms is {natoms}") # [B,1,9]
+
+            lengths_pred, angles_pred = self.lattice_to_la(L_t.squeeze(1))
 
             # Tensor decomposition trick
             # L_t = self.lattice_block(x)
@@ -818,6 +858,9 @@ class EquiformerV2(BaseModel):
             #               )
             # L_t = trace + antisym + sym
             outs["lattices"] = L_t.view(-1, 9)
+            outs["lengths"] = lengths_pred
+            outs["angles"] = angles_pred
+
 
         return outs
 
@@ -1013,7 +1056,7 @@ class BaseDynamics(nn.Module):
         self.embed_coord = embed_coord
         self.is_decode = is_decode
         self.keys = {"forces": "coords", "atoms": "atom_types",
-                     "lattices": "lattices"}
+                     "lattices": "lattices", "lengths":"lengths", "angles":"angles"}
 
         if is_decode:
             assert latent_dim != 0
