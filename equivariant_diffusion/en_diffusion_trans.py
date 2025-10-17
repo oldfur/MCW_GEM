@@ -2059,10 +2059,6 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         pred_x = torch.zeros(B, N, 3, device=device)
         pred_x[node_mask.squeeze(-1).bool()] = outs["coords"].view(-1, 3)
 
-        # # 晶格参数 (模型输出 lattices -> [B, 9])
-        # pred_lattices = outs["lattices"].view(B, 3, 3)
-        # # 转换为 lengths, angles
-        # pred_lengths, pred_angles = lattice_params_from_matrix(pred_lattices)
         pred_lengths = outs["lengths"]
         pred_angles = outs["angles"]
         atom_types_flat = outs["atom_types"]

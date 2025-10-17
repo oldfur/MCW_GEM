@@ -623,6 +623,7 @@ class EquiformerV2(BaseModel):
                 self.use_grid_mlp,
                 self.use_sep_s2_act
             )
+            self.lattice_to_la = LatticeDecoder()
 
             # For tensor decomposition trick
             # self.lattice_block = FeedForwardNetwork(
@@ -652,8 +653,6 @@ class EquiformerV2(BaseModel):
 
         self.apply(self._init_weights)
         self.apply(self._uniform_init_rad_func_linear_weights)
-
-        self.lattice_to_la = LatticeDecoder()
 
 
     @conditional_grad(torch.enable_grad())
@@ -694,6 +693,8 @@ class EquiformerV2(BaseModel):
             outs["atoms"] = torch.zeros(num_atoms, MAX_ATOMIC_NUM, device=pos.device, dtype=pos.dtype)
             outs["forces"] = torch.zeros(num_atoms, 3, device=pos.device, dtype=pos.dtype)
             outs["lattices"] = torch.zeros(self.batch_size, 9, device=pos.device, dtype=pos.dtype)
+            outs["lengths"] = torch.zeros(self.batch_size, 3, device=pos.device, dtype=pos.dtype)
+            outs["angles"] = torch.zeros(self.batch_size, 3, device=pos.device, dtype=pos.dtype)
             return outs
 
         ###############################################################
@@ -1056,7 +1057,7 @@ class BaseDynamics(nn.Module):
         self.embed_coord = embed_coord
         self.is_decode = is_decode
         self.keys = {"forces": "coords", "atoms": "atom_types",
-                     "lattices": "lattices", "lengths":"lengths", "angles":"angles"}
+                     "lattices": "lattices", "lengths": "lengths", "angles": "angles"}
 
         if is_decode:
             assert latent_dim != 0
