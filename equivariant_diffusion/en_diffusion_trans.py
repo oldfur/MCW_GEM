@@ -573,8 +573,8 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
 
 
     def phi_normalize_la(self, l, a):
-        l_norm = (l - self.norm_biases[3]) / self.norm_values[3]
-        a_norm = (a - self.norm_biases[4]) / self.norm_values[4]
+        l = (l - self.norm_biases[3]) / self.norm_values[3]
+        a = (a - self.norm_biases[4]) / self.norm_values[4]
         return l, a
 
 
