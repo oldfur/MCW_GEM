@@ -201,7 +201,8 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
             ema.update_model_average(model_ema, model_dp)
 
         if i % args.n_report_steps == 0:
-            if args.probabilistic_model == 'diffusion_transformer':
+            if args.probabilistic_model == 'diffusion_transformer' or \
+                args.probabilistic_model == 'diffusion_Lfirst':
                 if 'total_error' in loss_dict:
                     print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
                         f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "

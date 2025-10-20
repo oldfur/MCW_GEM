@@ -35,7 +35,7 @@ def sample(args, device, generative_model, dataset_info,
 
     if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new'\
         or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_concat'\
-        or args.probabilistic_model == 'diffusion_transformer':        
+        or args.probabilistic_model == 'diffusion_transformer' or args.probabilistic_model == 'diffusion_Lfirst':        
         print(f'sample with evaluate_condition_generation: [{evaluate_condition_generation}]')
         args.expand_diff = 0
         if args.property_pred:

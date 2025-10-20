@@ -8,6 +8,7 @@ from equivariant_diffusion import utils as diffusion_utils
 from equivariant_diffusion.mlp import DiffusionMLP
 from torch_scatter import scatter_mean
 from crystalgrw.data_utils import lattice_params_from_matrix
+from equivariant_diffusion.mlp import DiffusionMLP
 
 
 # Defining some useful util functions.
@@ -254,7 +255,7 @@ def cdf_standard_gaussian(x):
     return 0.5 * (1. + torch.erf(x / math.sqrt(2)))
 
 
-class EquiTransVariationalDiffusion(torch.nn.Module):
+class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
     """
     The EquiTransformer Diffusion Module.
     """
@@ -390,12 +391,14 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         self.lambda_a = lambda_a
         print("use lambda_l: ", lambda_l)
         print("use lambda_a: ", lambda_a)
+
         self.length_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
                          hidden_dims=[128, 128], use_self_attn=False)
         self.angle_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
                          hidden_dims=[128, 128], use_self_attn=False)
         
-
+        print("EquiTransVariationalDiffusion_Lfirst initialized.")
+        
     
     def save_intermediate_grad(self, grad):
         self.saved_grad = grad
@@ -439,66 +442,46 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                 f'large with sigma_0 {sigma_0:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
 
-    def phi(self, z, lengths, angles, t, node_mask, edge_mask, context, t2=None, mask_y=None):
+    def phi(self, zxh, zl, za, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None):
         """noise predict network"""   
-        # h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
+        # h_cat = zxh[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
         # h_cat = self.phi_unnormalize_h_cat(h_cat, node_mask)
-        # h_int = z[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
+        # h_int = zxh[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
         #     if self.include_charges else torch.zeros(0).to(z.device) # [B, N, 1]
         
-        x = z[:, :, :self.n_dims]  # [B, N, 3]
-
-        # unnormalize, for that gnn dynamics works on physical space
-
-        # print("before unnormalize: ")
-        # print("x: ", x)
-        # print("lengths: ", lengths)
-        # print("angles: ", angles)
-
-        x = self.phi_unnormalize_x(x)
-        lengths, angles = self.phi_unnormalize_la(lengths, angles)
-
-        # print("after unnormalize: ")
-        # print("x: ", x)
-        # print("lengths: ", lengths)
-        # print("angles: ", angles)
-
-        # inputs prepare
-        pos, atom_types, natoms, lengths, angles, batch = \
-            self.prepare_inputs_for_equiformer(t, x, lengths, angles, node_mask)
-        # 这里 atom_types 默认全是1，作为dynamics的输入
+        """prepare input for eps x"""
+        zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
+        B = zx.size(0)
+        N = zx.size(1)
+        zx = self.phi_unnormalize_x(zx) # unnormalize, for that gnn dynamics works on physical space
+        if rl is not None and ra is not None:
+            rl, ra = self.phi_unnormalize_la(rl, ra)
+        else:
+            print("No valid lengths and angles provided for unnormalization in phi.")
+            raise ValueError
+        # atom_types 默认全是 1 ，作为dynamics的输入
+        zx, atom_types, natoms, rl, ra, batch = \
+            self.prepare_inputs_for_equiformer(t, zx, rl, ra, node_mask)
         
-        # print("input pos: ", pos) []
-        # print("input t: ", t)
-        # print("input lengths: ", lengths)
-        # print("input angles: ", angles)
-        # print("input natoms: ", natoms)
-        # print("input batch: ", batch)
-        # print("input atom_types shape: ", atom_types.shape)
-
-        # dynamics forward
-        outs = self.dynamics(t, pos, atom_types, natoms, \
-                lengths=lengths, angles=angles, batch=batch)
+        """forward for x, h"""
+        net_outs = self.dynamics(t, zx, atom_types, natoms, \
+                lengths=rl, angles=ra, batch=batch)
         # outputs reshape
-        pred_x, pred_h, pred_lengths, pred_angles = self.reshape_outputs(
-            outs, B=x.size(0), N=x.size(1), node_mask=node_mask, natoms=natoms, batch=batch)
-        
+        net_eps_x, net_pred_h = self.reshape_outputs(
+            net_outs, B, N, node_mask, natoms, batch)
         # normalize, cause dynamics works on physical space, so its output is unnormalized
-        pred_x, pred_h = self.phi_normalize_xh(pred_x, pred_h, node_mask)
-        pred_xh = torch.cat([pred_x, pred_h], dim=2) # [B, N, 3 + num_classes]
-        pred_lengths, pred_angles = self.phi_normalize_la(pred_lengths, pred_angles)
+        net_eps_x, net_pred_h = self.phi_normalize_xh(net_eps_x, net_pred_h, node_mask)
+        net_eps_xh = torch.cat([net_eps_x, net_pred_h], dim=2) # [B, N, 3 + num_classes]
 
-        # print("after normalize: ")
-        # print(pred_x.shape)       # [B, N, 3]
-        # print(pred_h.shape)  # [B, N, num_classes]
-        # print(pred_lengths.shape) # [B, 3]
-        # print(pred_angles.shape)  # [B, 3]
+        """forward for l, a"""
+        net_eps_l = self.length_mlp(zl, t)
+        net_eps_a = self.angle_mlp(za, t)
 
         if self.property_pred and self.use_prop_pred:
-            property_pred = outs['property_pred']
-            return (pred_xh, property_pred), pred_lengths, pred_angles
+            property_pred = net_outs['property_pred']
+            return (net_eps_xh, property_pred), net_eps_l, net_eps_a
 
-        return pred_xh, pred_lengths, pred_angles
+        return net_eps_xh, net_eps_l, net_eps_a
 
 
     def inflate_batch_array(self, array, target):
@@ -1284,10 +1267,12 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         # phi: noise prediction model
         if self.property_pred:
             (net_out, property_pred), lengths_out, angles_out = self.phi(
-                z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context)
+                z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context, 
+                rl=lengths, ra=angles)
         else:
             # Neural net prediction.
-            net_out, lengths_out, angles_out = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context)
+            net_out, lengths_out, angles_out = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context, 
+                                                        rl=lengths, ra=angles)
 
 
         # Compute the error.
@@ -1357,9 +1342,11 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
                 z_0_angle = alpha_0_angle * angles + sigma_0_angle * eps_0_angle
 
             if self.property_pred:
-                (net_out, property_pred), lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context)
+                (net_out, property_pred), lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context, 
+                                                                             rl=lengths, ra=angles)
             else:
-                net_out, lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context)
+                net_out, lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context, 
+                                                            rl=lengths, ra=angles)
 
             # Compute the error for t = 0.            
             loss_term_0 = -self.log_p_xhla_given_z0_without_constants(
@@ -2059,7 +2046,15 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         return pos, atom_types, natoms, lengths, angles, batch
 
 
+    
     def reshape_outputs(self, outs, B, N, node_mask, natoms, batch):
+        """
+        outs: 模型输出字典，outs["coords"] 是 [Σ natoms, 3]
+        B, N: batch_size, 最大原子数
+        node_mask: [B, N, 1]
+        natoms: [B] 每个样本的有效原子数
+        batch: [Σ natoms] 每个原子所属的样本索引
+        """
         device = node_mask.device
         pred_x = torch.zeros(B, N, 3, device=device, dtype=outs["coords"].dtype)
 
@@ -2070,13 +2065,18 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         atom_types_flat = outs["atom_types"]
         pred_atom_types = self.reshape_atom_types(atom_types_flat, node_mask, self.num_classes, batch, natoms)
 
-        pred_lengths = outs["lengths"]
-        pred_angles = outs["angles"]
-
-        return pred_x, pred_atom_types, pred_lengths, pred_angles
+        return pred_x, pred_atom_types
 
 
-    def reshape_atom_types(self, atom_types_flat, node_mask, num_classes, batch, natoms):
+
+    def reshape_atom_types(self, atom_types_flat, node_mask, num_classes, batch=None, natoms=None):
+        """
+        atom_types_flat: [Σ natoms, H]
+        node_mask: [B, N, 1]
+        num_classes: H
+        batch: [Σ natoms] 每个原子对应的样本索引
+        natoms: [B] 每个样本有效原子数
+        """
         B, N, _ = node_mask.shape
         H = num_classes
         device = atom_types_flat.device

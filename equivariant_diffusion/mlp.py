@@ -61,7 +61,8 @@ class DiffusionMLP(nn.Module):
         - t: 时间步 [batch, 1] (值范围[0,1])
         """
         # 时间编码 [batch, time_emb_dim]
-        t_emb = self.time_embed(t.float()) 
+        dtype = self.time_embed[0].weight.dtype
+        t_emb = self.time_embed(t.to(dtype))
         
         # 融合输入和时间编码
         h = torch.cat([x, t_emb], dim=-1)
