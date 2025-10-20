@@ -449,8 +449,19 @@ class EquiTransVariationalDiffusion(torch.nn.Module):
         x = z[:, :, :self.n_dims]  # [B, N, 3]
 
         # unnormalize, for that gnn dynamics works on physical space
+
+        # print("before unnormalize: ")
+        # print("x: ", x)
+        # print("lengths: ", lengths)
+        # print("angles: ", angles)
+
         x = self.phi_unnormalize_x(x)
         lengths, angles = self.phi_unnormalize_la(lengths, angles)
+
+        # print("after unnormalize: ")
+        # print("x: ", x)
+        # print("lengths: ", lengths)
+        # print("angles: ", angles)
 
         # inputs prepare
         pos, atom_types, natoms, lengths, angles, batch = \

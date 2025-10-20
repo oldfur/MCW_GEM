@@ -110,6 +110,8 @@ def get_model(args, device, dataset_info, dataloader_train,
             condition_dim=0, # 128
             is_decode=False,
             lmax_list=[4],mmax_list=[2],
+            use_pbc=False, # only konw the noise, can not use pbc
+            otf_graph=False, # on-the-fly graph
             )
     else:
         raise ValueError(args.probabilistic_model)
