@@ -1396,6 +1396,9 @@ class EquiformerV2Dynamics(BaseDynamics):
             weight_init=weight_init,
         )
 
+        if use_pbc:
+            print("Use pbc in Equiformer.")
+
     def forward(self, t, pos, atom_types, natoms, 
                 lattices=None, noisy_atom_types=None, 
                 lengths=None, angles=None, z=None, 

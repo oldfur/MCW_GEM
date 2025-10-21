@@ -482,6 +482,40 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
             return (net_eps_xh, property_pred), net_eps_l, net_eps_a
 
         return net_eps_xh, net_eps_l, net_eps_a
+    
+
+    def phi_la(self, zl, za, t):
+        """noise predict network for lengths and angles only"""   
+        
+        net_eps_l = self.length_mlp(zl, t)
+        net_eps_a = self.angle_mlp(za, t)
+
+        return net_eps_l, net_eps_a
+    
+    def phi_xh(self, zxh, t, rl, ra, node_mask, edge_mask, context, t2=None, mask_y=None):
+        """noise predict network for x and h only"""   
+
+        zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
+        B, N  = zx.size(0), zx.size(1)
+        zx = self.phi_unnormalize_x(zx)
+        zx, atom_types, natoms, rl, ra, batch = \
+            self.prepare_inputs_for_equiformer(t, zx, rl, ra, node_mask)
+        
+        # forward for x, h
+        net_outs = self.dynamics(t, zx, atom_types, natoms, \
+                lengths=rl, angles=ra, batch=batch)
+        
+        # output
+        net_eps_x, net_pred_h = self.reshape_outputs(
+            net_outs, B, N, node_mask, natoms, batch)
+        net_eps_x, net_pred_h = self.phi_normalize_xh(net_eps_x, net_pred_h, node_mask)
+        net_eps_xh = torch.cat([net_eps_x, net_pred_h], dim=2) # [B, N, 3 + num_classes]
+
+        if self.property_pred and self.use_prop_pred:
+            property_pred = net_outs['property_pred']
+            return (net_eps_xh, property_pred)
+
+        return net_eps_xh
 
 
     def inflate_batch_array(self, array, target):
@@ -871,28 +905,46 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
-    
-    def sample_p_xh_lengths_angles_given_z0(self, z0, z0_l, z0_a, node_mask, edge_mask, context, fix_noise=False):
-        """Samples x,h,l,a ~ p(x|z0,z0_l,z0_a)."""
-        bs = z0.size(0)
-        zeros = torch.zeros(size=(bs, 1), device=z0.device)
-        gamma_0 = self.gamma(zeros)
+
+    def sample_p_la_given_z0la(self, z0_l, z0_a, fix_noise=False):
+        """Samples l,a ~ p(x|z0_l,z0_a)."""
+        bs = z0_l.size(0)
+        zeros = torch.zeros(size=(bs, 1), device=z0_l.device)
         gamma_0_l = self.gamma_lengths(zeros)
         gamma_0_a = self.gamma_angles(zeros)
-        # 这里的sigma计算方式与compute_loss里的不同,后续有待研究？
-        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
         sigma_l = self.SNR(-0.5 * gamma_0_l)
         sigma_a = self.SNR(-0.5 * gamma_0_a)
 
+        l_out, a_out = self.phi_la(z0_l, z0_a, zeros)
+
+        # Compute mu for p(zs | zt).
+        mu_l = self.compute_length_pred(l_out, z0_l, gamma_0_l)
+        mu_a = self.compute_angle_pred(a_out, z0_a, gamma_0_a)
+        
+        # Sample lengths and angles
+        lengths = self.sample_normal_length(mu=mu_l, sigma=sigma_l, fix_noise=fix_noise)
+        angles = self.sample_normal_angle(mu=mu_a, sigma=sigma_a, fix_noise=fix_noise)
+
+        # unnormalize l,a
+        lengths, angles = self.unnormalize_lengths_angles(lengths, angles)
+
+        return lengths, angles
+
+
+    def sample_p_xh_lengths_angles_given_z0(self, z0, rl, ra, node_mask, edge_mask, context, fix_noise=False):
+        """Samples x,h ~ p(x|z0)."""
+        bs = z0.size(0)
+        zeros = torch.zeros(size=(bs, 1), device=z0.device)
+        gamma_0 = self.gamma(zeros)
+        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
+
         if self.property_pred:
-            (net_out, pred), l_out, a_out = self.phi(z0, z0_l, z0_a, zeros, node_mask, edge_mask, context)
+            (net_out, pred) = self.phi_xh(z0, zeros, rl, ra, node_mask, edge_mask, context)
         else:
-            net_out, l_out, a_out = self.phi(z0, z0_l, z0_a, zeros, node_mask, edge_mask, context)
+            net_out = self.phi_xh(z0, zeros, rl, ra, node_mask, edge_mask, context)
 
         # Compute mu for p(zs | zt).
         mu_x = self.compute_x_pred(net_out, z0, gamma_0)
-        mu_l = self.compute_length_pred(l_out, z0_l, gamma_0)
-        mu_a = self.compute_angle_pred(a_out, z0_a, gamma_0)
         
         # Sample from Normal distribution
         if self.atom_type_pred:
@@ -912,19 +964,12 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
 
         h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
         h_int = torch.round(h_int).long() * node_mask
-
         h = {'integer': h_int, 'categorical': h_cat}
-        
-        # Sample lengths and angles
-        lengths = self.sample_normal_length(mu=mu_l, sigma=sigma_l, fix_noise=fix_noise)
-        angles = self.sample_normal_angle(mu=mu_a, sigma=sigma_a, fix_noise=fix_noise)
-
-        # unnormalize l,a
-        lengths, angles = self.unnormalize_lengths_angles(lengths, angles)
 
         if self.property_pred:
-            return x, h, pred, lengths, angles
-        return x, h, lengths, angles
+            return x, h, pred
+        return x, h
+
 
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False, only_coord=False):
         """Samples from a Normal distribution."""
@@ -1653,24 +1698,12 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
         return neg_log_pxhla, loss_dict
         
 
-    def sample_p_zs_given_zt(self, s, t, zt, zt_l, zt_a, 
-                             node_mask, edge_mask, context, 
-                             fix_noise=False, yt=None, ys=None, force_t_zero=False, 
-                             force_t2_zero=False, pesudo_context=None):
+    def lattice_sample_p_zs_given_zt(self, s, t, zt_l, zt_a, fix_noise=False):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
-        gamma_s = self.gamma(s)
         gamma_s_length = self.gamma_lengths(s)
         gamma_s_angle = self.gamma_angles(s)
-        gamma_t = self.gamma(t)
         gamma_t_length = self.gamma_lengths(t)
         gamma_t_angle = self.gamma_angles(t)
-
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-        alpha_s = self.alpha(gamma_s, target_tensor=zt)
-        alpha_t = self.alpha(gamma_t, target_tensor=zt)
 
         sigma2_t_given_s_length, sigma_t_given_s_length, alpha_t_given_s_length = \
                 self.sigma_and_alpha_t_given_s(gamma_t_length, gamma_s_length, zt_l)
@@ -1680,38 +1713,60 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
         sigma_t_length = self.sigma(gamma_t_length, target_tensor=zt_l)
         sigma_s_angle = self.sigma(gamma_s_angle, target_tensor=zt_a)
         sigma_t_angle = self.sigma(gamma_t_angle, target_tensor=zt_a)
-        alpha_s_length = self.alpha(gamma_s_length, target_tensor=zt_l)
-        alpha_t_length = self.alpha(gamma_t_length, target_tensor=zt_l)
-        alpha_s_angle = self.alpha(gamma_s_angle, target_tensor=zt_a)
-        alpha_t_angle = self.alpha(gamma_t_angle, target_tensor=zt_a)
+
+        # Neural net prediction for l and a.
+        eps_t_l, eps_t_a = self.phi_la(zt_l, zt_a, t)
+
+        mu_l = zt_l / alpha_t_given_s_length - \
+            (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
+        mu_a = zt_a / alpha_t_given_s_angle - \
+            (sigma2_t_given_s_angle / alpha_t_given_s_angle / sigma_t_angle) * eps_t_a
+ 
+        # Compute sigma for p(zs | zt).
+        sigma_l = sigma_t_given_s_length * sigma_s_length / sigma_t_length
+        sigma_a = sigma_t_given_s_angle * sigma_s_angle / sigma_t_angle
+       
+        # Sample zs given the paramters derived from zt.
+        zs_l = self.sample_normal_length(mu_l, sigma_l, fix_noise)
+        zs_a = self.sample_normal_angle(mu_a, sigma_a, fix_noise)
+
+        return zs_l, zs_a
+    
+
+    def sample_p_zs_given_zt(self, s, t, zt, rl, ra, 
+                             node_mask, edge_mask, context, 
+                             fix_noise=False, yt=None, ys=None, force_t_zero=False, 
+                             force_t2_zero=False, pesudo_context=None):
+        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        gamma_s = self.gamma(s)
+        gamma_t = self.gamma(t)
+
+        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
+            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
+        sigma_s = self.sigma(gamma_s, target_tensor=zt)
+        sigma_t = self.sigma(gamma_t, target_tensor=zt)
+        alpha_s = self.alpha(gamma_s, target_tensor=zt)
+        alpha_t = self.alpha(gamma_t, target_tensor=zt)
 
         # Neural net prediction.
         if self.property_pred:
-            # if pesudo_context is not None:
-            #     zt = zt.clone().detach().requires_grad_(True)
-                # zt.requires_grad = True
-            (eps_t, pred), eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, node_mask, edge_mask, context)
+            (eps_t, pred) = self.phi_xh(zt, t, rl, ra, node_mask, edge_mask, context)
         else:
-            eps_t, eps_t_l, eps_t_a = self.phi(zt, zt_l, zt_a, t, node_mask, edge_mask, context)
+            eps_t = self.phi_xh(zt, t, rl, ra, node_mask, edge_mask, context)
 
         # Compute mu for p(zs | zt).
         if pesudo_context is not None and (t*1000)[0].item() < 100: # growth stage?
             with torch.enable_grad():
                 loss_fn = torch.nn.L1Loss()
                 zt = zt.clone().detach().requires_grad_(True)
-                zt_l = zt_l.clone().detach().requires_grad_(True)
-                zt_a = zt_a.clone().detach().requires_grad_(True)
+
                 if (t*1000)[0].item() < 10: # growth stage?
                     its = 20
-                    # opt = torch.optim.Adam([zt], lr=0.001)
                     opt = torch.optim.SGD([zt], lr=0.001)
-                    opt_l = torch.optim.SGD([zt_l], lr=0.001)
-                    opt_a = torch.optim.SGD([zt_a], lr=0.001)
                 else:
                     its = 5
                     opt = torch.optim.Adam([zt], lr=0.001)
-                    opt_l = torch.optim.Adam([zt_l], lr=0.001)
-                    opt_a = torch.optim.Adam([zt_a], lr=0.001)
+
                 for i in range(its):
                     self.dynamics.zero_grad()
                     # Compute gamma_s and gamma_t via the network.
@@ -1720,31 +1775,15 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
                     gamma_t = self.inflate_batch_array(self.gamma(t), zt)
                     alpha_t = self.alpha(gamma_t, zt)
                     sigma_t = self.sigma(gamma_t, zt)
-
-                    gamma_s_length = self.inflate_batch_array(self.gamma_length(s), zt_l)
-                    gamma_t_length = self.inflate_batch_array(self.gamma_length(t), zt_l)
-                    alpha_t_length = self.alpha(gamma_t_length, zt_l)
-                    sigma_t_length = self.sigma(gamma_t_length, zt_l)
-                    gamma_s_angle = self.inflate_batch_array(self.gamma_angle(s), zt_a)
-                    gamma_t_angle = self.inflate_batch_array(self.gamma_angle(t), zt_a)
-                    alpha_t_angle = self.alpha(gamma_t_angle, zt_a)
-                    sigma_t_angle = self.sigma(gamma_t_angle, zt_a)
                     
                     if zt.shape[-1] != eps_t.shape[-1]:
                         eps_tmp = eps_t[:,:,:3].clone().detach()
                     else:
                         eps_tmp = eps_t.clone().detach()
-
-                    eps_tmp_l = eps_t_l.clone().detach()    
-                    eps_tmp_a = eps_t_a.clone().detach()
     
                     z0 = (zt * node_mask - sigma_t * eps_tmp) / alpha_t
-                    z0_l = (zt_l - sigma_t_length * eps_tmp_l) / alpha_t_length
-                    z0_a = (zt_a - sigma_t_angle * eps_tmp_a) / alpha_t_angle
-                    
-                    t0 = torch.ones_like(t) * 0.001 
-                                       
-                    (_, pred), _, _ = self.phi(z0, z0_l, z0_a, t0, node_mask, edge_mask, context)
+                    t0 = torch.ones_like(t) * 0.001       
+                    (_, pred) = self.phi_xh(z0, t0, rl, ra, node_mask, edge_mask, context)
                     
                     loss = loss_fn(pred, pesudo_context)
 
@@ -1752,43 +1791,32 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
                     opt.step()
                     opt.zero_grad()
                     
-                    # grad_zt = zt.grad
-                    # print(f't is {(t*1000)[0].item()} grad_zt: {grad_zt[node_mask.squeeze().to(torch.bool)].abs().mean()}, l1 loss: {loss.item()}')
-                    # zt = zt - 0.001 * grad_zt
         
         if self.atom_type_pred:
             atom_type_pred = eps_t[:, :, 3:]
-
             mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3]
-            mu_l = zt_l / alpha_t_given_s_length - \
-                (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
-            mu_a = zt_a / alpha_t_given_s_angle - \
-                (sigma2_t_given_s_angle / alpha_t_given_s_angle / sigma_t_angle) * eps_t_a
-            
         else:
             mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-            mu_l = zt_l / alpha_t_given_s_length - \
-                (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
-            mu_a = zt_a / alpha_t_given_s_angle - \
-                (sigma2_t_given_s_angle / alpha_t_given_s_angle / sigma_t_angle) * eps_t_a
- 
-        ## Compute sigma for p(zs | zt).
+
+        # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
-        sigma_l = sigma_t_given_s_length * sigma_s_length / sigma_t_length
-        sigma_a = sigma_t_given_s_angle * sigma_s_angle / sigma_t_angle
        
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-        zs_l = self.sample_normal_length(mu_l, sigma_l, fix_noise)
-        zs_a = self.sample_normal_angle(mu_a, sigma_a, fix_noise)
 
         # Project down to avoid numerical runaway of the center of gravity.
         if self.atom_type_pred:
-            zs = torch.cat([zs[:, :, :self.n_dims], atom_type_pred], dim=2)
+            zs = torch.cat(
+                [diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
+                atom_type_pred], dim=2
+            )
         else:
-            zs = torch.cat([zs[:, :, :self.n_dims], zs[:, :, self.n_dims:]], dim=2)
+            zs = torch.cat(
+                [diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims], node_mask),
+                zs[:, :, self.n_dims:]], dim=2
+            )
         
-        return zs, zs_l, zs_a
+        return zs
 
     
     def sample_p_zs_given_zt_annel_lang(self, s, t, zt, node_mask, edge_mask, context, 
@@ -1951,9 +1979,22 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
             z_l, z_a = self.sample_combined_length_angle_noise(n_samples, self.len_dim, self.angle_dim, z.device)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        
-        # self.T = 50 ## optimal sampling change timestep
         print('sample T',self.T)
+        print('sample l and a beginning...')
+
+        for s in reversed(range(0, self.T)):
+            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
+            t_array = s_array + 1
+            s_array = s_array / self.T
+            t_array = t_array / self.T
+            z_l, z_a = self.lattice_sample_p_zs_given_zt(s_array, t_array, z_l, z_a, fix_noise)
+
+        # sample l and a, to construct lattice first.
+        rl, ra = self.sample_p_la_given_z0la(z_l, z_a, fix_noise)
+
+        print('sample lengths and angles done.')
+        print('sample x and h beginning...')
+
         for s in reversed(range(0, self.T)):
             try:
                 s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
@@ -1963,19 +2004,12 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
                                 
                 if self.atom_type_pred:
                     z[:, :, self.n_dims:] = 1 # 默认 h_cat 全为 1，不起作用
-                    z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], z_l, z_a, node_mask, edge_mask, 
-                                                context, fix_noise=fix_noise, pesudo_context=pesudo_context)
-                    
+                    z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], rl, ra, node_mask, edge_mask, 
+                                                context, fix_noise=fix_noise, pesudo_context=pesudo_context)                    
                 else:
-                    z, z_l, z_a = self.sample_p_zs_given_zt(s_array, t_array, z, z_l, z_a, node_mask, edge_mask, 
+                    z = self.sample_p_zs_given_zt(s_array, t_array, z, rl, ra, node_mask, edge_mask, 
                                                 context, fix_noise=fix_noise)
-                    
-                if z_l.sum() == 0 and z_a.sum() ==0 and z.sum() == 0:
-                    print('all zero z, break')
-                    break
-
                 utils.safe_synchronize()
-
             except RuntimeError as e:
                 if "out of memory" in str(e):
                     print(f"Out Of Memory occurred at step {s}")
@@ -1987,20 +2021,21 @@ class EquiTransVariationalDiffusion_Lfirst(torch.nn.Module):
         if self.property_pred:
             if self.atom_type_pred:
                 z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
-            x, h, pred, length, angle = self.sample_p_xh_lengths_angles_given_z0(
-                z, z_l, z_a, node_mask, edge_mask, context, fix_noise=fix_noise
+            x, h, pred= self.sample_p_xh_lengths_angles_given_z0(
+                z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
                 )
         else:
             if self.atom_type_pred:
                 z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
-            x, h, length, angle = self.sample_p_xh_lengths_angles_given_z0(
-                z, z_l, z_a, node_mask, edge_mask, context, fix_noise=fix_noise
+            x, h = self.sample_p_xh_lengths_angles_given_z0(
+                z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
             )
-
+        diffusion_utils.assert_mean_zero_with_mask(x, node_mask)
+        print('sample xh done.')
 
         if self.property_pred:
-            return x, h, pred, length, angle
-        return x, h, length, angle
+            return x, h, pred, rl, ra
+        return x, h, rl, ra
 
 
     def log_info(self):
