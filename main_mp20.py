@@ -276,6 +276,8 @@ def main(args):
 
                 if args.save_model and epoch >= args.save_epoch:  
                     args.current_epoch = epoch + 1
+                    print("Saving model at epoch %d" % epoch)
+                    print("saved to outputs/%s/" % args.exp_name)
                     utils.save_model(optim, 'outputs/%s/optim.npy' % args.exp_name)
                     utils.save_model(model, 'outputs/%s/generative_model.npy' % args.exp_name)
                     if args.ema_decay > 0:
