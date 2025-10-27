@@ -159,3 +159,21 @@ def sample_sweep_conditional(args, device, generative_model, dataset_info, prop_
             nodesxsample=nodesxsample, context=context, fix_noise=True
             )
         return one_hot, charges, x, node_mask, length, angle
+
+
+def sample_L(args, device, generative_model, dataset_info,
+           nodesxsample=torch.tensor([10]), # nodesxsample[i]为一个样本的节点数
+           fix_noise=False, sample_steps=1000):
+    max_n_nodes = dataset_info['max_n_nodes']  # this is the maximum node_size in mp20
+
+    assert int(torch.max(nodesxsample)) <= max_n_nodes
+    batch_size = len(nodesxsample)
+
+    if args.probabilistic_model == 'diffusion_L':        
+        print(f'sample Lattice ')
+        args.expand_diff = 0
+        length, angle = generative_model.sample(batch_size, device, fix_noise=fix_noise)        
+    else:
+        raise ValueError(args.probabilistic_model)
+
+    return length, angle

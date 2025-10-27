@@ -251,8 +251,6 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
             property_label=property_label,
             bond_info=bond_info
         )
-
-
         # nll, loss_dict = generative_model(x, h, lengths, angles, node_mask, edge_mask, context, mask_indicator=mask_indicator, 
         #                                     expand_diff=args.expand_diff, property_label=property_label, bond_info=bond_info)
 
@@ -272,9 +270,19 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
 
     return nll, reg_term, mean_abs_z, loss_dict
     
-    # if uni_diffusion:
-    #     return nll, reg_term, mean_abs_z, loss_dict
-    # return nll, reg_term, mean_abs_z
+
+def compute_loss_and_nll_L(args, generative_model, lengths, angles):
+    if args.probabilistic_model == 'diffusion_L':
+        inputs = (lengths, angles)
+        nll, loss_dict = generative_model(*inputs)
+        nll = nll.mean(0)
+        reg_term = torch.tensor([0.]).to(nll.device)
+        mean_abs_z = 0.
+    else:
+        raise ValueError(args.probabilistic_model)
+    
+    return nll, reg_term, mean_abs_z, loss_dict
+
 
 def compute_loss_and_nll_pure_x(args, generative_model, nodes_dist, x, h, 
                                 node_mask, edge_mask, context, uni_diffusion=False, 

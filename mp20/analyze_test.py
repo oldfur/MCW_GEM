@@ -2,11 +2,11 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
-from mp20.sample_epoch import sample, sample_pure_x
+from mp20.sample_epoch import sample, sample_pure_x, sample_L
 from mp20.crystal import lattice_matrix, cart_to_frac, frac_to_cart, array_dict_to_crystal
 from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_loss_and_nll,\
     assert_correctly_masked, remove_mean_with_mask, assert_mean_zero_with_mask, check_mask_correct,\
-    compute_loss_and_nll_pure_x
+    compute_loss_and_nll_pure_x, compute_loss_and_nll_L
 from mp20.ase_tools.viewer import AseView
 from mp20.batch_reshape import reshape
 from pymatgen.analysis.structure_matcher import StructureMatcher
@@ -44,7 +44,9 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     mp20_evaluator = CrystalGenerationEvaluator(
             dataset_cif_list=pd.read_csv(
                 os.path.join(args.dataset_folder_path, f"all.csv")
-            )["cif"].tolist()
+            )["cif"].tolist(),
+            compute_novelty=args.compute_novelty \
+                if epoch >= args.compute_novelty_epoch else False
         )
 
     # sample the crystal structures
@@ -131,7 +133,9 @@ def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info,
     mp20_evaluator = CrystalGenerationEvaluator(
             dataset_cif_list=pd.read_csv(
                 os.path.join(args.dataset_folder_path, f"all.csv")
-            )["cif"].tolist()
+            )["cif"].tolist(),
+            compute_novelty=args.compute_novelty \
+                if epoch >= args.compute_novelty_epoch else False
         )
 
     # sample the crystal structures
@@ -214,6 +218,28 @@ def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info,
                'Novelty': metrics_dict["novel_rate"]})
 
     return metrics_dict
+
+
+def analyze_and_save_L(args, epoch, model_sample, nodes_dist, dataset_info):
+    print(f'Analyzing crystal validity at epoch {epoch}...')
+    batch_size = args.sample_batch_size
+    device = args.device
+
+    # sample the crystal structures
+    nodesxsample = nodes_dist.sample(batch_size)
+
+    length, angle = sample_L(args, device, model_sample, dataset_info, nodesxsample=nodesxsample)
+    length = length.detach().cpu().numpy()
+    angle = angle.detach().cpu().numpy() 
+
+    for i in range(int(batch_size)):
+        lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+                                    angle[i, 0], angle[i, 0], angle[i, 0])
+        if i <= 3:
+            print("sampled lengths:", length[i])
+            print("sampled angles:", angle[i])
+            print("sampled lattice:", lattice)
+
 
 #######################################################################################################
 
@@ -554,4 +580,43 @@ def test_pure_x(args, loader, info, epoch, eval_model, property_norms, nodes_dis
                       f"atom_type_loss: {loss_dict['atom_type_loss'].mean().item():.3f}"
                       )
 
+    return nll_epoch/n_samples
+
+
+def test_L(args, loader, info, epoch, eval_model, partition='Test'):
+    print(f"Testing {partition} at epoch {epoch}...")
+    one_hot_shape = max(info['atom_encoder'].values())
+    device = args.device
+    dtype = args.dtype
+    eval_model.eval()
+    with torch.no_grad():
+        nll_epoch = 0
+        n_samples = 0
+        n_iterations = len(loader)
+
+        for i, data in enumerate(loader):
+            data = reshape(data, device, dtype, include_charges=True)
+            lengths = data['lengths'].to(device, dtype)
+            angles = data['angles'].to(device, dtype)
+            batch_size = lengths.size(0)
+            
+            nll, _, _, loss_dict = compute_loss_and_nll_L(args, eval_model, lengths, angles)
+
+            nll_epoch += nll.item() * batch_size
+            n_samples += batch_size
+            if i % args.n_report_steps == 0:
+                if args.probabilistic_model == 'diffusion_L':
+                    if 'total_error' in loss_dict:
+                        print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
+                              f"NLL: {nll_epoch/n_samples:.2f}", end=', ')
+                        print(f"denoise l: {loss_dict['l_error'].mean().item():.3f}, "
+                              f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
+                              f"total la denoise: {loss_dict['total_error'].mean().item():.3f}", 
+                              end = '')
+                        wandb.log({f"{partition}_denoise_l": loss_dict['l_error'].mean().item()}, commit=True)
+                        wandb.log({f"{partition}_denoise_a": loss_dict['a_error'].mean().item()}, commit=True)
+                        wandb.log({f"{partition}_denoise_la": loss_dict['total_error'].mean().item()}, commit=True)
+
+                else: 
+                    raise ValueError(args.probabilistic_model)
     return nll_epoch/n_samples

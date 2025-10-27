@@ -228,7 +228,7 @@ def array_dict_to_crystal(
                 "sample_idx": x["sample_idx"],
             }
         )
-        # print("Invalid angles, returning absurd crystal.")
+        print("Invalid angles, returning absurd crystal.")
     return crys
 
 
