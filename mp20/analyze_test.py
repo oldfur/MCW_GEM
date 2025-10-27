@@ -235,7 +235,7 @@ def analyze_and_save_L(args, epoch, model_sample, nodes_dist, dataset_info):
     for i in range(int(batch_size)):
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
                                     angle[i, 0], angle[i, 0], angle[i, 0])
-        if i <= 3:
+        if i <= 5:
             print("sampled lengths:", length[i])
             print("sampled angles:", angle[i])
             print("sampled lattice:", lattice)
@@ -612,7 +612,7 @@ def test_L(args, loader, info, epoch, eval_model, partition='Test'):
                         print(f"denoise l: {loss_dict['l_error'].mean().item():.3f}, "
                               f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
                               f"total la denoise: {loss_dict['total_error'].mean().item():.3f}", 
-                              end = '')
+                              end = '\n')
                         wandb.log({f"{partition}_denoise_l": loss_dict['l_error'].mean().item()}, commit=True)
                         wandb.log({f"{partition}_denoise_a": loss_dict['a_error'].mean().item()}, commit=True)
                         wandb.log({f"{partition}_denoise_la": loss_dict['total_error'].mean().item()}, commit=True)

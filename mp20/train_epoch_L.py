@@ -91,7 +91,7 @@ def train_epoch_L(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
                         f"denoise l: {loss_dict['l_error'].mean().item():.3f}, "
                         f"denoise a: {loss_dict['a_error'].mean().item():.3f} ",
                         f"total la denoise: {loss_dict['total_error'].mean().item():.3f}", 
-                        end = '')
+                        end = '\n')
             else:
                 raise ValueError(args.probabilistic_model)
 

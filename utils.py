@@ -18,6 +18,7 @@ def create_folders(args):
 
 # Model checkpoints
 def save_model(model, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(model.state_dict(), path)
 
 def load_model(model, path):
