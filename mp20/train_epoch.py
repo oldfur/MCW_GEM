@@ -219,7 +219,18 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
                     if not isinstance(loss_dict['pred_loss'], int):
                         print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
                     print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
-            else :
+            elif args.probabilistic_model == 'diffusion_Lhard':
+                print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                        f"GradNorm: {grad_norm:.1f}, "
+                        f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end='')
+                if 'atom_type_loss' in loss_dict:
+                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                if args.property_pred:
+                    if not isinstance(loss_dict['pred_loss'], int):
+                        print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
+                    print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")     
+            else:
                 if 'error' in loss_dict:
                     print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
                         f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
@@ -242,7 +253,6 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
                     if not isinstance(loss_dict['pred_loss'], int):
                         print(f", pred_loss: {loss_dict['pred_loss'].mean():.3f}", end='')
                     print(f", pred_rate: {loss_dict['pred_rate'].mean():.3f}")
-                
         nll_epoch.append(nll.item())
 
  

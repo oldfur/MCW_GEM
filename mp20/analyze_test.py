@@ -560,7 +560,17 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                         if not isinstance(loss_dict['pred_loss'], int):
                             print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
                         print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
-
+                elif args.probabilistic_model == 'diffusion_Lhard':
+                    print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
+                              f"NLL: {nll_epoch/n_samples:.2f}", end=', ')
+                    print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}, ", end = '')
+                    if 'atom_type_loss' in loss_dict:
+                        print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                    if args.property_pred:
+                        if not isinstance(loss_dict['pred_loss'], int):
+                            print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
+                        print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
+                    wandb.log({f"{partition}_denoise_x": loss_dict['x_error'].mean().item()}, commit=True)
                 else: # other models
                     print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, "
                         f"NLL: {nll_epoch/n_samples:.2f}")

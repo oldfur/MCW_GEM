@@ -1668,7 +1668,7 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         else:
             z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
 
-        print('sample T: ', self.T)
+        print('sample T', self.T)
         print('sample x and h beginning...')
 
         for s in reversed(range(0, self.T)):
