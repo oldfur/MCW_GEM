@@ -1961,38 +1961,23 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
 
 
     @torch.no_grad()
-    def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, 
+    def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
         """
         Draw samples from the generative model.
         """
+        print('use LatticeGenModel to sample l and a, beginning...')
+        device = node_mask.device
+        rl, ra = LatticeGenModel.sample(n_samples, device, fix_noise=fix_noise)
+        print('sample lengths and angles done.')
+
         if fix_noise:
-            # Noise is broadcasted over the batch axis, useful for visualizations.
             print("using fixed noise......")
             z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-
-            z_l, z_a = self.sample_combined_length_angle_noise(1, self.len_dim, self.angle_dim, z.device) # [1,3]
-            z_l = z_l.repeat(1, n_samples).view(n_samples, -1)
-            z_a = z_a.repeat(1, n_samples).view(n_samples, -1)
         else:
             z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
-            z_l, z_a = self.sample_combined_length_angle_noise(n_samples, self.len_dim, self.angle_dim, z.device)
 
-        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        print('sample T',self.T)
-        print('sample l and a beginning...')
-
-        for s in reversed(range(0, self.T)):
-            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-            t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
-            z_l, z_a = self.lattice_sample_p_zs_given_zt(s_array, t_array, z_l, z_a, fix_noise)
-
-        # sample l and a, to construct lattice first.
-        rl, ra = self.sample_p_la_given_z0la(z_l, z_a, fix_noise)
-
-        print('sample lengths and angles done.')
+        print('sample T: ', self.T)
         print('sample x and h beginning...')
 
         for s in reversed(range(0, self.T)):

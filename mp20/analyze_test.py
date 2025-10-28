@@ -2,7 +2,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
-from mp20.sample_epoch import sample, sample_pure_x, sample_L
+from mp20.sample_epoch import sample, sample_pure_x, sample_L, sample_withL
 from mp20.crystal import lattice_matrix, cart_to_frac, frac_to_cart, array_dict_to_crystal
 from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_loss_and_nll,\
     assert_correctly_masked, remove_mean_with_mask, assert_mean_zero_with_mask, check_mask_correct,\
@@ -118,6 +118,71 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
                'Uniqueness': metrics_dict["unique_rate"], 
                'Novelty': metrics_dict["novel_rate"]})
     
+    print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+               'Uniqueness': metrics_dict["unique_rate"], 
+               'Novelty': metrics_dict["novel_rate"]})
+
+    return metrics_dict
+
+
+def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dist, dataset_info, 
+                     prop_dist, evaluate_condition_generation):
+    print(f'Analyzing crystal validity at epoch {epoch}...')
+    batch_size = args.sample_batch_size
+    device = args.device
+    mp20_evaluator = CrystalGenerationEvaluator(
+            dataset_cif_list=pd.read_csv(
+                os.path.join(args.dataset_folder_path, f"all.csv")
+            )["cif"].tolist(),
+            compute_novelty=args.compute_novelty \
+                if epoch >= args.compute_novelty_epoch else False
+        )
+
+    # sample the crystal structures
+    nodesxsample = nodes_dist.sample(batch_size)
+    one_hot, charges, x, node_mask, length, angle = sample_withL(args, device, model_sample, LatticeGenModel, 
+                                                                 prop_dist=prop_dist, nodesxsample=nodesxsample, 
+                                                                 dataset_info=dataset_info)
+    length = length.detach().cpu().numpy()
+    angle = angle.detach().cpu().numpy() 
+
+    for i in range(int(batch_size)):
+        lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+                                    angle[i, 0], angle[i, 0], angle[i, 0])
+        mask = node_mask[i].squeeze(-1).bool()
+        x_valid = x[i][mask].detach().cpu().numpy()
+        frac_coords_valid = cart_to_frac(x_valid, lattice)
+        one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
+        atom_types = np.argmax(one_hot_valid, axis=-1) 
+        if i <= 5:
+            # print("sampled frac_coords:", frac_coords_valid)
+            print("sampled x", x_valid)
+            print("sampled lengths:", length[i])
+            print("sampled angles:", angle[i])
+            # print("sampled atom types:", atom_types)
+        mp20_evaluator.append_pred_array(
+                {
+                    "atom_types": atom_types,
+                    "pos": x_valid,
+                    "frac_coords": frac_coords_valid,
+                    "lengths": length[i],
+                    "angles": angle[i],
+                    "sample_idx": f"epoch_{epoch}_sample_{i}"
+                }
+            )
+
+    # Compute generation metrics
+    metrics_dict = mp20_evaluator.get_metrics(
+        save=args.visualize,
+        save_dir=args.save_dir + f"/epoch_{epoch}",
+    )   # warning!
+
+    for k, v in metrics_dict.items():
+        print(f"{k}: {v.tolist() if isinstance(v, torch.Tensor) else v}")
+    wandb.log(metrics_dict)
+    wandb.log({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+               'Uniqueness': metrics_dict["unique_rate"], 
+               'Novelty': metrics_dict["novel_rate"]})
     print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
                'Uniqueness': metrics_dict["unique_rate"], 
                'Novelty': metrics_dict["novel_rate"]})
