@@ -250,6 +250,7 @@ def main(args):
     gradnorm_queue.add(3000)  # Add large value that will be flushed.
     best_nll_val = 1e8
     best_nll_test = 1e8
+    best_sample_validity = 0.0
     for epoch in range(args.start_epoch, args.n_epochs):
         start_epoch = time.time()
         train_epoch(args=args, dataloader=dataloaders['train'], epoch=epoch, model_dp=model_dp,
@@ -265,8 +266,9 @@ def main(args):
             wandb.log(model.log_info(), commit=True)
 
             # 分析与保存
-            analyze_and_save_withL(args, epoch, model_ema_dp, LatticeGenModel, nodes_dist, dataset_info, 
-                     prop_dist, args.evaluate_condition_generation)
+            metrics_dict = analyze_and_save_withL(args, epoch, model_ema_dp, LatticeGenModel, nodes_dist, dataset_info, 
+                        prop_dist, args.evaluate_condition_generation)
+            sample_validity = metrics_dict["valid_rate"].sum()/args.sample_batch_size
             nll_val = test(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
                         property_norms, nodes_dist, partition='Val')
             nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
@@ -276,22 +278,40 @@ def main(args):
                 best_nll_val = nll_val
                 best_nll_test = nll_test
 
+            #     if args.save_model and epoch >= args.save_epoch:  
+            #         args.current_epoch = epoch + 1
+            #         print("Saving model at epoch %d" % epoch)
+            #         print("saved to outputs/%s/" % args.exp_name)
+            #         utils.save_model(optim, 'outputs/%s/%s/optim_epoch%s.npy' % \
+            #                         (args.exp_name, args.probabilistic_model, epoch))
+            #         utils.save_model(model, 'outputs/%s/%s/generative_model_epoch%s.npy' % \
+            #                         (args.exp_name, args.probabilistic_model, epoch))
+            #         if args.ema_decay > 0:
+            #             utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema_epoch%s.npy' % \
+            #                             (args.exp_name, args.probabilistic_model, epoch))
+            #         with open('outputs/%s/%s/args.pickle' % (args.exp_name, args.probabilistic_model), 'wb') as f:
+            #             pickle.dump(args, f)
+            
+            if sample_validity > best_sample_validity:
+                best_sample_validity = sample_validity
                 if args.save_model and epoch >= args.save_epoch:  
                     args.current_epoch = epoch + 1
-                    print("Saving model at epoch %d" % epoch)
-                    print("saved to outputs/%s/" % args.exp_name)
-                    utils.save_model(optim, 'outputs/%s/%s/optim.npy' % \
-                                    (args.exp_name, args.probabilistic_model))
-                    utils.save_model(model, 'outputs/%s/%s/generative_model.npy' % \
-                                    (args.exp_name, args.probabilistic_model))
+                    print("Saving best validity model at epoch %d" % epoch)
+                    print("saved to outputs/%s/%s/" % args.exp_name)
+                    utils.save_model(optim, 'outputs/%s/%s/optim_best_validity_epoch%s.npy' % \
+                                    (args.exp_name, args.probabilistic_model, epoch))
+                    utils.save_model(model, 'outputs/%s/%s/generative_model_best_validity_epoch%s.npy' % \
+                                    (args.exp_name, args.probabilistic_model, epoch))
                     if args.ema_decay > 0:
-                        utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema.npy' % \
-                                        (args.exp_name, args.probabilistic_model))
+                        utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema_best_validity_epoch%s.npy' % \
+                                        (args.exp_name, args.probabilistic_model, epoch))
                     with open('outputs/%s/%s/args.pickle' % (args.exp_name, args.probabilistic_model), 'wb') as f:
                         pickle.dump(args, f)
+                    
 
             print('Val loss: %.4f \t Test loss:  %.4f' % (nll_val, nll_test))
             print('Best val loss: %.4f \t Best test loss:  %.4f' % (best_nll_val, best_nll_test))
+            print('Best sample validity: %.4f' % (best_sample_validity))
             wandb.log({"Val loss ": nll_val}, commit=True)
             wandb.log({"Test loss ": nll_test}, commit=True)
             wandb.log({"Best cross-validated test loss ": best_nll_test}, commit=True)

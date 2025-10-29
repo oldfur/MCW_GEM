@@ -191,3 +191,8 @@ python main_Lhard_sample.py --device cpu --no-cuda --exp_name debug_equiformer_m
 ```
 python main_Lhard_train.py --device cpu --no-cuda --exp_name debug_Lhard_mp20 --n_epochs 2 --batch_size 2  --test_epochs 1 --visulaize_epoch 1 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --include_charges False --visualize_every_batch 20000 --num_train 20  --num_val 20 --num_test 20 --lambda_l 1.0 --lambda_a 1.0 --probabilistic_model diffusion_Lhard --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model.npy
 ```
+
+### 服务器训练 diffusion_Lhard
+```
+CUDA_VISIBLE_DEVICES=0,1,2,3 nohup python -u main_Lhard_train.py --device cuda --dp True --exp_name train_Lhard_mp20 --n_epochs 1000 --batch_size 128 --test_epochs 10 --visulaize_epoch 5 --wandb_usr maochenwei-ustc --model DGAP --atom_type_pred 1 --include_charges False --lr 1e-4 --n_report_steps 16 --visualize_every_batch 20000 --n_samples 20 --sample_batch_size 40 --diffusion_steps 1000  --lambda_l 1 --lambda_a 1 --online 0 --num_workers 0 --probabilistic_model diffusion_Lhard -pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model.npy --save_epoch 80 > train.log 2>&1 & 
+```
