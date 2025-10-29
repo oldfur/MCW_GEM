@@ -1658,8 +1658,9 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         Draw samples from the generative model.
         """
         print('use LatticeGenModel to sample l and a, beginning...')
-        device = node_mask.device
-        rl, ra = LatticeGenModel.sample(n_samples, device, fix_noise=fix_noise)
+        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+        rl = rl.to(node_mask.device)
+        ra = ra.to(node_mask.device)
         print('sample lengths and angles done.')
 
         if fix_noise:

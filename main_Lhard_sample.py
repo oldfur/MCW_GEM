@@ -154,7 +154,7 @@ def main(args):
     model, nodes_dist, prop_dist = construct_model(args, dataset_info, dataloaders['train'])
     model = add_first_nan_detector(model)
     
-    LatticeGenModel = get_Lattice_model(args, args.device, dataset_info, uni_diffusion=args.uni_diffusion)
+    LatticeGenModel = get_Lattice_model(args, args.lattice_device, dataset_info, uni_diffusion=args.uni_diffusion)
     
     if prop_dist is not None:
         prop_dist.set_normalizer(property_norms)
@@ -174,8 +174,8 @@ def main(args):
 
     # load LatticeGen Model
     if args.pretrained_Lattice_model:
-        print("LatticeGenModel device: ", args.device)
-        state_dict = torch.load(args.pretrained_Lattice_model, map_location=args.device)    
+        print("LatticeGenModel device: ", args.lattice_device)
+        state_dict = torch.load(args.pretrained_Lattice_model, map_location=args.lattice_device)    
         current_model_dict = LatticeGenModel.state_dict()
         new_state_dict = {}
         for k,v in state_dict.items():
@@ -390,12 +390,14 @@ if __name__ == '__main__':
     parser.add_argument("--compute_novelty", type=int, default=1, help="compute novelty during generation")
     parser.add_argument("--compute_novelty_epoch", type=int, default=150, help="compute novelty during generation")
     parser.add_argument("--pretrained_Lattice_model", type=str, default='', help="the pretrained lattice generation model path")
+    parser.add_argument("--lattice_device", type=str, default="cpu", help="device for the lattice gen model")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()
     
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     args.device = torch.device(args.device)
+    args.lattice_device = torch.device(args.lattice_device)
     args.dtype = torch.float32
 
     print(args)
