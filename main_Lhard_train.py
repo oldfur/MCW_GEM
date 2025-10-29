@@ -266,7 +266,7 @@ def main(args):
             wandb.log(model.log_info(), commit=True)
 
             # 分析与保存
-            metrics_dict = analyze_and_save_withL(args, epoch, model_ema_dp, LatticeGenModel, nodes_dist, dataset_info, 
+            metrics_dict = analyze_and_save_withL(args, epoch, model_ema, LatticeGenModel, nodes_dist, dataset_info, 
                         prop_dist, args.evaluate_condition_generation)
             sample_validity = metrics_dict["valid_rate"].sum()/args.sample_batch_size
             nll_val = test(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
