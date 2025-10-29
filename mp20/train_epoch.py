@@ -48,9 +48,9 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
         angles = data['angles'].to(device, dtype)
 
         if i <= 1 and epoch <= 1:
-          print("lengths for training: ", lengths[:2].item())
-          print("angles for training: ", angles[:2].item())
-          print("x for training: ", x[:2].item())
+          print("lengths for training: ", lengths[:2].tolist())
+          print("angles for training: ", angles[:2].tolist())
+          print("x for training: ", x[:2].tolist())
 
         """
         输出:
