@@ -1,6 +1,7 @@
 # 确保这是文件的第一行
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message="Issues encountered while parsing CIF")
 
 from mp20.sample_epoch import sample, sample_pure_x, sample_L, sample_withL
 from mp20.crystal import lattice_matrix, cart_to_frac, frac_to_cart, array_dict_to_crystal
@@ -9,6 +10,7 @@ from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_l
     compute_loss_and_nll_pure_x, compute_loss_and_nll_L
 from mp20.ase_tools.viewer import AseView
 from mp20.batch_reshape import reshape
+
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core.structure import Structure
 from typing import Dict
