@@ -297,7 +297,7 @@ def main(args):
                 if args.save_model and epoch >= args.save_epoch:  
                     args.current_epoch = epoch + 1
                     print("Saving best validity model at epoch %d" % epoch)
-                    print("saved to outputs/%s/%s/" % args.exp_name)
+                    print("saved to outputs/%s/%s/" % (args.exp_name, args.probabilistic_mode))
                     utils.save_model(optim, 'outputs/%s/%s/optim_best_validity_epoch%s.npy' % \
                                     (args.exp_name, args.probabilistic_model, epoch))
                     utils.save_model(model, 'outputs/%s/%s/generative_model_best_validity_epoch%s.npy' % \
