@@ -17,7 +17,7 @@ from functools import partial   # 固定某个函数的一部分参数，返回�
 import torch
 import wandb
 import numpy as np
-import tqdm
+from tqdm import tqdm
 import pandas as pd
 import os
 
