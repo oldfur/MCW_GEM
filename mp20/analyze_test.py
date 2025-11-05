@@ -682,7 +682,7 @@ def test_L(args, loader, info, epoch, eval_model, partition='Test'):
             nll_epoch += nll.item() * batch_size
             n_samples += batch_size
             if i % args.n_report_steps == 0:
-                if args.probabilistic_model == 'diffusion_L':
+                if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':
                     if 'total_error' in loss_dict:
                         print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
                               f"NLL: {nll_epoch/n_samples:.2f}", end=', ')

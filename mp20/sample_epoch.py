@@ -225,7 +225,7 @@ def sample_L(args, device, generative_model, dataset_info,
     assert int(torch.max(nodesxsample)) <= max_n_nodes
     batch_size = len(nodesxsample)
 
-    if args.probabilistic_model == 'diffusion_L':        
+    if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':        
         print(f'sample Lattice ')
         args.expand_diff = 0
         length, angle = generative_model.sample(batch_size, device, fix_noise=fix_noise)        

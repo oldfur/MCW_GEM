@@ -42,7 +42,7 @@ def train_epoch_L(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
 
         nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll_L(args, model_dp, lengths, angles)
 
-        if args.probabilistic_model == 'diffusion_L':    
+        if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':    
             if 'l_error' in loss_dict:
                 wandb.log({"denoise_lengths": loss_dict['l_error'].mean().item()}, commit=True)
             if 'a_error' in loss_dict:
@@ -82,7 +82,7 @@ def train_epoch_L(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
 
         # print training stats
         if i % args.n_report_steps == 0:
-            if args.probabilistic_model == 'diffusion_L':
+            if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':
                 if 'total_error' in loss_dict:
                     print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
                         f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "

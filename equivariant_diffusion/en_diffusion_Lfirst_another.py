@@ -9,7 +9,6 @@ from equivariant_diffusion.mlp import DiffusionMLP
 from torch_scatter import scatter_mean
 from crystalgrw.data_utils import lattice_params_from_matrix
 from equivariant_diffusion.mlp import DiffusionMLP
-from tqdm import tqdm
 
 
 # Defining some useful util functions.
@@ -256,7 +255,7 @@ def cdf_standard_gaussian(x):
     return 0.5 * (1. + torch.erf(x / math.sqrt(2)))
 
 
-class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
+class EquiTransVariationalDiffusion_Lfirst_another(torch.nn.Module):
     """
     The EquiTransformer Diffusion Module.
     """
@@ -443,7 +442,7 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
                 f'large with sigma_0 {sigma_0:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
 
-    def phi(self, zxh, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None):
+    def phi(self, zxh, zl, za, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None):
         """noise predict network"""   
         # h_cat = zxh[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
         # h_cat = self.phi_unnormalize_h_cat(h_cat, node_mask)
@@ -474,11 +473,15 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         net_eps_x, net_pred_h = self.phi_normalize_xh(net_eps_x, net_pred_h, node_mask)
         net_eps_xh = torch.cat([net_eps_x, net_pred_h], dim=2) # [B, N, 3 + num_classes]
 
+        """forward for l, a"""
+        net_eps_l = self.length_mlp(zl, t)
+        net_eps_a = self.angle_mlp(za, t)
+
         if self.property_pred and self.use_prop_pred:
             property_pred = net_outs['property_pred']
-            return (net_eps_xh, property_pred)
+            return (net_eps_xh, property_pred), net_eps_l, net_eps_a
 
-        return net_eps_xh
+        return net_eps_xh, net_eps_l, net_eps_a
     
 
     def phi_la(self, zl, za, t):
@@ -729,6 +732,65 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         return kl_distance_x + kl_distance_h
 
 
+    def kl_prior_with_lengths_angles(self, xh, lengths, angles, node_mask, lambda_l=0.1, lambda_a=0.1):
+        """
+        计算 q(zT | x) 与 p(zT) = N(0, 1) 的KL散度，包含lengths和angles两个特征。
+        """
+        # xh部分
+        ones = torch.ones((xh.size(0), 1), device=xh.device)
+        gamma_T = self.gamma(ones)
+        alpha_T = self.alpha(gamma_T, xh)
+        mu_T = alpha_T * xh
+        mu_T_x, mu_T_h = mu_T[:, :, :self.n_dims], mu_T[:, :, self.n_dims:]
+        sigma_T_x = self.sigma(gamma_T, mu_T_x)
+        sigma_T_x = sigma_T_x.view(sigma_T_x.shape[0]) # [B]
+        sigma_T_h = self.sigma(gamma_T, mu_T_h)
+        zeros, ones_tensor = torch.zeros_like(mu_T_h), torch.ones_like(sigma_T_h)
+        kl_distance_h = gaussian_KL(mu_T_h, sigma_T_h, zeros, ones_tensor, node_mask)
+        zeros, ones_tensor = torch.zeros_like(mu_T_x), torch.ones_like(sigma_T_x)
+        subspace_d = self.subspace_dimensionality(node_mask)
+        kl_distance_x = gaussian_KL_for_dimension(mu_T_x, sigma_T_x, zeros, ones_tensor, d=subspace_d)
+        
+        # lengths部分
+        ones_length = torch.ones((lengths.size(0), 1), device=lengths.device)
+        gamma_T_length = self.gamma_lengths(ones_length)
+        alpha_T_length = self.alpha(gamma_T_length, lengths)
+        mu_T_length = alpha_T_length * lengths
+        sigma_T_length = self.sigma(gamma_T_length, mu_T_length)
+        zeros_length = torch.zeros_like(mu_T_length)
+        ones_length_tensor = torch.ones_like(sigma_T_length)
+        # 这里直接对所有维度求和
+        kl_distance_length = sum_except_batch(
+            torch.log(ones_length_tensor / sigma_T_length)
+            + 0.5 * (sigma_T_length ** 2 + (mu_T_length - zeros_length) ** 2) / (ones_length_tensor ** 2)
+            - 0.5
+        )
+        
+        # angles部分
+        ones_angle = torch.ones((angles.size(0), 1), device=angles.device)
+        gamma_T_angle = self.gamma_angles(ones_angle)
+        alpha_T_angle = self.alpha(gamma_T_angle, angles)
+        mu_T_angle = alpha_T_angle * angles
+        sigma_T_angle = self.sigma(gamma_T_angle, mu_T_angle)
+        zeros_angle = torch.zeros_like(mu_T_angle)
+        ones_angle_tensor = torch.ones_like(sigma_T_angle)
+        kl_distance_angle = sum_except_batch(
+            torch.log(ones_angle_tensor / sigma_T_angle)
+            + 0.5 * (sigma_T_angle ** 2 + (mu_T_angle - zeros_angle) ** 2) / (ones_angle_tensor ** 2)
+            - 0.5
+        )
+        
+        # print("kl_distance_x: ", kl_distance_x.sum(0))
+        # print("kl_distance_length: ", kl_distance_length.sum(0))
+        # print("kl_distance_angle: ", kl_distance_angle.sum(0))
+
+        if self.atom_type_pred:
+            kl_distance_h = 0.0
+
+        return kl_distance_x + kl_distance_h + kl_distance_length + kl_distance_angle
+
+    
+
     def compute_x_pred(self, net_out, zt, gamma_t):
         # print(f"net_out.shape: {net_out.shape}, zt.shape: {zt.shape}, gamma_t.shape: {gamma_t.shape}")
         """Commputes x_pred, i.e. the most likely prediction of x."""
@@ -774,10 +836,11 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         return error    # [B]
 
 
-    def compute_error_mp20(self, net_out, eps):
+    def compute_error_mp20(self, net_out, lengths_out, angles_out, eps, eps_l, eps_a, lambda_l=0.1, lambda_a=0.1):
         """Computes error, i.e. the most likely prediction of x."""
         eps_t = net_out
-
+        eps_t_lengths = lengths_out
+        eps_t_angles = angles_out
         if self.atom_type_pred:
             eps_t = eps_t[:, :, :self.n_dims]
             eps = eps[:, :, :self.n_dims]
@@ -787,10 +850,16 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
             if self.atom_type_pred:
                 denom = (self.n_dims) * eps_t.shape[1]
             x_error = sum_except_batch((eps - eps_t) ** 2) / denom
+            l_error = sum_except_batch((eps_l - eps_t_lengths) ** 2) * lambda_l / self.len_dim
+            a_error = sum_except_batch((eps_a - eps_t_angles) ** 2) * lambda_a / self.angle_dim
+            error = x_error + l_error + a_error
         else:   # test performance
             x_error = sum_except_batch((eps - eps_t) ** 2)
-
-        return x_error
+            l_error = sum_except_batch((eps_l - eps_t_lengths) ** 2) * lambda_l / self.len_dim
+            a_error = sum_except_batch((eps_a - eps_t_angles) ** 2) * lambda_a / self.angle_dim
+            error = x_error + l_error + a_error
+            
+        return error, x_error, l_error, a_error
     
     def show_x_error(self, net_out, eps):
         eps_t = net_out
@@ -835,6 +904,31 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         log_sigma_x = 0.5 * gamma_0.view(batch_size)
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
+
+
+    def sample_p_la_given_z0la(self, z0_l, z0_a, fix_noise=False):
+        """Samples l,a ~ p(x|z0_l,z0_a)."""
+        bs = z0_l.size(0)
+        zeros = torch.zeros(size=(bs, 1), device=z0_l.device)
+        gamma_0_l = self.gamma_lengths(zeros)
+        gamma_0_a = self.gamma_angles(zeros)
+        sigma_l = self.SNR(-0.5 * gamma_0_l)
+        sigma_a = self.SNR(-0.5 * gamma_0_a)
+
+        l_out, a_out = self.phi_la(z0_l, z0_a, zeros)
+
+        # Compute mu for p(zs | zt).
+        mu_l = self.compute_length_pred(l_out, z0_l, gamma_0_l)
+        mu_a = self.compute_angle_pred(a_out, z0_a, gamma_0_a)
+        
+        # Sample lengths and angles
+        lengths = self.sample_normal_length(mu=mu_l, sigma=sigma_l, fix_noise=fix_noise)
+        angles = self.sample_normal_angle(mu=mu_a, sigma=sigma_a, fix_noise=fix_noise)
+
+        # unnormalize l,a
+        lengths, angles = self.unnormalize_lengths_angles(lengths, angles)
+
+        return lengths, angles
 
 
     def sample_p_xh_lengths_angles_given_z0(self, z0, rl, ra, node_mask, edge_mask, context, fix_noise=False):
@@ -889,6 +983,26 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
             print("mu: ", mu.shape)
         return mu + sigma * eps
     
+    def sample_normal_length(self, mu, sigma, fix_noise=False):
+        bs = 1 if fix_noise else mu.size(0)
+        lengths_dim = mu.size(1)
+        eps = self.sample_length_noise(bs, lengths_dim, mu.device)
+        return mu + sigma * eps
+    
+    def sample_normal_angle(self, mu, sigma, fix_noise=False):
+        bs = 1 if fix_noise else mu.size(0)
+        angles_dim = mu.size(1)
+        eps = self.sample_angle_noise(bs, angles_dim, mu.device)
+        return mu + sigma * eps
+    
+    def sample_normal2(self, mu, sigma, node_mask, fix_noise=False):
+        """Samples from a Normal distribution."""
+        bs = 1 if fix_noise else mu.size(0)
+        eps = utils.sample_gaussian_with_mask(
+                size=(mu.size(0), 1, 1), device=node_mask.device,
+                node_mask=node_mask)
+        
+        return mu + sigma * eps
 
     def log_pxh_given_z0_without_constants(
             self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
@@ -954,9 +1068,12 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         return log_p_xh_given_z
 
 
-    def log_p_xhla_given_z0_without_constants(self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
+    def log_p_xhla_given_z0_without_constants(
+        self, x, h, lengths, angles, z_t, lengths_t, angles_t, gamma_0, gamma_0_length, gamma_0_angle,
+        eps, eps_l, eps_a, net_out, lengths_out, angles_out, node_mask, epsilon=1e-10, lambda_l=0.1, lambda_a=0.1
+    ):
         """
-        计算 x, h 在给定 z0 下的log likelihood
+        计算 x, h, lengths, angles 在给定 z0 下的log likelihood
         """
         # x, h 部分同log_pxh_given_z0_without_constants
         z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
@@ -994,8 +1111,21 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         log_p_h_given_z = log_ph_integer + log_ph_cat
         # print("log_p_h_given_z: ", log_p_h_given_z.sum(0))
 
+        # lengths 部分
+        net_l = lengths_out
+        log_p_length_given_z = -0.5 * sum_except_batch((eps_l - net_l) ** 2)
+        # print("log_p_length_given_z: ", log_p_length_given_z.sum(0))
+
+        # angles 部分
+        net_a = angles_out
+        log_p_angle_given_z = -0.5 * sum_except_batch((eps_a - net_a) ** 2)
+        # print("log_p_angle_given_z: ", log_p_angle_given_z.sum(0))
+
         # 合并所有对数似然
-        log_p_xh_lengths_angles_given_z = log_p_x_given_z_without_constants + log_p_h_given_z
+        log_p_xh_lengths_angles_given_z = (
+            log_p_x_given_z_without_constants + log_p_h_given_z +
+            log_p_length_given_z * lambda_l + log_p_angle_given_z * lambda_a
+        )
         return log_p_xh_lengths_angles_given_z
 
 
@@ -1142,48 +1272,73 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
 
         # Compute gamma_s and gamma_t via the network.
         gamma_s = self.inflate_batch_array(self.gamma(s), x)
+        gamma_s_length = self.inflate_batch_array(self.gamma_lengths(s), lengths)
+        gamma_s_angle = self.inflate_batch_array(self.gamma_angles(s), angles)
         gamma_t = self.inflate_batch_array(self.gamma(t), x)
+        gamma_t_length = self.inflate_batch_array(self.gamma_lengths(t), lengths)
+        gamma_t_angle = self.inflate_batch_array(self.gamma_angles(t), angles)
 
         # Compute alpha_t and sigma_t from gamma.
         alpha_t = self.alpha(gamma_t, x)
+        alpha_t_length = self.alpha(gamma_t_length, lengths)
+        alpha_t_angle = self.alpha(gamma_t_angle, angles)
         sigma_t = self.sigma(gamma_t, x)
+        sigma_t_length = self.sigma(gamma_t_length, lengths)
+        sigma_t_angle = self.sigma(gamma_t_angle, angles)
         
         # Sample zt ~ Normal(alpha_t x, sigma_t)
         eps = self.sample_combined_position_feature_noise(
             n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
+        eps_length = self.sample_length_noise(n_samples=batch_size, length_dim=lengths.size(1), device=lengths.device)
+        eps_angle = self.sample_angle_noise(n_samples=batch_size, angle_dim=angles.size(1), device=angles.device)
 
         # Concatenate x, h[integer] and h[categorical].
-        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)  
-        # xh: [B, N, n_dims + num_classes + include_charges]
+        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)  # [B, N, n_dims + num_classes + include_charges]
         fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         if self.atom_type_pred:
             z_t = alpha_t * x + sigma_t * eps   
             z_t = torch.cat([z_t, fix_h], dim=2)
+            z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
+            z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
         else:
             z_t = alpha_t * xh + sigma_t * eps
+            z_t_length = alpha_t_length * lengths + sigma_t_length * eps_length
+            z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
 
         diffusion_utils.assert_mean_zero_with_mask(z_t[:, :, :self.n_dims], node_mask)
         
         # phi: noise prediction model
         if self.property_pred:
-            (net_out, property_pred) = self.phi(z_t, t, node_mask, edge_mask, 
-                                                context, rl=lengths, ra=angles)
+            (net_out, property_pred), lengths_out, angles_out = self.phi(
+                z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context, 
+                rl=lengths, ra=angles)
         else:
             # Neural net prediction.
-            net_out = self.phi(z_t, t, node_mask, edge_mask, 
-                               context, rl=lengths, ra=angles)
+            net_out, lengths_out, angles_out = self.phi(z_t, z_t_length, z_t_angle, t, node_mask, edge_mask, context, 
+                                                        rl=lengths, ra=angles)
+
 
         # Compute the error.
-        x_error = self.compute_error_mp20(net_out, eps)
+        error, x_error, l_error, a_error = self.compute_error_mp20(net_out, lengths_out, angles_out, \
+            eps, eps_length, eps_angle, self.lambda_l, self.lambda_a)
+
         if self.training and self.loss_type == 'l2':
             SNR_weight_x = torch.ones_like(x_error)
+            SNR_weight_l = torch.ones_like(l_error)
+            SNR_weight_a = torch.ones_like(a_error)
         else:
             # Compute weighting with SNR: (SNR(s-t) - 1) for epsilon parametrization.
             SNR_weight_x = (self.SNR(gamma_s - gamma_t) - 1).squeeze(1).squeeze(1)
+            SNR_weight_l = (self.SNR(gamma_s_length - gamma_t_length) - 1).squeeze(1)
+            SNR_weight_a = (self.SNR(gamma_s_angle - gamma_t_angle) - 1).squeeze(1)
         assert x_error.size() == SNR_weight_x.size()
-        loss_t_larger_than_zero = 0.5 * (SNR_weight_x * x_error)
+        assert l_error.size() == SNR_weight_l.size()
+        assert a_error.size() == SNR_weight_a.size()
+        loss_t_larger_than_zero = 0.5 * (SNR_weight_x * x_error + 
+                                         SNR_weight_l * l_error + 
+                                         SNR_weight_a * a_error)
 
         # The _constants_ depending on sigma_0 from the
         # cross entropy term E_q(z0 | x) [log p(x | z0)].
@@ -1194,7 +1349,8 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
             neg_log_constants = torch.zeros_like(neg_log_constants)
 
         # The KL between q(zT | x) and p(zT) = Normal(0, 1). Should be close to zero.
-        kl_prior = self.kl_prior(xh, node_mask)
+        kl_prior = self.kl_prior_with_lengths_angles(xh, lengths, angles, node_mask, self.lambda_l, self.lambda_a)
+        # 是否有归一化lengths和angles？
 
         # Combining the terms
         if t0_always:   # test
@@ -1205,29 +1361,43 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
             # Compute noise values for t = 0.
             t_zeros = torch.zeros_like(s)
             gamma_0 = self.inflate_batch_array(self.gamma(t_zeros), x)
+            gamma_0_length = self.inflate_batch_array(self.gamma_lengths(t_zeros), lengths)
+            gamma_0_angle = self.inflate_batch_array(self.gamma_angles(t_zeros), angles)
             alpha_0 = self.alpha(gamma_0, x)
+            alpha_0_length = self.alpha(gamma_0_length, lengths)
+            alpha_0_angle = self.alpha(gamma_0_angle, angles)
             sigma_0 = self.sigma(gamma_0, x)
+            sigma_0_length = self.sigma(gamma_0_length, lengths)
+            sigma_0_angle = self.sigma(gamma_0_angle, angles)
 
             # Sample z_0 given x,l,a,h for timestep t, from q(z_t | x,l,a,h)
             eps_0 = self.sample_combined_position_feature_noise(
                 n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
+            eps_0_length = self.sample_length_noise(n_samples=batch_size, length_dim=lengths.size(1), device=lengths.device)
+            eps_0_angle = self.sample_angle_noise(n_samples=batch_size, angle_dim=angles.size(1), device=angles.device)
 
             if self.atom_type_pred:
                 z_0 = alpha_0 * x + sigma_0 * eps_0
                 z_0 = torch.cat([z_0, fix_h], dim=2)
+                z_0_length = alpha_0_length * lengths + sigma_0_length * eps_0_length
+                z_0_angle = alpha_0_angle * angles + sigma_0_angle * eps_0_angle
             else:
                 z_0 = alpha_0 * xh + sigma_0 * eps_0
+                z_0_length = alpha_0_length * lengths + sigma_0_length * eps_0_length
+                z_0_angle = alpha_0_angle * angles + sigma_0_angle * eps_0_angle
 
             if self.property_pred:
-                (net_out, property_pred) = self.phi(z_0, t_zeros, node_mask, edge_mask, context, 
-                                                    rl=lengths, ra=angles)
+                (net_out, property_pred), lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context, 
+                                                                             rl=lengths, ra=angles)
             else:
-                net_out = self.phi(z_0, t_zeros, node_mask, edge_mask, context, 
-                                rl=lengths, ra=angles)
+                net_out, lengths_out, angles_out = self.phi(z_0, z_0_length, z_0_angle, t_zeros, node_mask, edge_mask, context, 
+                                                            rl=lengths, ra=angles)
 
             # Compute the error for t = 0.            
             loss_term_0 = -self.log_p_xhla_given_z0_without_constants(
-                x, h, z_0, gamma_0, eps_0, net_out, node_mask)
+                x, h, lengths, angles, z_0, z_0_length, z_0_angle, gamma_0, gamma_0_length, gamma_0_angle,
+                eps_0, eps_0_length, eps_0_angle, net_out, lengths_out, angles_out, node_mask
+            , lambda_l=self.lambda_l, lambda_a=self.lambda_a)
 
             assert kl_prior.size() == estimator_loss_terms.size()
             assert kl_prior.size() == neg_log_constants.size()
@@ -1235,18 +1405,20 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
 
             # Combine all terms.
             loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
-            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
+            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0)) # main loss term
 
         else:
             # Computes the L_0 term (even if gamma_t is not actually gamma_0)
             # and this will later be selected via masking.
             loss_term_0 = -self.log_p_xhla_given_z0_without_constants(
-                x, h, z_t, gamma_t, eps, net_out, node_mask) 
+                x, h, lengths, angles, z_t, lengths_out, angles_out, gamma_t, gamma_t_length, gamma_t_angle,
+                eps, eps_length, eps_angle, net_out, lengths_out, angles_out, node_mask
+            , lambda_l=self.lambda_l, lambda_a=self.lambda_a)   # main loss term
 
             t_is_not_zero = 1 - t_is_zero
 
             loss_t = loss_term_0 * t_is_zero.squeeze() + t_is_not_zero.squeeze() * loss_t_larger_than_zero
-            # loss_term_0: main loss term
+            # print("loss_term_0: ", loss_term_0.sum(0))  # main loss term
 
             # Only upweigh estimator if using the vlb objective.
             if self.training and self.loss_type == 'l2':
@@ -1266,7 +1438,10 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         loss_dict = {'t': t_int.squeeze(), 
                      'loss':loss.squeeze(),
                      'loss_t': loss_t.squeeze(),
+                     'total_error': error.squeeze(),
                      'x_error': x_error.squeeze(),
+                     'l_error': l_error.squeeze(),
+                     'a_error': a_error.squeeze(),
                      'kl_prior': kl_prior.squeeze(),
                      'neg_log_constants': neg_log_constants.squeeze(),
                      'estimator_loss_terms': estimator_loss_terms.squeeze(),
@@ -1396,7 +1571,81 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         
         return new_context, mae
     
+    def evaluate_property_mp20(self, x, l, a, h, org_context, node_mask=None, edge_mask=None):
+        # Normalize data, take into account volume change in x.
+        batch_size = x.size(0)
+        x, h, delta_log_px = self.normalize(x, h, node_mask)
+        l,a, _, _ = self.normalize_lengths_angles(l, a)
+        
+        t_int = torch.ones((batch_size, 1), device=x.device).float() # t_int all zero
+        s_int = t_int - 1
+        s_array = s_int / self.T
+        t_array = t_int / self.T
 
+        
+        # Compute gamma_s and gamma_t via the network.
+        gamma_s = self.inflate_batch_array(self.gamma(s_array), x)
+        gamma_t = self.inflate_batch_array(self.gamma(t_array), x)
+        gamma_s_l = self.inflate_batch_array(self.gamma_length(s_array), l)
+        gamma_t_l = self.inflate_batch_array(self.gamma_length(t_array), l)
+        gamma_s_a = self.inflate_batch_array(self.gamma_angle(s_array), a)
+        gamma_t_a = self.inflate_batch_array(self.gamma_angle(t_array), a)
+
+        # Compute alpha_t and sigma_t from gamma.
+        alpha_t = self.alpha(gamma_t, x)
+        sigma_t = self.sigma(gamma_t, x)
+        alpha_t_l = self.alpha(gamma_t_l, l)
+        sigma_t_l = self.sigma(gamma_t_l, l)
+        alpha_t_a = self.alpha(gamma_t_a, a)
+        sigma_t_a = self.sigma(gamma_t_a, a)
+
+        # Sample zt ~ Normal(alpha_t x, sigma_t)
+        eps = self.sample_combined_position_feature_noise(
+            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
+        eps_l, eps_a = self.sample_combined_length_angle_noise(
+            n_samples=batch_size,length_dim=l.size(1), angle_dim=a.size(1), device=l.device)
+
+
+        # Concatenate x, h[integer] and h[categorical].
+        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        # Sample z_t given x, h for timestep t, from q(z_t | x, h)
+        z_t = alpha_t * xh + sigma_t * eps
+        z_t_l = alpha_t_l * l + sigma_t_l * eps_l
+        z_t_a = alpha_t_a * a + sigma_t_a * eps_a
+        
+        new_context = None
+        
+        
+        # perpare the context, z_t, keep unchanged, copy the sample method
+        for s in reversed(range(0, self.T)):
+            n_samples= batch_size
+
+            s_array2 = torch.full((n_samples, 1), fill_value=s, device=x.device)
+            t_array2 = s_array2 + 1
+            s_array2 = s_array2 / self.T
+            t_array2 = t_array2 / self.T
+            
+            # sample new_context
+            if new_context is None:
+                new_context = utils.sample_gaussian_with_mask(
+                    size=(batch_size, 1, org_context.size(-1)), device=node_mask.device,
+                    node_mask=node_mask)
+                
+            # 参考Unigem中uni_diffusion为true时sample_p_zs_given_zt的返回值，目前不用这个函数    
+            _, _, new_context = self.sample_p_zs_given_zt(
+                    s_array, t_array, z_t, z_t_l, z_t_a, node_mask, 
+                    edge_mask, new_context, fix_noise=False, 
+                    yt=t_array2, ys=s_array2, force_t_zero=True) 
+            # z_t and t keep unchanged
+            # 更新的是new_context
+
+        # calcuate the mae between new_context and org_context
+        mae = torch.mean(torch.abs(new_context - org_context))
+        
+        return new_context, mae
+
+    # def forward(self, x, h, lengths, angles, node_mask=None, edge_mask=None, context=None, 
+    #             mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
     def forward(self, *args, **kwargs):
         """
         Computes the loss (type l2 or NLL) if training. And if eval then always computes NLL.
@@ -1448,7 +1697,42 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         
         return neg_log_pxhla, loss_dict
         
+
+    def lattice_sample_p_zs_given_zt(self, s, t, zt_l, zt_a, fix_noise=False):
+        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        gamma_s_length = self.gamma_lengths(s)
+        gamma_s_angle = self.gamma_angles(s)
+        gamma_t_length = self.gamma_lengths(t)
+        gamma_t_angle = self.gamma_angles(t)
+
+        sigma2_t_given_s_length, sigma_t_given_s_length, alpha_t_given_s_length = \
+                self.sigma_and_alpha_t_given_s(gamma_t_length, gamma_s_length, zt_l)
+        sigma2_t_given_s_angle, sigma_t_given_s_angle, alpha_t_given_s_angle = \
+                self.sigma_and_alpha_t_given_s(gamma_t_angle, gamma_s_angle, zt_a)
+        sigma_s_length = self.sigma(gamma_s_length, target_tensor=zt_l)
+        sigma_t_length = self.sigma(gamma_t_length, target_tensor=zt_l)
+        sigma_s_angle = self.sigma(gamma_s_angle, target_tensor=zt_a)
+        sigma_t_angle = self.sigma(gamma_t_angle, target_tensor=zt_a)
+
+        # Neural net prediction for l and a.
+        eps_t_l, eps_t_a = self.phi_la(zt_l, zt_a, t)
+
+        mu_l = zt_l / alpha_t_given_s_length - \
+            (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
+        mu_a = zt_a / alpha_t_given_s_angle - \
+            (sigma2_t_given_s_angle / alpha_t_given_s_angle / sigma_t_angle) * eps_t_a
+ 
+        # Compute sigma for p(zs | zt).
+        sigma_l = sigma_t_given_s_length * sigma_s_length / sigma_t_length
+        sigma_a = sigma_t_given_s_angle * sigma_s_angle / sigma_t_angle
+       
+        # Sample zs given the paramters derived from zt.
+        zs_l = self.sample_normal_length(mu_l, sigma_l, fix_noise)
+        zs_a = self.sample_normal_angle(mu_a, sigma_a, fix_noise)
+
+        return zs_l, zs_a
     
+
     def sample_p_zs_given_zt(self, s, t, zt, rl, ra, 
                              node_mask, edge_mask, context, 
                              fix_noise=False, yt=None, ys=None, force_t_zero=False, 
@@ -1642,6 +1926,30 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         return z
     
 
+    def sample_combined_length_angle_noise(self, n_samples, length_dim, angle_dim, device):
+        z_lengths = self.sample_length_noise(n_samples, length_dim, device)
+        z_angles = self.sample_angle_noise(n_samples, angle_dim, device)
+        return z_lengths, z_angles
+
+
+    def sample_length_noise(self, n_samples, length_dim, device):
+        """
+        Samples mean-centered normal noise for lengths.
+        """
+        z_lengths = utils.sample_gaussian(
+            size=(n_samples, length_dim), device=device)
+        return z_lengths
+    
+
+    def sample_angle_noise(self, n_samples, angle_dim, device):
+        """
+        Samples mean-centered normal noise for angles.
+        """
+        z_angles = utils.sample_gaussian(
+            size=(n_samples, angle_dim), device=device)
+        return z_angles
+
+
     def sample_combined_position_noise(self, n_samples, n_nodes, node_mask):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
@@ -1653,28 +1961,41 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
 
 
     @torch.no_grad()
-    def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
+    def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
         """
         Draw samples from the generative model.
         """
-        print('use LatticeGenModel to sample l and a, beginning...')
-        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
-        rl = rl.to(node_mask.device)
-        ra = ra.to(node_mask.device)
-        print('sample lengths and angles done.')
-
         if fix_noise:
+            # Noise is broadcasted over the batch axis, useful for visualizations.
             print("using fixed noise......")
             z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
+
+            z_l, z_a = self.sample_combined_length_angle_noise(1, self.len_dim, self.angle_dim, z.device) # [1,3]
+            z_l = z_l.repeat(1, n_samples).view(n_samples, -1)
+            z_a = z_a.repeat(1, n_samples).view(n_samples, -1)
         else:
             z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
+            z_l, z_a = self.sample_combined_length_angle_noise(n_samples, self.len_dim, self.angle_dim, z.device)
 
-        print('sample T', self.T)
+        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
+        print('sample T',self.T)
+        print('sample l and a beginning...')
+
+        for s in reversed(range(0, self.T)):
+            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
+            t_array = s_array + 1
+            s_array = s_array / self.T
+            t_array = t_array / self.T
+            z_l, z_a = self.lattice_sample_p_zs_given_zt(s_array, t_array, z_l, z_a, fix_noise)
+
+        # sample l and a, to construct lattice first.
+        rl, ra = self.sample_p_la_given_z0la(z_l, z_a, fix_noise)
+
+        print('sample lengths and angles done.')
         print('sample x and h beginning...')
 
-        # for s in reversed(range(0, self.T)):
-        for s in tqdm(reversed(range(0, self.T)), desc="Sampling diffusion steps"):
+        for s in reversed(range(0, self.T)):
             try:
                 s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
                 t_array = s_array + 1
@@ -1782,6 +2103,7 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         return pred_x, pred_atom_types
 
 
+
     def reshape_atom_types(self, atom_types_flat, node_mask, num_classes, batch=None, natoms=None):
         """
         atom_types_flat: [Σ natoms, H]
@@ -1801,3 +2123,4 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
             atom_types_full[i, :n_i] = atom_types_flat[batch == i]
 
         return atom_types_full
+

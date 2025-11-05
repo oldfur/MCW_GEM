@@ -235,7 +235,7 @@ def main(args):
             train_epoch_pure_x(args=args, dataloader=dataloaders['train'], epoch=epoch, model=model, model_dp=model_dp,
                         model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
                         dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
-        elif args.probabilistic_model == 'diffusion_L':
+        elif args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':
             train_epoch_L(args=args, dataloader=dataloaders['train'], epoch=epoch, model_dp=model_dp,
                         model_ema=model_ema, ema=ema, property_norms=property_norms, nodes_dist=nodes_dist, 
                         dataset_info=dataset_info, gradnorm_queue=gradnorm_queue, optim=optim, prop_dist=prop_dist)
@@ -266,7 +266,7 @@ def main(args):
                                property_norms, nodes_dist, partition='Val')
                 nll_test = test_pure_x(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
                                 property_norms, nodes_dist, partition='Test')
-            elif args.probabilistic_model == 'diffusion_L':
+            elif args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':
                 analyze_and_save_L(args, epoch, model_ema, nodes_dist, dataset_info)
                 nll_val = test_L(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, partition='Val')
                 nll_test = test_L(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, partition='Test')
@@ -286,13 +286,13 @@ def main(args):
                     args.current_epoch = epoch + 1
                     print("Saving model at epoch %d" % epoch)
                     print("saved to outputs/%s/" % args.exp_name)
-                    utils.save_model(optim, 'outputs/%s/%s/optim.npy' % \
-                                    (args.exp_name, args.probabilistic_model))
-                    utils.save_model(model, 'outputs/%s/%s/generative_model.npy' % \
-                                    (args.exp_name, args.probabilistic_model))
+                    utils.save_model(optim, 'outputs/%s/%s/optim_epoch%s.npy' % \
+                                    (args.exp_name, args.probabilistic_model, epoch))
+                    utils.save_model(model, 'outputs/%s/%s/generative_model_epoch%s.npy' % \
+                                    (args.exp_name, args.probabilistic_model, epoch))
                     if args.ema_decay > 0:
-                        utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema.npy' % \
-                                        (args.exp_name, args.probabilistic_model))
+                        utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema_epoch%s.npy' % \
+                                        (args.exp_name, args.probabilistic_model, epoch))
                     with open('outputs/%s/%s/args.pickle' % (args.exp_name, args.probabilistic_model), 'wb') as f:
                         pickle.dump(args, f)
 

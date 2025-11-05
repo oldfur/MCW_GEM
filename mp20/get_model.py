@@ -15,47 +15,87 @@ from equivariant_diffusion.en_diffusion_Lhard import EquiTransVariationalDiffusi
 from equivariant_diffusion.en_diffusion_pure_x import EnVariationalDiffusion_pure_x
 from equivariant_diffusion.en_diffusion_concat import EnVariationalDiffusion_concat
 from equivariant_diffusion.diffusion_L import VariationalDiffusion_L
+from equivariant_diffusion.diffusion_L_another import VariationalDiffusion_L_another
 from mp20.utils import extract_attribute_safe, extract_property_safe
 
 
 def get_Lattice_model(args, device, dataset_info, uni_diffusion=False, pretrain=False):
     net_dynamics = None
     in_node_nf = max(dataset_info['atom_encoder'].values()) + int(args.include_charges)
-    net = VariationalDiffusion_L(
-        n_dims=3, device=device,
-        dynamics=net_dynamics,
-        in_node_nf=in_node_nf,
-        pre_training=pretrain,
-        uni_diffusion=uni_diffusion,
-        timesteps=args.diffusion_steps,
-        property_pred=args.property_pred,
-        freeze_gradient=args.freeze_gradient,
-        target_property=args.target_property,
-        noise_schedule=args.diffusion_noise_schedule,
-        noise_precision=args.diffusion_noise_precision,
-        loss_type=args.diffusion_loss_type,
-        norm_values=args.normalize_factors,
-        norm_biases=args.normalize_biases,
-        include_charges=args.include_charges,
-        prediction_threshold_t=args.prediction_threshold_t,
-        use_prop_pred=args.use_prop_pred if hasattr(args, 'use_prop_pred') else 1,
-        unnormal_time_step=args.unnormal_time_step if "unnormal_time_step" in args else False,
-        only_noisy_node=args.only_noisy_node if "only_noisy_node" in args else False,
-        half_noisy_node=args.half_noisy_node if "half_noisy_node" in args else False,
-        sep_noisy_node=args.sep_noisy_node if "sep_noisy_node" in args else False,
-        atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
-        bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,
-        bond_pred=args.bond_pred if "bond_pred" in args else False,
-        atom_types=len(dataset_info['atom_decoder']),
-        bfn_str=args.bfn_str if "bfn_str" in args else False,
-        optimal_sampling=args.optimal_sampling if "optimal_sampling" in args else False,
-        str_loss_type=args.str_loss_type if "str_loss_type" in args else "denoise_loss",
-        str_sigma_x=args.str_sigma_x if "str_sigma_x" in args else 0.05,
-        str_sigma_h=args.str_sigma_h if "str_sigma_h" in args else 0.05,
-        str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
-        temp_index=args.temp_index if "temp_index" in args else 0,
-        lambda_l=args.lambda_l, lambda_a=args.lambda_a,
-    )
+    if args.LatticeGenModel == 'diffusion_L':
+        net = VariationalDiffusion_L(
+            n_dims=3, device=device,
+            dynamics=net_dynamics,
+            in_node_nf=in_node_nf,
+            pre_training=pretrain,
+            uni_diffusion=uni_diffusion,
+            timesteps=args.diffusion_steps,
+            property_pred=args.property_pred,
+            freeze_gradient=args.freeze_gradient,
+            target_property=args.target_property,
+            noise_schedule=args.diffusion_noise_schedule,
+            noise_precision=args.diffusion_noise_precision,
+            loss_type=args.diffusion_loss_type,
+            norm_values=args.normalize_factors,
+            norm_biases=args.normalize_biases,
+            include_charges=args.include_charges,
+            prediction_threshold_t=args.prediction_threshold_t,
+            use_prop_pred=args.use_prop_pred if hasattr(args, 'use_prop_pred') else 1,
+            unnormal_time_step=args.unnormal_time_step if "unnormal_time_step" in args else False,
+            only_noisy_node=args.only_noisy_node if "only_noisy_node" in args else False,
+            half_noisy_node=args.half_noisy_node if "half_noisy_node" in args else False,
+            sep_noisy_node=args.sep_noisy_node if "sep_noisy_node" in args else False,
+            atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
+            bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,
+            bond_pred=args.bond_pred if "bond_pred" in args else False,
+            atom_types=len(dataset_info['atom_decoder']),
+            bfn_str=args.bfn_str if "bfn_str" in args else False,
+            optimal_sampling=args.optimal_sampling if "optimal_sampling" in args else False,
+            str_loss_type=args.str_loss_type if "str_loss_type" in args else "denoise_loss",
+            str_sigma_x=args.str_sigma_x if "str_sigma_x" in args else 0.05,
+            str_sigma_h=args.str_sigma_h if "str_sigma_h" in args else 0.05,
+            str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
+            temp_index=args.temp_index if "temp_index" in args else 0,
+            lambda_l=args.lambda_l, lambda_a=args.lambda_a,
+        )
+    elif args.LatticeGenModel == 'diffusion_L_another':
+        net = VariationalDiffusion_L_another(
+            n_dims=3, device=device,
+            dynamics=net_dynamics,
+            in_node_nf=in_node_nf,
+            pre_training=pretrain,
+            uni_diffusion=uni_diffusion,
+            timesteps=args.diffusion_steps,
+            property_pred=args.property_pred,
+            freeze_gradient=args.freeze_gradient,
+            target_property=args.target_property,
+            noise_schedule=args.diffusion_noise_schedule,
+            noise_precision=args.diffusion_noise_precision,
+            loss_type=args.diffusion_loss_type,
+            norm_values=args.normalize_factors,
+            norm_biases=args.normalize_biases,
+            include_charges=args.include_charges,
+            prediction_threshold_t=args.prediction_threshold_t,
+            use_prop_pred=args.use_prop_pred if hasattr(args, 'use_prop_pred') else 1,
+            unnormal_time_step=args.unnormal_time_step if "unnormal_time_step" in args else False,
+            only_noisy_node=args.only_noisy_node if "only_noisy_node" in args else False,
+            half_noisy_node=args.half_noisy_node if "half_noisy_node" in args else False,
+            sep_noisy_node=args.sep_noisy_node if "sep_noisy_node" in args else False,
+            atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
+            bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,
+            bond_pred=args.bond_pred if "bond_pred" in args else False,
+            atom_types=len(dataset_info['atom_decoder']),
+            bfn_str=args.bfn_str if "bfn_str" in args else False,
+            optimal_sampling=args.optimal_sampling if "optimal_sampling" in args else False,
+            str_loss_type=args.str_loss_type if "str_loss_type" in args else "denoise_loss",
+            str_sigma_x=args.str_sigma_x if "str_sigma_x" in args else 0.05,
+            str_sigma_h=args.str_sigma_h if "str_sigma_h" in args else 0.05,
+            str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
+            temp_index=args.temp_index if "temp_index" in args else 0,
+            lambda_l=args.lambda_l, lambda_a=args.lambda_a,
+            )
+    else:
+        net = None
     
     return net
     
@@ -170,7 +210,8 @@ def get_model(args, device, dataset_info, dataloader_train,
             use_pbc=True, # use pbc
             otf_graph=True, # on-the-fly graph
             )
-    elif args.probabilistic_model == 'diffusion_L':
+    elif args.probabilistic_model == 'diffusion_L' or \
+        args.probabilistic_model == 'diffusion_L_another':
         net_dynamics = None
     else:
         raise ValueError(args.probabilistic_model)
@@ -522,6 +563,50 @@ def get_model(args, device, dataset_info, dataloader_train,
             loss_type=args.diffusion_loss_type,
             norm_values=args.normalize_factors,
             norm_biases= args.normalize_biases,
+            include_charges=args.include_charges,
+            prediction_threshold_t=args.prediction_threshold_t,
+            use_prop_pred=args.use_prop_pred if hasattr(args, 'use_prop_pred') else 1,
+            unnormal_time_step=args.unnormal_time_step if "unnormal_time_step" in args else False,
+            only_noisy_node=args.only_noisy_node if "only_noisy_node" in args else False,
+            half_noisy_node=args.half_noisy_node if "half_noisy_node" in args else False,
+            sep_noisy_node=args.sep_noisy_node if "sep_noisy_node" in args else False,
+            atom_type_pred=args.atom_type_pred if "atom_type_pred" in args else False,
+            bfn_schedule=args.bfn_schedule if "bfn_schedule" in args else False,
+            bond_pred=args.bond_pred if "bond_pred" in args else False,
+            atom_types=len(dataset_info['atom_decoder']),
+            bfn_str=args.bfn_str if "bfn_str" in args else False,
+            optimal_sampling=args.optimal_sampling if "optimal_sampling" in args else False,
+            str_loss_type=args.str_loss_type if "str_loss_type" in args else "denoise_loss",
+            str_sigma_x=args.str_sigma_x if "str_sigma_x" in args else 0.05,
+            str_sigma_h=args.str_sigma_h if "str_sigma_h" in args else 0.05,
+            str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
+            temp_index=args.temp_index if "temp_index" in args else 0,
+            lambda_l=args.lambda_l, lambda_a=args.lambda_a,
+            )
+        
+        # 假设你的模型变量名为 model
+        total_params = sum(p.numel() for p in vdm.parameters())
+        trainable_params = sum(p.numel() for p in vdm.parameters() if p.requires_grad)
+        print(f"总参数量: {total_params}")
+        print(f"可训练参数量: {trainable_params}")
+        return vdm, nodes_dist, prop_dist
+
+    elif args.probabilistic_model == 'diffusion_L_another':
+        vdm = VariationalDiffusion_L_another(
+            n_dims=3, device=device,
+            dynamics=net_dynamics,
+            in_node_nf=in_node_nf,
+            pre_training=pretrain,
+            uni_diffusion=uni_diffusion,
+            timesteps=args.diffusion_steps,
+            property_pred=args.property_pred,
+            freeze_gradient=args.freeze_gradient,
+            target_property=args.target_property,
+            noise_schedule=args.diffusion_noise_schedule,
+            noise_precision=args.diffusion_noise_precision,
+            loss_type=args.diffusion_loss_type,
+            norm_values=args.normalize_factors,
+            norm_biases=args.normalize_biases,
             include_charges=args.include_charges,
             prediction_threshold_t=args.prediction_threshold_t,
             use_prop_pred=args.use_prop_pred if hasattr(args, 'use_prop_pred') else 1,

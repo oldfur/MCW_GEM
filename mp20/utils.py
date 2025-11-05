@@ -273,7 +273,7 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     
 
 def compute_loss_and_nll_L(args, generative_model, lengths, angles):
-    if args.probabilistic_model == 'diffusion_L':
+    if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':
         inputs = (lengths, angles)
         nll, loss_dict = generative_model(*inputs)
         nll = nll.mean(0)
