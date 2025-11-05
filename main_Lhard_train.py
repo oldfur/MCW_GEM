@@ -475,6 +475,7 @@ if __name__ == '__main__':
     parser.add_argument("--compute_novelty", type=int, default=1, help="compute novelty during generation")
     parser.add_argument("--compute_novelty_epoch", type=int, default=150, help="compute novelty during generation")
     parser.add_argument("--pretrained_Lattice_model", type=str, default='', help="the pretrained lattice generation model path")
+    parser.add_argument("--LatticeGenModel", type=str, default='diffusion_L', help="the pretrained lattice generation model name")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()
