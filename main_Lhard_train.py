@@ -276,6 +276,8 @@ def main(args):
 
             if nll_val < best_nll_val:
                 best_nll_val = nll_val
+                
+            if nll_test < best_nll_test:
                 best_nll_test = nll_test
 
             #     if args.save_model and epoch >= args.save_epoch:  

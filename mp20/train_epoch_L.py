@@ -31,9 +31,9 @@ def train_epoch_L(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
 
-        if i <= 1 and epoch <= 1:
-          print("lengths for training: ", lengths[:2])
-          print("angles for training: ", angles[:2])
+        if i <= 2 and epoch <= 1:
+          print("lengths for training: ", lengths[:2].tolist())
+          print("angles for training: ", angles[:2].tolist())
 
         optim.zero_grad()
 

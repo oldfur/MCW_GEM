@@ -229,6 +229,7 @@ def array_dict_to_crystal(
             }
         )
         print("Invalid angles, returning absurd crystal.")
+        print(f"angles: {x['angles']}")
     return crys
 
 
