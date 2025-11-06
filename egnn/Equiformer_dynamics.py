@@ -1438,8 +1438,11 @@ class EquiformerV2Dynamics(BaseDynamics):
 
         outs = self.key_map(outs)
 
-        if self.regress_atoms:
-            outs["atom_types"] = torch.softmax(outs["atom_types"], dim=1)
+        # for cross entropy loss, we don't need softmax here!!!
+        # if self.regress_atoms:
+        #     print(self.regress_atoms)
+        #     outs["atom_types"] = torch.softmax(outs["atom_types"], dim=1)
+        
         return outs
 
 
