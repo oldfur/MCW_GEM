@@ -274,53 +274,36 @@ def main(args):
             nll_test = test(args, dataloaders['test'], dataset_info, epoch, model_ema_dp, 
                         property_norms, nodes_dist, partition='Test')
 
+            # 判断是否需要保存
+            need_save = False
             if nll_val < best_nll_val:
+                print("best val loss model at epoch %d" % epoch)
                 best_nll_val = nll_val
-                
+                need_save = True     
             if nll_test < best_nll_test:
+                print("best test loss model at epoch %d" % epoch)
                 best_nll_test = nll_test
-
-            #     if args.save_model and epoch >= args.save_epoch:  
-            #         args.current_epoch = epoch + 1
-            #         print("Saving model at epoch %d" % epoch)
-            #         print("saved to outputs/%s/" % args.exp_name)
-            #         utils.save_model(optim, 'outputs/%s/%s/optim_epoch%s.npy' % \
-            #                         (args.exp_name, args.probabilistic_model, epoch))
-            #         utils.save_model(model, 'outputs/%s/%s/generative_model_epoch%s.npy' % \
-            #                         (args.exp_name, args.probabilistic_model, epoch))
-            #         if args.ema_decay > 0:
-            #             utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema_epoch%s.npy' % \
-            #                             (args.exp_name, args.probabilistic_model, epoch))
-            #         with open('outputs/%s/%s/args.pickle' % (args.exp_name, args.probabilistic_model), 'wb') as f:
-            #             pickle.dump(args, f)
-            
+                need_save = True
             if sample_validity >= best_sample_validity:
+                print("best validity model at epoch %d" % epoch)
                 best_sample_validity = sample_validity
-                if args.save_model and epoch >= args.save_epoch:  
-                    args.current_epoch = epoch + 1
-                    print("Saving best validity model at epoch %d" % epoch)
-                    print("saved to outputs/%s/%s/" % (args.exp_name, args.probabilistic_model))
-                    utils.save_model(optim, 'outputs/%s/%s/optim_epoch%s.npy' % \
-                                    (args.exp_name, args.probabilistic_model, epoch))
-                    utils.save_model(model, 'outputs/%s/%s/generative_model_epoch%s.npy' % \
-                                    (args.exp_name, args.probabilistic_model, epoch))
-                    if args.ema_decay > 0:
-                        utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema_epoch%s.npy' % \
-                                        (args.exp_name, args.probabilistic_model, epoch))
-                    with open('outputs/%s/%s/args.pickle' % (args.exp_name, args.probabilistic_model), 'wb') as f:
-                        pickle.dump(args, f)
-            elif sample_validity >= 0.8:
-                print("validity is >= 0.8, saved to outputs/%s/%s/" % (args.exp_name, args.probabilistic_model))
+                need_save = True
+            if sample_validity >= 0.8:
+                print("validity is >= 0.8 at epoch %d" % epoch)
+                need_save = True
+
+            # save model
+            if args.save_model and epoch >= args.save_epoch and need_save:  
+                args.current_epoch = epoch + 1
                 utils.save_model(optim, 'outputs/%s/%s/optim_epoch%s.npy' % \
-                                    (args.exp_name, args.probabilistic_model, epoch))
+                                (args.exp_name, args.probabilistic_model, epoch))
                 utils.save_model(model, 'outputs/%s/%s/generative_model_epoch%s.npy' % \
-                                    (args.exp_name, args.probabilistic_model, epoch))
+                                (args.exp_name, args.probabilistic_model, epoch))
                 if args.ema_decay > 0:
                     utils.save_model(model_ema, 'outputs/%s/%s/generative_model_ema_epoch%s.npy' % \
-                                        (args.exp_name, args.probabilistic_model, epoch))
+                                    (args.exp_name, args.probabilistic_model, epoch))
                 with open('outputs/%s/%s/args.pickle' % (args.exp_name, args.probabilistic_model), 'wb') as f:
                     pickle.dump(args, f)
-
 
             print('Val loss: %.4f \t Test loss:  %.4f' % (nll_val, nll_test))
             print('Best val loss: %.4f \t Best test loss:  %.4f' % (best_nll_val, best_nll_test))

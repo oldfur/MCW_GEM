@@ -1294,11 +1294,24 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
             # calculate the loss for atom type
             h_true = torch.cat([h['categorical'], h['integer']], 
                                dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
-            h_pred = net_out[:, :, 3:]
-            l1_loss = torch.nn.L1Loss(reduction='none')
-            atom_type_loss = l1_loss(h_true, h_pred)
-            atom_type_loss = atom_type_loss * node_mask
-            atom_type_loss = atom_type_loss.mean(dim=2).mean(dim=1)
+            h_true_idx = h_true.argmax(dim=2)   # [B,N]
+            h_pred = net_out[:, :, 3:]          # [B,N,C]
+
+            # cross_entropy loss
+            ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+            atom_type_loss = ce_loss(
+                h_pred.reshape(-1, h_pred.size(-1)), # logits, [B*N, C]
+                h_true_idx.reshape(-1) # targets, [B*N]
+            )
+            atom_type_loss = atom_type_loss.reshape(batch_size, -1)  # [B, N]
+            atom_type_loss = atom_type_loss * node_mask.squeeze(-1)
+            atom_type_loss = atom_type_loss.mean(dim=1)
+
+            # l1 loss
+            # l1_loss = torch.nn.L1Loss(reduction='none')
+            # atom_type_loss = l1_loss(h_true, h_pred)
+            # atom_type_loss = atom_type_loss * node_mask
+            # atom_type_loss = atom_type_loss.mean(dim=2).mean(dim=1)
 
         if self.property_pred:
             pred_loss_mask = (t_int <= self.prediction_threshold_t).float()

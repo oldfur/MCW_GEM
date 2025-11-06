@@ -1070,11 +1070,11 @@ class BaseDynamics(nn.Module):
             self.time_dim = 1
         elif condition_time == 'embed':
             self.time_dim = time_dim
-            # self.fc_time = StableTimeMLP(time_dim=self.time_dim)
-            self.fc_time = nn.Linear(self.time_dim, self.time_dim)
-            handle = self.fc_time.register_forward_hook(
-                lambda module, input, output: save_nan_debug_info(module, input, output, layer_name='fc_time')
-            )
+            self.fc_time = StableTimeMLP(time_dim=self.time_dim)
+            # self.fc_time = nn.Linear(self.time_dim, self.time_dim)
+            # handle = self.fc_time.register_forward_hook(
+            #     lambda module, input, output: save_nan_debug_info(module, input, output, layer_name='fc_time')
+            # )
 
             # 训练结束后，如果不想保留 hook，可以移除：
             # handle.remove()
@@ -1105,7 +1105,7 @@ class BaseDynamics(nn.Module):
                                             nn.SiLU(),
                                             nn.LayerNorm(noisy_atom_dim * 4),
                                             nn.Linear(noisy_atom_dim * 4, noisy_atom_dim),
-                                            nn.Tanh()  # 限幅输出
+                                            # nn.Tanh()  # 限幅输出
                                             )
         else:
             noisy_atom_dim = 0
@@ -1121,7 +1121,7 @@ class BaseDynamics(nn.Module):
                                             nn.SiLU(),
                                             nn.LayerNorm(lattice_dim),
                                             nn.Linear(lattice_dim, lattice_dim),
-                                            nn.Tanh()  # 限幅输出
+                                            # nn.Tanh()  # 限幅输出
                                             )
 
         else:
@@ -1138,7 +1138,7 @@ class BaseDynamics(nn.Module):
                                             nn.SiLU(),
                                             nn.LayerNorm(coord_dim),
                                             nn.Linear(coord_dim, coord_dim),
-                                            nn.Tanh()
+                                            # nn.Tanh()
                                             )
         else:
             coord_dim = 0
@@ -1165,11 +1165,11 @@ class BaseDynamics(nn.Module):
                 time_emb = get_timestep_embedding(t, self.time_dim)
 
                 # debug: time_emb中是否有nan
-                if torch.isnan(time_emb).any(): 
-                    print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
-                    time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
+                # if torch.isnan(time_emb).any(): 
+                #     print("Nan!!! time_emb stats for fc_time input: ", time_emb.min(), time_emb.max(), time_emb.mean())
+                #     time_emb = torch.nan_to_num(time_emb, nan=0.0, posinf=1e6, neginf=-1e6)
                 
-                # # debug: 在调用 self.fc_time 前加入
+                # debug: 在调用 self.fc_time 前加入
                 # for name, p in self.fc_time.named_parameters():
                 #     if not torch.isfinite(p).all():
                 #         print(f"⚠️ Non-finite param in fc_time: {name}, min={p.min().item()}, max={p.max().item()}")
@@ -1183,7 +1183,7 @@ class BaseDynamics(nn.Module):
                 #             print("save failed:", e)
                 #         break
 
-                # time_emb = self.fc_time(time_emb)
+                time_emb = self.fc_time(time_emb)
 
             elif self.condition_time == "constant":
                 time_emb = t
