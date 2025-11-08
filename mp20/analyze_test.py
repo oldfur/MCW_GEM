@@ -22,6 +22,7 @@ import numpy as np
 from tqdm import tqdm
 import pandas as pd
 import os
+from pymatgen.core import Lattice, Structure
 
 
 log = RankedLogger(__name__)  # 代码输出日志
@@ -73,7 +74,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     for i in range(int(batch_size)):
         
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
-                                    angle[i, 0], angle[i, 0], angle[i, 0])
+                                    angle[i, 0], angle[i, 1], angle[i, 2])
         mask = node_mask[i].squeeze(-1).bool()
 
         if args.frac_coords_mode:
@@ -149,15 +150,24 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
     angle = angle.detach().cpu().numpy() 
 
     for i in range(int(batch_size)):
-        lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
-                                    angle[i, 0], angle[i, 0], angle[i, 0])
+        # lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+        #                             angle[i, 0], angle[i, 1], angle[i, 2])
+        a, b, c = length[i, 0], length[i, 1], length[i, 2]
+        alpha, beta, gamma = angle[i, 0], angle[i, 1], angle[i, 2]
+        lattice = Lattice.from_parameters(a, b, c, alpha, beta, gamma)
+
         mask = node_mask[i].squeeze(-1).bool()
         x_valid = x[i][mask].detach().cpu().numpy()
-        frac_coords_valid = cart_to_frac(x_valid, lattice)
+        # frac_coords_valid = cart_to_frac(x_valid, lattice)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
-        atom_types = np.argmax(one_hot_valid, axis=-1) 
+        atom_types = np.argmax(one_hot_valid, axis=-1)
+        # charges = charges[i][mask].detach().cpu().numpy()
+
+        s = Structure(lattice, atom_types, x_valid, coords_are_cartesian=True)
+        frac_coords_valid = s.frac_coords
+        
         if i <= 5:
-            # print("sampled frac_coords:", frac_coords_valid)
+            print("sampled frac_coords:", frac_coords_valid)
             print("sampled x", x_valid)
             print("sampled lengths:", length[i])
             print("sampled angles:", angle[i])
@@ -185,9 +195,9 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
     wandb.log({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
                'Uniqueness': metrics_dict["unique_rate"], 
                'Novelty': metrics_dict["novel_rate"]})
-    print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
-               'Uniqueness': metrics_dict["unique_rate"], 
-               'Novelty': metrics_dict["novel_rate"]})
+    print({ 'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+            'Uniqueness': metrics_dict["unique_rate"], 
+            'Novelty': metrics_dict["novel_rate"]})
 
     return metrics_dict
 
@@ -235,7 +245,7 @@ def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info,
     for i in range(int(batch_size)):
         
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
-                                    angle[i, 0], angle[i, 0], angle[i, 0])
+                                    angle[i, 0], angle[i, 1], angle[i, 2])
         mask = node_mask[i].squeeze(-1).bool()
 
         if args.frac_coords_mode:
@@ -301,7 +311,7 @@ def analyze_and_save_L(args, epoch, model_sample, nodes_dist, dataset_info):
 
     for i in range(int(batch_size)):
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
-                                    angle[i, 0], angle[i, 0], angle[i, 0])
+                                    angle[i, 0], angle[i, 1], angle[i, 2])
         if i <= 5:
             print("sampled lengths:", length[i])
             print("sampled angles:", angle[i])
@@ -565,7 +575,7 @@ def test(args, loader, info, epoch, eval_model, property_norms, nodes_dist, part
                 elif args.probabilistic_model == 'diffusion_Lhard':
                     print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
                               f"NLL: {nll_epoch/n_samples:.2f}", end=', ')
-                    print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}, ", end = '')
+                    print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end = '')
                     if 'atom_type_loss' in loss_dict:
                         print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
                     if args.property_pred:
