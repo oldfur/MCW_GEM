@@ -150,20 +150,15 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
     angle = angle.detach().cpu().numpy() 
 
     for i in range(int(batch_size)):
-        # lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
-        #                             angle[i, 0], angle[i, 1], angle[i, 2])
-        a, b, c = length[i, 0], length[i, 1], length[i, 2]
-        alpha, beta, gamma = angle[i, 0], angle[i, 1], angle[i, 2]
-        lattice = Lattice.from_parameters(a, b, c, alpha, beta, gamma)
+        lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
+                                    angle[i, 0], angle[i, 1], angle[i, 2])
+        # 实际上是一般文献的Lattice的转置
         mask = node_mask[i].squeeze(-1).bool()
         x_valid = x[i][mask].detach().cpu().numpy()
-        # frac_coords_valid = cart_to_frac(x_valid, lattice)
+        frac_coords_valid = cart_to_frac(x_valid, lattice) % 1.0  # within [0, 1)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)
-        species = [int(t) for t in atom_types]
         # charges = charges[i][mask].detach().cpu().numpy()
-        s = Structure(lattice, species, x_valid, coords_are_cartesian=True)
-        frac_coords_valid = s.frac_coords % 1.0  # ensure fractional coordinates are within [0, 1)
         
         if i <= 5:
             print("sampled x", x_valid)
