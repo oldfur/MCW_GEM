@@ -161,14 +161,16 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
         # frac_coords_valid = cart_to_frac(x_valid, lattice)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)
+        species = [int(t) for t in atom_types]
         # charges = charges[i][mask].detach().cpu().numpy()
 
-        s = Structure(lattice, atom_types, x_valid, coords_are_cartesian=True)
+        s = Structure(lattice, species, x_valid, coords_are_cartesian=True)
+        s = s.get_wrapped_structure() # fold into the unit cell
         frac_coords_valid = s.frac_coords
         
         if i <= 5:
-            print("sampled frac_coords:", frac_coords_valid)
             print("sampled x", x_valid)
+            print("sampled frac_coords:", frac_coords_valid)
             print("sampled lengths:", length[i])
             print("sampled angles:", angle[i])
             # print("sampled atom types:", atom_types)
