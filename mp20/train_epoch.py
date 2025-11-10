@@ -281,6 +281,167 @@ def train_epoch(args, model_dp, model_ema, ema, dataloader, dataset_info, proper
     wandb.log({"Train Epoch NLL": np.mean(nll_epoch)}, commit=False)
 
 
+def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, property_norms, 
+                nodes_dist, gradnorm_queue, optim, epoch, prop_dist):
+    model_dp.train()
+    nll_epoch = []
+    n_iterations = len(dataloader)
+    mask_indicator = False
+    device = args.device
+    dtype = args.dtype
+    one_hot_shape = max(dataset_info['atom_encoder'].values())
+
+    if args.denoise_pretrain:
+        mask_indicator = 2
+    for i, data in enumerate(dataloader):
+        batch_props = data.propertys # 理化性质, a dict of lists with property's name as key
+        # propertys : a list of dict, has length B, each dict has keys: 
+        #     'formation_energy_per_atom', 'band_gap', 'e_above_hull'
+        data = reshape(data, device, dtype, include_charges=True)
+        
+        x = data['positions'].to(device, dtype) # [B,N,3]
+        frac_coords = data['frac_coords'].to(device, dtype) # [B,N,3]
+        # lattices = data['lattices'].to(device, dtype)
+        lengths = data['lengths'].to(device, dtype) # [B,3]
+        angles = data['angles'].to(device, dtype) # [B,3]
+        node_mask = data['atom_mask'].to(device, dtype).unsqueeze(2) # [B,N,1]
+        edge_mask = data['edge_mask'].to(device, dtype) # [B*N*N,1]
+        one_hot = data['one_hot'][:,:,:one_hot_shape].to(device, dtype) # [B, N, maxnum_atom_type]
+        charges = (data['charges'] if args.include_charges else torch.zeros(0)).to(device, dtype) # [B, N, 1]
+        if args.bond_pred:
+            edge_index = data['edge_index'].to(device, dtype)
+            edge_attr = data['edge_attr'].to(device, dtype)
+            bond_info = {'edge_index': edge_index, 'edge_attr': edge_attr}
+        else:
+            bond_info = None
+        x = remove_mean_with_mask(x, node_mask) # erase mean value
+        if args.augment_noise > 0:
+            # Add noise eps ~ N(0, augment_noise) around points.
+            eps = sample_center_gravity_zero_gaussian_with_mask(x.size(), x.device, node_mask)
+            x = x + eps * args.augment_noise
+        if args.data_augmentation:
+            x = utils.random_rotation(x).detach()
+
+        check_mask_correct([x, one_hot, charges], node_mask)
+        assert_mean_zero_with_mask(x, node_mask)
+
+        h = {'categorical': one_hot, 'integer': charges}
+
+        if len(args.conditioning) > 0 :
+            context = prepare_context_train(args.conditioning, data, batch_props, property_norms).to(device, dtype)
+            assert_correctly_masked(context, node_mask)
+        else:
+            context = None
+        
+        # transform batch through flow
+        if args.target_property is not None:    
+            if args.target_property in batch_props:
+                property_label = batch_props[args.target_property].to(device, dtype)
+            if property_norms is not None:
+                property_label = (property_label - property_norms[\
+                    args.target_property]['mean']) / property_norms[args.target_property]['mad']
+        else:
+            property_label = None
+
+        if i <= 1 and epoch <= 1:
+            print("lengths for training: ", lengths[:2].tolist())
+            print("angles for training: ", angles[:2].tolist())
+            print("x for training: ", x[:2].tolist())
+            print("frac_coords for training: ", frac_coords[:2].tolist())
+            print("node_mask for training: ", node_mask[:2].tolist())
+
+        ############################################################################################
+
+        optim.zero_grad()
+
+        ############################################################################################
+
+        # use model_dp, frac coords mode
+        nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll(args, model_dp, nodes_dist,
+                                                                frac_coords, h, lengths, angles, node_mask, edge_mask, context,
+                                                                property_label=property_label, bond_info=bond_info)
+
+        if args.probabilistic_model == 'diffusion_LF':    
+            if 'x_error' in loss_dict:
+                wandb.log({"denoise_coords": loss_dict['x_error'].mean().item()}, commit=True)
+            if 'atom_type_loss' in loss_dict:
+                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)    
+        else:
+            raise NotImplementedError
+
+        ############################################################################################
+    
+        loss = nll + args.ode_regularization * reg_term # standard nll from forward KL
+
+        ############################################################################################
+
+        try:
+            loss.backward()
+            if args.clip_grad:
+                grad_norm = utils.gradient_clipping(model_dp, gradnorm_queue)
+                if isinstance(model_dp, torch.nn.DataParallel):
+                    base_model = model_dp.module
+                else:
+                    base_model = model_dp
+                params = [p for p in base_model.parameters() if p.requires_grad] # collect params to operate on
+                torch.nn.utils.clip_grad_value_(params, clip_value=1.0) # 对极端分量裁剪  
+            else:
+                grad_norm = 0.
+        except Exception as e:
+            grad_norm = 0.
+            print('Error in backward pass(may occure loss zero), skipping batch')
+
+        # 检查 loss 是否有效
+        if not torch.isfinite(loss):
+            print("⚠️ Detected NaN in loss, skipping batch and resetting optimizer state")
+            optim.zero_grad(set_to_none=True)
+            continue
+
+        optim.step()
+
+        ###########################################################################################
+
+        # Update EMA if enabled.
+        if args.ema_decay > 0:
+            ema.update_model_average(model_ema, model_dp)
+
+        ###########################################################################################
+
+        if i % args.n_report_steps == 0:
+            if args.probabilistic_model == 'diffusion_LF':
+                print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
+                        f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
+                        f"GradNorm: {grad_norm:.1f}, "
+                        f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end='')
+                if 'atom_type_loss' in loss_dict:
+                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                if args.property_pred:
+                    if not isinstance(loss_dict['pred_loss'], int):
+                        print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
+                    print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")     
+            else:
+                raise NotImplementedError
+        nll_epoch.append(nll.item())
+
+        if (epoch % args.test_epochs == 0) and (i % args.visualize_every_batch == 0) and (not epoch == 0) and (not i == 0):
+            print(f"Visualizing at epoch {epoch}, batch {i}")
+            start = time.time()
+            if len(args.conditioning) > 0 and not args.uni_diffusion:
+                # 条件化采样, 暂时no saving
+                one_hot, charges, x, length, angle = save_and_sample_conditional(\
+                    args, device, model_ema, prop_dist, dataset_info, epoch=epoch)
+            sample_different_sizes_and_save(model_ema, nodes_dist, args, device, dataset_info,
+                                            prop_dist, n_samples=args.n_samples, epoch=epoch, 
+                                            batch_size=args.batch_size, batch_id=str(i))
+            print(f'Sampling took {time.time() - start:.2f} seconds')
+
+        wandb.log({"Batch NLL": nll.item()}, commit=True)
+
+        if args.break_train_epoch:
+            break
+
+    wandb.log({"Train Epoch NLL": np.mean(nll_epoch)}, commit=False)
+
 
 def save_and_sample_conditional(args, device, model, prop_dist, dataset_info, epoch=0, id_from=0):
     if args.property_pred:

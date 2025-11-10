@@ -209,7 +209,8 @@ def assert_correctly_masked(variable, node_mask):
 
 
 def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angles,
-                         node_mask, edge_mask, context, uni_diffusion=False, mask_indicator=None, expand_diff=False, property_label=None, bond_info=None):
+                         node_mask, edge_mask, context, uni_diffusion=False, mask_indicator=None, 
+                         expand_diff=False, property_label=None, bond_info=None):
     """
     负对数似然NLL和正则化项的计算
     Args:
@@ -237,7 +238,7 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     if args.probabilistic_model == 'diffusion' or args.probabilistic_model == 'diffusion_new' \
         or args.probabilistic_model == 'diffusion_another' or args.probabilistic_model == 'diffusion_concat' \
         or args.probabilistic_model == 'diffusion_transformer' or args.probabilistic_model == 'diffusion_Lfirst' \
-        or args.probabilistic_model == 'diffusion_Lhard':
+        or args.probabilistic_model == 'diffusion_Lhard' or args.probabilistic_model == 'diffusion_LF':
         
         edge_mask = edge_mask.view(bs, n_nodes * n_nodes)
         assert_correctly_masked(x, node_mask)
