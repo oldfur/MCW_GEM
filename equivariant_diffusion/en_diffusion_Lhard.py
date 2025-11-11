@@ -832,7 +832,7 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         gamma_0 = self.gamma(zeros)
 
         # Recall that sigma_x = sqrt(sigma_0^2 / alpha_0^2) = SNR(-0.5 gamma_0).
-        log_sigma_x = 0.5 * gamma_0.view(batch_size)
+        log_sigma_x = - 0.5 * gamma_0.view(batch_size)
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 

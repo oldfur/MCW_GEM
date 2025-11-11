@@ -696,10 +696,6 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
             else:
                 bond_info = None
 
-            x = remove_mean_with_mask(x, node_mask) # 后续暂时不给x加噪声
-            check_mask_correct([x, one_hot, charges], node_mask)
-            assert_mean_zero_with_mask(x, node_mask)
-
             h = {'categorical': one_hot, 'integer': charges}
 
             if len(args.conditioning) > 0:
@@ -708,7 +704,6 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
             else:
                 context = None
 
-            print("using frac_coords to compute loss")
             nll, _, _, loss_dict = compute_loss_and_nll(args, eval_model, nodes_dist, 
                                             frac_coords, h, lengths, angles, node_mask, edge_mask, context,
                                             property_label=props[args.target_property].to(device, dtype) \

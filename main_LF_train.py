@@ -288,6 +288,7 @@ def main(args):
             # save model
             if args.save_model and epoch >= args.save_epoch and need_save:  
                 args.current_epoch = epoch + 1
+                print("save model at epoch %s ." % args.current_epoch)
                 utils.save_model(optim, 'outputs/%s/%s/optim_epoch%s.npy' % \
                                 (args.exp_name, args.probabilistic_model, epoch))
                 utils.save_model(model, 'outputs/%s/%s/generative_model_epoch%s.npy' % \

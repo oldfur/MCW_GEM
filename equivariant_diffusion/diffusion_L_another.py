@@ -568,8 +568,8 @@ class VariationalDiffusion_L_another(torch.nn.Module):
         gamma_0_a = self.gamma_angles(zeros)
 
         # Recall that sigma_x = sqrt(sigma_0^2 / alpha_0^2) = SNR(-0.5 gamma_0).
-        log_sigma_l = 0.5 * gamma_0_l.view(batch_size)
-        log_sigma_a = 0.5 * gamma_0_a.view(batch_size)
+        log_sigma_l = -0.5 * gamma_0_l.view(batch_size)
+        log_sigma_a = -0.5 * gamma_0_a.view(batch_size)
 
         return degrees_of_freedom_l * (- log_sigma_l - 0.5 * np.log(2 * np.pi)) + \
                degrees_of_freedom_a * (- log_sigma_a - 0.5 * np.log(2 * np.pi))

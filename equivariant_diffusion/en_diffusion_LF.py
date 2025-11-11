@@ -786,13 +786,13 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         """Computes p(x|z0)."""
         n_nodes = node_mask.squeeze(2).sum(1)  # N has shape [B]
         assert n_nodes.size() == (batch_size,)
-        degrees_of_freedom_x = (n_nodes - 1) * self.n_dims
+        degrees_of_freedom_x = n_nodes * self.n_dims  # no translation invarience
 
         zeros = torch.zeros((batch_size, 1), device=device)
         gamma_0 = self.gamma(zeros)
 
         # Recall that sigma_x = sqrt(sigma_0^2 / alpha_0^2) = SNR(-0.5 gamma_0).
-        log_sigma_x = 0.5 * gamma_0.view(batch_size)
+        log_sigma_x = -0.5 * gamma_0.view(batch_size)
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
