@@ -160,7 +160,7 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                                                       condition_generate_x=evaluate_condition_generation, 
                                                       annel_l=args.expand_diff)
 
-        assert_correctly_masked(x, node_mask)
+        assert_correctly_masked(frac_pos, node_mask)
 
         if isinstance(h, list):
             h, bond_lst = h[0], h[1]

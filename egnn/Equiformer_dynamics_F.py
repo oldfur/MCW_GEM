@@ -664,7 +664,9 @@ class EquiformerV2(BaseModel):
         self.dtype = pos.dtype
 
         # convert to cartesian coordinates
+        # print("frac pos:", pos.to(device='cpu').numpy())
         pos = frac_to_cart_coords(pos, lengths, angles, natoms) 
+        # print("cart pos:", pos.to(device='cpu').numpy())
         
         if lat_mat is None:
             lat_mat = lattice_params_to_matrix_torch(lengths, angles)
@@ -689,6 +691,10 @@ class EquiformerV2(BaseModel):
                                 use_pbc=self.use_pbc,
                                 otf_graph=self.otf_graph,
                                 )
+        
+        # print("edge_index:", edge_index.to(device='cpu').numpy())
+        # print("edge_distance:", edge_distance.to(device='cpu').numpy())
+        # print("edge_distance_vec:", edge_distance_vec.to(device='cpu').numpy())
         
         if edge_distance_vec.numel() == 0:
             outs = {}

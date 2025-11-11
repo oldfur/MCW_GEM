@@ -344,11 +344,11 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
             property_label = None
 
         if i <= 1 and epoch <= 1:
-            print("lengths for training: ", lengths[:2].tolist())
-            print("angles for training: ", angles[:2].tolist())
-            print("x for training: ", x[:2].tolist())
-            print("frac_coords for training: ", frac_coords[:2].tolist())
-            print("node_mask for training: ", node_mask[:2].tolist())
+            print("lengths for training: ", lengths[:2].to(device='cpu').tolist())
+            print("angles for training: ", angles[:2].to(device='cpu').tolist())
+            print("x for training: \n", x[:2].to(device='cpu').numpy())
+            print("frac_coords for training: \n", frac_coords[:2].to(device='cpu').numpy())
+            print("node_mask for training: ", node_mask[:2].to(device='cpu').tolist())
 
         ############################################################################################
 
