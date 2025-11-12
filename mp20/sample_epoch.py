@@ -152,7 +152,7 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
     else:
         context = None
 
-    if args.probabilistic_model == 'diffusion_LF':        
+    if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':        
         print(f'sample with evaluate_condition_generation: [{evaluate_condition_generation}]')
         args.expand_diff = 0
         frac_pos, h, length, angle = generative_model.sample(LatticeGenModel, batch_size, max_n_nodes, 

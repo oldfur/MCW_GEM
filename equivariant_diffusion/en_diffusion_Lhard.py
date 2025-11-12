@@ -398,7 +398,7 @@ class EquiTransVariationalDiffusion_Lhard(torch.nn.Module):
         self.angle_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
                          hidden_dims=[128, 128], use_self_attn=False)
         
-        print("EquiTransVariationalDiffusion_Lfirst initialized.")
+        print(f"{self.__class__.__name__} initialized.")
         
     
     def save_intermediate_grad(self, grad):

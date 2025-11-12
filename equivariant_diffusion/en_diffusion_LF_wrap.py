@@ -256,7 +256,7 @@ def cdf_standard_gaussian(x):
     return 0.5 * (1. + torch.erf(x / math.sqrt(2)))
 
 
-class EquiTransVariationalDiffusion_LF(torch.nn.Module):
+class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     """
     The EquiTransformer Diffusion Module.
     """
@@ -280,7 +280,7 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
             str_loss_type = 'denoise_loss', 
             str_sigma_h = 0.05, str_sigma_x = 0.05,
             temp_index = 0, optimal_sampling = 0,
-            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1,
+            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -392,12 +392,8 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         self.lambda_a = lambda_a
         print("use lambda_l: ", lambda_l)
         print("use lambda_a: ", lambda_a)
-
-        self.length_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
-                         hidden_dims=[128, 128], use_self_attn=False)
-        self.angle_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
-                         hidden_dims=[128, 128], use_self_attn=False)
         
+        self.lambda_f = lambda_f
         print(f"{self.__class__.__name__} initialized.")
         
     
@@ -454,7 +450,6 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
         B = zx.size(0)
         N = zx.size(1)
-        zx = self.phi_unnormalize_x(zx) # unnormalize, for that gnn dynamics works on physical space
         # for example, x: R -> [0,1]
         if rl is not None and ra is not None:
             rl, ra = self.phi_unnormalize_la(rl, ra)
@@ -488,7 +483,6 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
 
         zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
         B, N  = zx.size(0), zx.size(1)
-        zx = self.phi_unnormalize_x(zx)
         zx, atom_types, natoms, rl, ra, batch = \
             self.prepare_inputs_for_equiformer(t, zx, rl, ra, node_mask)
         
@@ -549,15 +543,8 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         return x, h, delta_log_px
     
     def normalize_frac_pos_with_h(self, f, h, node_mask):
-        # 将 分数坐标 f 从 [0,1] 映射到全实数空间（sigmoid 的反函数），记为 rx
-        eps = 1e-7
-        f = torch.clamp(f, eps, 1 - eps)
-        rx = torch.log(f / (1 - f))
-        rx = rx * node_mask
-        # 计算 logit 变换的 log-Jacobian
-        delta_log_p_rx = -torch.sum(
-            (torch.log(f) + torch.log(1 - f)) * node_mask, dim=[1, 2]
-        )
+        f = f * node_mask
+        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0])
 
         # Casting to float in case h still has long or int type.
         h_cat = (h['categorical'].float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
@@ -569,7 +556,7 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         # Create new h dictionary.
         h = {'categorical': h_cat, 'integer': h_int}
 
-        return rx, h, delta_log_p_rx
+        return f, h, delta_log_px
     
 
     def phi_normalize_h(self, h, node_mask=None):
@@ -580,10 +567,6 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
 
         return h
 
-
-    def phi_unnormalize_x(self, x):
-        x = torch.sigmoid(x) # map back to [0, 1]
-        return x
     
     def phi_unnormalize_h_cat(self, h_cat, node_mask):
         h_cat = h_cat * self.norm_values[1] + self.norm_biases[1]
@@ -612,9 +595,8 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
     
     
     def unnormalize(self, x, h_cat, h_int, node_mask):
-        # map to frac coods
-        x = torch.sigmoid(x)
         x = x * node_mask
+        x = x % 1
 
         h_cat = h_cat * self.norm_values[1] + self.norm_biases[1]
         h_cat = h_cat * node_mask
@@ -657,37 +639,8 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
     def kl_prior(self, xh, node_mask):
-        """Computes the KL between q(zT | x) and the prior p(zT) = Normal(0, 1).
-
-        This is essentially a lot of work for something that is in practice negligible in the loss. However, you
-        compute it so that you see it when you've made a mistake in your noise schedule.
-        """
-        # Compute the last alpha value, alpha_T.
-        ones = torch.ones((xh.size(0), 1), device=xh.device)
-        gamma_T = self.gamma(ones)
-        alpha_T = self.alpha(gamma_T, xh)
-
-        # Compute means.
-        mu_T = alpha_T * xh
-        mu_T_x, mu_T_h = mu_T[:, :, :self.n_dims], mu_T[:, :, self.n_dims:]
-
-        # Compute standard deviations (only batch axis for x-part, inflated for h-part).
-        sigma_T_x = self.sigma(gamma_T, mu_T_x).squeeze()  # Remove inflate, only keep batch dimension for x-part.
-        sigma_T_h = self.sigma(gamma_T, mu_T_h)
-
-        # Compute KL for h-part.
-        zeros, ones = torch.zeros_like(mu_T_h), torch.ones_like(sigma_T_h)
-        kl_distance_h = gaussian_KL(mu_T_h, sigma_T_h, zeros, ones, node_mask)
-
-        # Compute KL for x-part.
-        zeros, ones = torch.zeros_like(mu_T_x), torch.ones_like(sigma_T_x)
-        subspace_d = self.subspace_dimensionality(node_mask)
-        kl_distance_x = gaussian_KL_for_dimension(mu_T_x, sigma_T_x, zeros, ones, d=subspace_d)
-
-        if self.atom_type_pred:
-            kl_distance_h = 0.0
-        return kl_distance_x + kl_distance_h
-
+        # for fra pos, do not compute kl_prior term
+        return 0.0
 
     def compute_x_pred(self, net_out, zt, gamma_t):
         # print(f"net_out.shape: {net_out.shape}, zt.shape: {zt.shape}, gamma_t.shape: {gamma_t.shape}")
@@ -717,21 +670,22 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         angle_pred = 1. / alpha_t * (zt_a - sigma_t * eps_t)
         return angle_pred
 
+
     def compute_error(self, net_out, gamma_t, eps):
         """Computes error, i.e. the most likely prediction of x."""
         eps_t = net_out
+        denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
+
         if self.atom_type_pred:
             eps_t = eps_t[:, :, :self.n_dims]
             eps = eps[:, :, :self.n_dims]
-     
+            denom = (self.n_dims) * eps_t.shape[1]
+
         if self.training and self.loss_type == 'l2':
-            denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
-            if self.atom_type_pred:
-                denom = (self.n_dims) * eps_t.shape[1]
-            error = sum_except_batch((eps - eps_t) ** 2) / denom
+            error = sum_except_batch(self.circular_diff_loss(eps, eps_t)) / denom # 正弦/余弦差分loss
         else:
-            error = sum_except_batch((eps - eps_t) ** 2)
-        return error    # [B]
+            error = sum_except_batch(self.circular_diff_loss(eps, eps_t)) / denom
+        return error
 
 
     def compute_error_mp20(self, net_out, eps):
@@ -745,13 +699,20 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
             denom = (self.n_dims) * eps_t.shape[1]
 
         if self.training and self.loss_type == 'l2':
-            x_error = sum_except_batch((eps - eps_t) ** 2) / denom
+            # x_error = sum_except_batch((eps - eps_t) ** 2) / denom
+            x_error = sum_except_batch(self.circular_diff_loss(eps_t, eps)) / denom # 正弦/余弦差分loss
         else:   # test performance
             # x_error = sum_except_batch((eps - eps_t) ** 2)
-            x_error = sum_except_batch((eps - eps_t) ** 2) / denom 
+            x_error = sum_except_batch(self.circular_diff_loss(eps_t, eps)) / denom
 
         return x_error
     
+    def circular_diff_loss(self, a, b):
+        diff_sin = torch.sin(2 * np.pi * a) - torch.sin(2 * np.pi * b)
+        diff_cos = torch.cos(2 * np.pi * a) - torch.cos(2 * np.pi * b)
+        return (diff_sin ** 2 + diff_cos ** 2)
+    
+
     def show_x_error(self, net_out, eps):
         eps_t = net_out
         if self.atom_type_pred:
@@ -782,19 +743,28 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         print("angle error is :", error)
         return error
 
+
     def log_constants_p_x_given_z0(self, batch_size, device, node_mask):
-        """Computes p(x|z0)."""
-        n_nodes = node_mask.squeeze(2).sum(1)  # N has shape [B]
-        assert n_nodes.size() == (batch_size,)
-        degrees_of_freedom_x = n_nodes * self.n_dims  # no translation invarience
+        """Approximate normalization constant for torus diffusion (sigma in  [0.001, 1])."""
+        n_nodes = node_mask.squeeze(2).sum(1)
+        degrees_of_freedom_x = n_nodes * self.n_dims
 
         zeros = torch.zeros((batch_size, 1), device=device)
         gamma_0 = self.gamma(zeros)
-
-        # Recall that sigma_x = sqrt(sigma_0^2 / alpha_0^2) = SNR(-0.5 gamma_0).
         log_sigma_x = -0.5 * gamma_0.view(batch_size)
+        sigma_x = torch.exp(log_sigma_x)
 
-        return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
+        # 对于 σ < 0.2 保持高斯常数；σ > 0.5 平滑趋向均匀常数（≈ 0）
+        # 用 smooth weighting: w = exp(-(σ/σ_c)^2)
+        sigma_c = 0.3
+        weight = torch.exp(- (sigma_x / sigma_c) ** 2)
+
+        log_const_gaussian = -log_sigma_x - 0.5 * np.log(2 * np.pi)
+        log_const_uniform = torch.zeros_like(log_const_gaussian)
+
+        log_const = weight * log_const_gaussian + (1 - weight) * log_const_uniform
+
+        return degrees_of_freedom_x * log_const
 
 
     def sample_p_xh_lengths_angles_given_z0(self, z0, rl, ra, node_mask, edge_mask, context, fix_noise=False):
@@ -1110,10 +1080,11 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         if self.atom_type_pred:
-            z_t = alpha_t * x + sigma_t * eps   
+            z_t = (alpha_t * x + sigma_t * eps) % 1     # frac
             z_t = torch.cat([z_t, fix_h], dim=2)
         else:
             z_t = alpha_t * xh + sigma_t * eps
+            z_t[:,:,:self.n_dims] = z_t[:,:,:self.n_dims] % 1   # frac
 
         # phi: noise prediction model
         if self.property_pred:
@@ -1162,10 +1133,11 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
                 n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
 
             if self.atom_type_pred:
-                z_0 = alpha_0 * x + sigma_0 * eps_0
+                z_0 = (alpha_0 * x + sigma_0 * eps_0) % 1 # frac
                 z_0 = torch.cat([z_0, fix_h], dim=2)
             else:
                 z_0 = alpha_0 * xh + sigma_0 * eps_0
+                z_0[:,:,:self.n_dims] = z_0[:,:,:self.n_dims] % 1 # frac
 
             if self.property_pred:
                 (net_out, property_pred) = self.phi(z_0, t_zeros, node_mask, edge_mask, context, 
@@ -1177,10 +1149,6 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
             # Compute the error for t = 0.            
             loss_term_0 = -self.log_p_xhla_given_z0_without_constants(
                 x, h, z_0, gamma_0, eps_0, net_out, node_mask)
-
-            assert kl_prior.size() == estimator_loss_terms.size()
-            assert kl_prior.size() == neg_log_constants.size()
-            assert kl_prior.size() == loss_term_0.size()
 
             # Combine all terms.
             loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
@@ -1204,11 +1172,7 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
                 num_terms = self.T + 1  # Includes t = 0.
                 estimator_loss_terms = num_terms * loss_t
 
-            assert kl_prior.size() == estimator_loss_terms.size(), \
-                print("kl_prior.size(), estimator_loss_terms.size(): ", kl_prior.size(), estimator_loss_terms.size())
-            assert kl_prior.size() == neg_log_constants.size()
-
-            loss = kl_prior + estimator_loss_terms + neg_log_constants
+            loss = kl_prior + estimator_loss_terms + neg_log_constants # kl=0
          
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
@@ -1216,7 +1180,6 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
                      'loss':loss.squeeze(),
                      'loss_t': loss_t.squeeze(),
                      'x_error': x_error.squeeze(),
-                     'kl_prior': kl_prior.squeeze(),
                      'neg_log_constants': neg_log_constants.squeeze(),
                      'estimator_loss_terms': estimator_loss_terms.squeeze(),
                      'loss_term_0': loss_term_0.squeeze(),
@@ -1315,29 +1278,28 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
         if self.property_pred:
             assert property_label is not None, "property_label should not be None in training"
 
-        # rx: normalized data for frac pos, x in R^3
-        # from now on, add noise always in R^3 space, not in fractional space or Cartesian space within lattice cell
-        rx, h, delta_log_p_rx = self.normalize_frac_pos_with_h(frac_pos, h, node_mask)
+        # fractional space 
+        frac_pos, h, delta_log_px = self.normalize_frac_pos_with_h(frac_pos, h, node_mask)
         lengths, angles, delta_log_pl, delta_log_pa = self.normalize_lengths_angles(lengths, angles)
         delta_log_pl = torch.tensor(delta_log_pl, device=lengths.device, dtype=lengths.dtype)
         delta_log_pa = torch.tensor(delta_log_pa, device=angles.device, dtype=angles.dtype)
 
         # Reset delta_log_px if not vlb objective.
         if self.training and self.loss_type == 'l2':
-            delta_log_p_rx = torch.zeros_like(delta_log_p_rx)
+            delta_log_px = torch.zeros_like(delta_log_px)
             delta_log_pl = torch.zeros_like(delta_log_pl)
             delta_log_pa = torch.zeros_like(delta_log_pa)
 
         # compute loss
         if self.training:
-            loss, loss_dict = self.compute_loss(rx, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
+            loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
                                                 mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
         else:
-            loss, loss_dict = self.compute_loss(rx, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, 
+            loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, 
                                                 mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
 
         neg_log_pxhla = loss
-        delta_log_pxla = delta_log_p_rx + delta_log_pl + delta_log_pa
+        delta_log_pxla = delta_log_px + delta_log_pl + delta_log_pa
 
         # Correct for normalization on x, l, a.
         assert neg_log_pxhla.size() == delta_log_pxla.size()
@@ -1395,6 +1357,8 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
                         eps_tmp = eps_t.clone().detach()
     
                     z0 = (zt * node_mask - sigma_t * eps_tmp) / alpha_t
+                    z0[:, :, :self.n_dims] = z0[:, :, :self.n_dims] % 1
+
                     t0 = torch.ones_like(t) * 0.001       
                     (_, pred) = self.phi_xh(z0, t0, rl, ra, node_mask, edge_mask, context)
                     
@@ -1416,6 +1380,9 @@ class EquiTransVariationalDiffusion_LF(torch.nn.Module):
        
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+
+        # mod 1 to frac space
+        zs[:, :, :self.n_dims] = zs[:, :, :self.n_dims] % 1
 
         # Project down to avoid numerical runaway of the center of gravity.
         if self.atom_type_pred:

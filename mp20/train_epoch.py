@@ -361,7 +361,7 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
                                                                 frac_coords, h, lengths, angles, node_mask, edge_mask, context,
                                                                 property_label=property_label, bond_info=bond_info)
 
-        if args.probabilistic_model == 'diffusion_LF':    
+        if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':    
             if 'x_error' in loss_dict:
                 wandb.log({"denoise_coords": loss_dict['x_error'].mean().item()}, commit=True)
             if 'atom_type_loss' in loss_dict:
@@ -408,7 +408,7 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
         ###########################################################################################
 
         if i % args.n_report_steps == 0:
-            if args.probabilistic_model == 'diffusion_LF':
+            if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':
                 print(f"\rEpoch: {epoch}, iter: {i}/{n_iterations}, "
                         f"Loss {loss.item():.2f}, NLL: {nll.item():.2f}, "
                         f"GradNorm: {grad_norm:.1f}, "
