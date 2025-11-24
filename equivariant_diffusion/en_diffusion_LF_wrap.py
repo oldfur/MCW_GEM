@@ -118,6 +118,39 @@ def gaussian_KL_for_dimension(q_mu, q_sigma, p_mu, p_sigma, d):
     return d * torch.log(p_sigma / q_sigma) + 0.5 * (d * q_sigma**2 + mu_norm2) / (p_sigma**2) - 0.5 * d
 
 
+def wrap_at_boundary(x: torch.Tensor, wrapping_boundary: float) -> torch.Tensor:
+    """Wrap x at the boundary given by wrapping_boundary.
+    Args:
+      x: tensor of shape (batch_size, dim)
+      wrapping_boundary: float): wrap at [0, wrapping_boundary] in all dimensions.
+    Returns:
+      wrapped_x: tensor of shape (batch_size, dim)
+    """
+    return torch.remainder(
+        x, wrapping_boundary
+    )  # remainder is the same as mod, but works with negative numbers.
+
+
+def get_pbc_offsets(pbc: torch.Tensor, max_offset_integer: int = 3) -> torch.Tensor:
+    """Build the Cartesian product of integer offsets of the periodic boundary. That is, if dim=3 and max_offset_integer=1 we build the (2*1 + 1)^3 = 27
+       possible combinations of the Cartesian product of (i,j,k) for i,j,k in -max_offset_integer, ..., max_offset_integer. Then, we construct
+       the tensor of integer offsets of the pbc vectors, i.e., L_{ijk} = row_stack([i * l_1, j * l_2, k * l_3]).
+
+    Args:
+        pbc (torch.Tensor, [batch_size, dim, dim]): The input pbc matrix.
+        max_offset_integer (int): The maximum integer offset per dimension to consider for the Cartesian product. Defaults to 3.
+
+    Returns:
+        torch.Tensor, [batch_size, (2 * max_offset_integer + 1)^dim, dim]: The tensor containing the integer offsets of the pbc vectors.
+    """
+    offset_range = torch.arange(-max_offset_integer, max_offset_integer + 1, device=pbc.device)
+    meshgrid = torch.stack(
+        torch.meshgrid(offset_range, offset_range, offset_range, indexing="xy"), dim=-1
+    )
+    offset = (pbc[:, None, None, None] * meshgrid[None, :, :, :, :, None]).sum(-2)
+    pbc_offset_per_molecule = offset.reshape(pbc.shape[0], -1, 3)
+    return pbc_offset_per_molecule
+
 
 class PositiveLinear(torch.nn.Module):
     """Linear layer with weights forced to be positive."""
@@ -394,6 +427,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("use lambda_a: ", lambda_a)
         
         self.lambda_f = lambda_f
+
         print(f"{self.__class__.__name__} initialized.")
         
     
@@ -448,8 +482,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         
         """prepare input for eps x"""
         zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
-        B = zx.size(0)
-        N = zx.size(1)
+        B, N= zx.size(0), zx.size(1)
+
         # for example, x: R -> [0,1]
         if rl is not None and ra is not None:
             rl, ra = self.phi_unnormalize_la(rl, ra)
@@ -477,31 +511,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return net_eps_xh
     
-    
-    def phi_xh(self, zxh, t, rl, ra, node_mask, edge_mask, context, t2=None, mask_y=None):
-        """noise predict network for x and h only"""   
-
-        zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
-        B, N  = zx.size(0), zx.size(1)
-        zx, atom_types, natoms, rl, ra, batch = \
-            self.prepare_inputs_for_equiformer(t, zx, rl, ra, node_mask)
-        
-        # forward for x, h
-        net_outs = self.dynamics(t, zx, atom_types, natoms, \
-                lengths=rl, angles=ra, batch=batch)
-        
-        # output
-        net_eps_x, net_pred_h = self.reshape_outputs(
-            net_outs, B, N, node_mask, natoms, batch)
-        net_pred_h = self.phi_normalize_h(net_pred_h, node_mask)
-        net_eps_xh = torch.cat([net_eps_x, net_pred_h], dim=2) # [B, N, 3 + num_classes]
-
-        if self.property_pred and self.use_prop_pred:
-            property_pred = net_outs['property_pred']
-            return (net_eps_xh, property_pred)
-
-        return net_eps_xh
-
 
     def inflate_batch_array(self, array, target):
         """
@@ -596,7 +605,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     
     def unnormalize(self, x, h_cat, h_int, node_mask):
         x = x * node_mask
-        x = x % 1
+        x = wrap_at_boundary(x, wrapping_boundary=1.0)  # mod 1s
 
         h_cat = h_cat * self.norm_values[1] + self.norm_biases[1]
         h_cat = h_cat * node_mask
@@ -651,6 +660,27 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         eps_t = net_out_new
         x_pred = 1. / alpha_t * (zt - sigma_t * eps_t)
         return x_pred
+    
+    def compute_x_pred_score(self, net_out, zt, gamma_t):
+        """
+        Computes x_pred from score model output.
+        score: [B, N, 3]   the denoiser score s(x_t, t)
+        zt:    [B, N, 3]   noisy sample
+        gamma_t: noise schedule input
+        """
+
+        sigma_t = self.sigma(gamma_t, target_tensor=zt)
+        alpha_t = self.alpha(gamma_t, target_tensor=zt)
+        score = net_out / sigma_t  # convert network output to score
+
+        # score-version:   x_pred = (zt + sigma_t^2 * score) / alpha_t
+        x_pred = (zt + sigma_t * sigma_t * score) / alpha_t
+
+        # wrap to fractional coordinate domain
+        x_pred = wrap_at_boundary(x_pred, wrapping_boundary=1.0) # mod 1 
+
+        return x_pred
+
 
     def compute_length_pred(self, l_out, zt_l, gamma_t):
         """Commputes length predictions."""
@@ -775,9 +805,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
 
         if self.property_pred:
-            (net_out, pred) = self.phi_xh(z0, zeros, rl, ra, node_mask, edge_mask, context)
+            (net_out, pred) = self.phi(z0, zeros, node_mask, edge_mask, context, rl=rl, ra=ra)
         else:
-            net_out = self.phi_xh(z0, zeros, rl, ra, node_mask, edge_mask, context)
+            net_out = self.phi(z0, zeros, node_mask, edge_mask, context, rl=rl, ra=ra)
 
         # Compute mu for p(zs | zt).
         mu_x = self.compute_x_pred(net_out, z0, gamma_0)
@@ -927,6 +957,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 合并所有对数似然
         log_p_xh_lengths_angles_given_z = log_p_x_given_z_without_constants + log_p_h_given_z
         return log_p_xh_lengths_angles_given_z
+    
+
+    def log_p_xhla_given_z0_without_constants_score(self, x, h, z_t, gamma_0, true_score, net_out, node_mask, epsilon=1e-10):
+        """在score-matching下无需计算Reconstruction Loss, 即-log p(x| z0)"""
+        pass
 
 
     def continuous_var_bayesian_update(self, t, sigma1, x):
@@ -1291,23 +1326,218 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             delta_log_pa = torch.zeros_like(delta_log_pa)
 
         # compute loss
-        if self.training:
-            loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
-                                                mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
-        else:
-            loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, 
-                                                mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
-
-        neg_log_pxhla = loss
-        delta_log_pxla = delta_log_px + delta_log_pl + delta_log_pa
-
-        # Correct for normalization on x, l, a.
-        assert neg_log_pxhla.size() == delta_log_pxla.size()
-        neg_log_pxhla = neg_log_pxhla - delta_log_pxla
+        # if self.training:
+        #     loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
+        #                                         mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
+        # else:
+        #     loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, 
+        #                                         mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
+        #
+        # neg_log_pxhla = loss
+        # delta_log_pxla = delta_log_px + delta_log_pl + delta_log_pa
+        #
+        # # Correct for normalization on x, l, a.
+        # assert neg_log_pxhla.size() == delta_log_pxla.size()
+        # neg_log_pxhla = neg_log_pxhla - delta_log_pxla
+        #
+        # return neg_log_pxhla, loss_dict
         
-        return neg_log_pxhla, loss_dict
-        
+        loss, loss_dict = self.compute_loss_score(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False,
+                                                  property_label=property_label)
+
+        return loss, loss_dict
     
+
+    def compute_loss_score(self, x, h, lengths, angles, node_mask, edge_mask, 
+                           context, t0_always, time_upperbond=-1, property_label=None,):
+        batch_size = x.size(0)
+
+        # whether to include loss term 0 always.
+        if t0_always:
+            lowest_t = 1
+        else:
+            lowest_t = 0
+
+        # sample t, t_int: [B, 1]
+        t_int = torch.randint(
+                lowest_t, self.T + 1, size=(batch_size, 1), device=x.device).float()
+        if time_upperbond >= 0:
+            t_int = torch.ones_like(t_int) * time_upperbond
+        if self.half_noisy_node:
+            half_batch_size = batch_size // 2
+            t_int[half_batch_size:,:] = torch.randint(
+                    lowest_t, self.prediction_threshold_t + 1, 
+                    size=(batch_size - half_batch_size, 1), device=x.device).float()
+            t_int[:half_batch_size,:] = torch.randint(
+                lowest_t, self.T + 1, 
+                size=(half_batch_size, 1), device=x.device).float()
+        if self.sep_noisy_node:
+            half_batch_size = batch_size // 2
+            t_int[half_batch_size:,:] = torch.randint(
+                    lowest_t, self.prediction_threshold_t + 1, 
+                    size=(batch_size - half_batch_size, 1), device=x.device).float()
+            t_int[:half_batch_size,:] = torch.randint(
+                self.prediction_threshold_t + 1, self.T + 1, 
+                size=(half_batch_size, 1), device=x.device).float()
+        
+        s_int = t_int - 1 
+        t_is_zero = (t_int == 0).float()  # to compute log p(x | z0).
+
+        # Normalize t and s to [0, 1]
+        s = s_int / self.T
+        t = t_int / self.T
+
+        # Compute gamma_s and gamma_t
+        gamma_s = self.inflate_batch_array(self.gamma(s), x)
+        gamma_t = self.inflate_batch_array(self.gamma(t), x)
+
+        # Compute alpha_t and sigma_t
+        alpha_t = self.alpha(gamma_t, x)
+        sigma_t = self.sigma(gamma_t, x)
+
+        # compute score function
+        mean_t = alpha_t * x
+        variance_t = sigma_t.pow(2).expand(-1, x.shape[1], -1) # -1: 该维度保持原来的大小
+        wrapped_score = self.wrapped_normal_score_batch(
+            x, mean_t, variance_t, node_mask, 
+            wrapping_boundary=1.0, max_offset_integer=3
+            )   # [B,N,3]
+        target = wrapped_score * sigma_t # predict score scaled by sigma_t, 为保持各时间步的loss数值稳定
+
+        # use net to predict score
+        eps = self.sample_combined_position_feature_noise(
+            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
+        fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
+        z_t = alpha_t * x + sigma_t * eps
+        z_t = wrap_at_boundary(z_t, wrapping_boundary=1.0) # wrap, mod 1
+        z_t = torch.cat([z_t, fix_h], dim=2)
+
+        # score-matching model
+        net_out = self.phi(z_t, t, node_mask, edge_mask, context, rl=lengths, ra=angles)
+        pred = net_out[:, :, :self.n_dims] # [B,N,3]
+
+        # compute the l2 score loss         
+        delta = (target - pred) * node_mask # [B,N,3]
+        denom = node_mask.squeeze(-1).sum(-1) * 3 # [B]
+        score_loss = sum_except_batch(delta.square()) / denom # per atom node in one sample
+        kl_prior = torch.zeros_like(score_loss)
+        loss = kl_prior + score_loss
+        assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
+
+        loss_dict = {'t': t_int.squeeze(),
+                     'loss': loss.squeeze(), 
+                     'x_error':(score_loss / sigma_t).squeeze()}
+
+        # calculate the loss for atom type
+        h_true = torch.cat([h['categorical'], h['integer']], 
+                            dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
+        h_true_idx = h_true.argmax(dim=2)   # [B,N]
+        h_pred = net_out[:, :, 3:]          # [B,N,C]
+        # cross_entropy loss
+        ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        atom_type_loss = ce_loss(
+            h_pred.reshape(-1, h_pred.size(-1)), # logits, [B*N, C]
+            h_true_idx.reshape(-1) # targets, [B*N]
+        )
+        atom_type_loss = atom_type_loss.reshape(batch_size, -1)  # [B, N]
+        atom_type_loss = atom_type_loss * node_mask.squeeze(-1)
+        atom_type_loss = atom_type_loss.mean(dim=1)
+        # mask the loss term with t > prediction_threshold_t
+        pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
+        pred_loss_mask = pred_loss_mask.squeeze(1)
+        atom_type_loss = atom_type_loss * pred_loss_mask
+        loss_dict["atom_type_loss"] = atom_type_loss
+        loss += atom_type_loss
+
+        return loss, loss_dict
+
+
+    @torch.no_grad()
+    def sample_score(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
+               fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
+        """Samples from the model using score function."""
+
+        print('use LatticeGenModel to sample l and a, beginning...')
+        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+        rl = rl.to(node_mask.device)
+        ra = ra.to(node_mask.device)
+        print('sample lengths and angles done.')
+
+        if fix_noise:
+            print("using fixed noise...")
+            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
+        else:
+            z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
+
+        print('sample T', self.T)
+        print('use score function to sample x and h beginning...')
+
+        for s in tqdm(reversed(range(0, self.T)), desc="Sampling diffusion steps"):
+            s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
+            t_array = s_array + 1
+            s_array = s_array / self.T
+            t_array = t_array / self.T
+                                    
+            zx = z[:, :, :self.n_dims]
+            z = self.sample_p_zs_given_zt_score(s_array, t_array, zx, rl, ra, node_mask, edge_mask, 
+                                                context, fix_noise=fix_noise, pesudo_context=pesudo_context)                    
+        
+        # 采用 score-matching 后，不需要 sample_p_x_given_z0() 这一步
+        print('sample x and h done.')
+        
+        # extract x, h
+        x = z[:, :, :self.n_dims]
+        h_int = z[:, :, -1:] if self.include_charges else torch.zeros(0).to(z.device)
+        h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes]
+
+        # unnormalize x,h
+        x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
+        # post-process h
+        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        h_int = torch.round(h_int).long() * node_mask
+        h = {'integer': h_int, 'categorical': h_cat}
+
+        return x, h, rl, ra
+    
+
+    def sample_p_zs_given_zt_score(self, s, t, zt, rl, ra, 
+                             node_mask, edge_mask, context, 
+                             fix_noise=False, yt=None, ys=None, force_t_zero=False, 
+                             force_t2_zero=False, pesudo_context=None):
+        """Samples from zs ~ p(zs | zt). Only used during sampling."""
+        gamma_s = self.gamma(s)
+        gamma_t = self.gamma(t)
+
+        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
+            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
+        sigma_s = self.sigma(gamma_s, target_tensor=zt)
+        sigma_t = self.sigma(gamma_t, target_tensor=zt)
+        alpha_s = self.alpha(gamma_s, target_tensor=zt)
+        alpha_t = self.alpha(gamma_t, target_tensor=zt)
+
+        # Neural net prediction.
+        score = self.phi(zt, t, node_mask, edge_mask, context, rl=rl, ra=ra) / sigma_t # scale back to score with sigma_t
+
+        # Compute mu for p(zs | zt).
+        score_pos = score[:, :, :3]
+        atom_type_pred = score[:, :, 3:]
+        mu = zt / alpha_t_given_s + (sigma2_t_given_s / alpha_t_given_s) * score_pos # difference here
+
+        # Compute sigma for p(zs | zt).
+        sigma = sigma_t_given_s * sigma_s / sigma_t
+       
+        # Sample zs given the paramters derived from zt.
+        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+
+        # mod 1 to frac space
+        zs[:, :, :self.n_dims] = wrap_at_boundary(zs[:, :, :self.n_dims], wrapping_boundary=1.0) # mod 1
+
+        # Project down to avoid numerical runaway of the center of gravity.
+        zs = torch.cat([zs[:, :, :self.n_dims], atom_type_pred], dim=2)
+
+        return zs
+
+
     def sample_p_zs_given_zt(self, s, t, zt, rl, ra, 
                              node_mask, edge_mask, context, 
                              fix_noise=False, yt=None, ys=None, force_t_zero=False, 
@@ -1325,9 +1555,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         # Neural net prediction.
         if self.property_pred:
-            (eps_t, pred) = self.phi_xh(zt, t, rl, ra, node_mask, edge_mask, context)
+            (eps_t, pred) = self.phi(zt, t, node_mask, edge_mask, context, rl=rl, ra=ra)
         else:
-            eps_t = self.phi_xh(zt, t, rl, ra, node_mask, edge_mask, context)
+            eps_t = self.phi(zt, t, node_mask, edge_mask, context, rl=rl, ra=ra)
 
         # Compute mu for p(zs | zt).
         if pesudo_context is not None and (t*1000)[0].item() < 100: # growth stage?
@@ -1360,7 +1590,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     z0[:, :, :self.n_dims] = z0[:, :, :self.n_dims] % 1
 
                     t0 = torch.ones_like(t) * 0.001       
-                    (_, pred) = self.phi_xh(z0, t0, rl, ra, node_mask, edge_mask, context)
+                    (_, pred) = self.phi(z0, t0, node_mask, edge_mask, context, rl=rl, ra=ra)
                     
                     loss = loss_fn(pred, pesudo_context)
 
@@ -1517,66 +1747,71 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
-        """
-        Draw samples from the generative model.
-        """
-        print('use LatticeGenModel to sample l and a, beginning...')
-        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
-        rl = rl.to(node_mask.device)
-        ra = ra.to(node_mask.device)
-        print('sample lengths and angles done.')
+        # """
+        # Draw samples from the generative model.
+        # """
+        # print('use LatticeGenModel to sample l and a, beginning...')
+        # rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+        # rl = rl.to(node_mask.device)
+        # ra = ra.to(node_mask.device)
+        # print('sample lengths and angles done.')
 
-        if fix_noise:
-            print("using fixed noise......")
-            z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-        else:
-            z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
+        # if fix_noise:
+        #     print("using fixed noise......")
+        #     z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
+        # else:
+        #     z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
 
-        print('sample T', self.T)
-        print('sample x and h beginning...')
+        # print('sample T', self.T)
+        # print('sample x and h beginning...')
 
-        # for s in reversed(range(0, self.T)):
-        for s in tqdm(reversed(range(0, self.T)), desc="Sampling diffusion steps"):
-            try:
-                s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-                t_array = s_array + 1
-                s_array = s_array / self.T
-                t_array = t_array / self.T
+        # # for s in reversed(range(0, self.T)):
+        # for s in tqdm(reversed(range(0, self.T)), desc="Sampling diffusion steps"):
+        #     try:
+        #         s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
+        #         t_array = s_array + 1
+        #         s_array = s_array / self.T
+        #         t_array = t_array / self.T
                                 
-                if self.atom_type_pred:
-                    z[:, :, self.n_dims:] = 1 # 默认 h_cat 全为 1，不起作用
-                    z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], rl, ra, node_mask, edge_mask, 
-                                                context, fix_noise=fix_noise, pesudo_context=pesudo_context)                    
-                else:
-                    z = self.sample_p_zs_given_zt(s_array, t_array, z, rl, ra, node_mask, edge_mask, 
-                                                context, fix_noise=fix_noise)
-                utils.safe_synchronize()
-            except RuntimeError as e:
-                if "out of memory" in str(e):
-                    print(f"Out Of Memory occurred at step {s}")
-                    utils.print_memory("Before crash")
-                    torch.cuda.empty_cache()
-                    raise
+        #         if self.atom_type_pred:
+        #             z[:, :, self.n_dims:] = 1 # 默认 h_cat 全为 1，不起作用
+        #             z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], rl, ra, node_mask, edge_mask, 
+        #                                         context, fix_noise=fix_noise, pesudo_context=pesudo_context)                    
+        #         else:
+        #             z = self.sample_p_zs_given_zt(s_array, t_array, z, rl, ra, node_mask, edge_mask, 
+        #                                         context, fix_noise=fix_noise)
+        #         utils.safe_synchronize()
+        #     except RuntimeError as e:
+        #         if "out of memory" in str(e):
+        #             print(f"Out Of Memory occurred at step {s}")
+        #             utils.print_memory("Before crash")
+        #             torch.cuda.empty_cache()
+        #             raise
                 
-        # Finally sample p(x, h | z_0).
-        if self.property_pred:
-            if self.atom_type_pred:
-                z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
-            x, h, pred= self.sample_p_xh_lengths_angles_given_z0(
-                z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
-                )
-        else:
-            if self.atom_type_pred:
-                z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
-            x, h = self.sample_p_xh_lengths_angles_given_z0(
-                z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
-            )
-        print('sample xh done.')
+        # # Finally sample p(x, h | z_0).
+        # if self.property_pred:
+        #     if self.atom_type_pred:
+        #         z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
+        #     x, h, pred= self.sample_p_xh_lengths_angles_given_z0(
+        #         z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
+        #         )
+        # else:
+        #     if self.atom_type_pred:
+        #         z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
+        #     x, h = self.sample_p_xh_lengths_angles_given_z0(
+        #         z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
+        #     )
+        # print('sample xh done.')
 
-        if self.property_pred:
-            return x, h, pred, rl, ra
+        # if self.property_pred:
+        #     return x, h, pred, rl, ra
+        # return x, h, rl, ra
+
+        x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
+                                context, fix_noise, condition_generate_x, annel_l, pesudo_context)
+        
         return x, h, rl, ra
-
+        
 
     def log_info(self):
         """
@@ -1662,3 +1897,206 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             atom_types_full[i, :n_i] = atom_types_flat[batch == i]
 
         return atom_types_full
+    
+
+    def wrapped_normal_score_batch(
+        self,
+        x,                    # [B, N, 3]
+        mean,                 # [B, N, 3]
+        variance_diag,        # [B, N] or [B, N, 1], sigma_t ** 2
+        node_mask,            # [B, N, 1]
+        wrapping_boundary: float = 1.0,
+        max_offset_integer=3,
+        ):
+        B, N, D = x.shape
+        device = x.device
+
+        wrapping_boundary = wrapping_boundary * \
+            torch.eye(x.shape[-1], device=device)[None].expand(B, -1, -1) # [B, 3, 3]
+
+        # ---- 1. 构造 offsets: [B, K, 3] ----
+        offsets = get_pbc_offsets(
+            wrapping_boundary,  # [B,3,3]
+            max_offset_integer
+        )  # [B, K, 3]
+
+        K = offsets.shape[1]
+
+        # ---- 2. 构造 (x - mean): [B,N,1,3] ----
+        diffs = (x - mean)[:, :, None, :]   # [B, N, 1, 3]
+
+        # ---- 3. 加 offsets: [B,N,K,3] ----
+        diffs_k = diffs + offsets[:, None, :, :]   # broadcasting to [B, N, K, 3]
+
+        # ---- 4. 计算每个镜像的距离平方: [B,N,K] ----
+        dists_sqr_k = diffs_k.pow(2).sum(dim=-1)   # [B,N,K]
+
+        # ---- 5. 归一化权重 softmax ----
+        # variance_diag: [B,N,1]
+        if variance_diag.dim() == 2:
+            variance_diag = variance_diag.unsqueeze(-1)
+
+        weights = torch.softmax(
+            -dists_sqr_k / (2 * variance_diag),   # broadcasting
+            dim=-1
+        )  # [B,N,K]
+
+        # ---- 6. 计算 score ----
+        score = -(weights[..., None] * diffs_k).sum(dim=2) / variance_diag  # [B,N,3]
+
+        # ---- 7. mask 非原子 ----
+        score = score * node_mask        # [B,N,3]
+
+        return score
+
+    def beta_from_alpha(self, t):
+        """
+        Compute beta(t) = -2 d/dt log(alpha(t))
+        t : [B,1] normalized in [0,1]
+        """
+        t.requires_grad_(True)
+        alpha_t = self.alpha(self.gamma(t), target_tensor=None)   # shape [B,1,1] or [B,1]
+        log_alpha = torch.log(alpha_t)
+
+        grad = torch.autograd.grad(
+            outputs=log_alpha.sum(),
+            inputs=t,
+            create_graph=False,
+            retain_graph=True
+        )[0]                          # [B,1]
+        beta = -2.0 * grad            # [B,1]
+
+        return beta.detach()
+    
+    def f_and_g(self, x, t):
+        """
+        Given current state x and time t, return drift f(x,t) and diffusion g(t)
+        VP-SDE: f(x,t) = -0.5 * beta(t) * x
+                g(t)   = sqrt(beta(t))
+        """
+        beta_t = self.beta_from_alpha(t)    # [B,1]
+
+        # reshape to broadcast
+        beta_t = beta_t.view(-1,1,1)        # [B,1,1]
+
+        f = -0.5 * beta_t * x               # [B,N,3]
+        g = torch.sqrt(beta_t)              # [B,1,1]
+        
+        return f, g
+    
+    @torch.no_grad()
+    def reverse_sde_step(
+        self,
+        x,         # [B,N,3]
+        t,         # scalar float (current time)
+        dt,        # negative float (t_next - t)
+        rl, ra,
+        node_mask,
+        edge_mask,
+        context,
+        model_out_is_eps=False
+    ):
+        B, N, D = x.shape
+        device = x.device
+
+        # 1) prepare input
+        t_tensor = torch.full((B,1), fill_value=t, device=device)
+
+        # 2) model forward (must output score)
+        net_out = self.phi(
+            x, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra
+        )
+
+        # 若模型预测的是乘以sigma_t的score，故转换为score需要除以sigma_t
+        sigma_t = self.sigma(self.gamma(t_tensor), target_tensor=x)   # [B,1] or [B,1,1]
+        sigma_t = sigma_t.view(B,1,1)
+        score = net_out[:, :, :3] / sigma_t
+
+        # 3) get drift+diffusion
+        f, g = self.f_and_g(x, t_tensor)   # f=[B,N,3], g=[B,1,1]
+
+        # 4) noise
+        noise = torch.randn_like(x) * node_mask
+
+        # 5) update
+        x_next = (
+            x
+            + (f - (g*g)*score) * dt
+            + g * (abs(dt)**0.5) * noise
+        )
+
+        # 6) wrap fractional coordinates
+        x_next[:, :, :3] = torch.remainder(x_next[:, :, :3], 1.0)
+
+        return x_next
+    
+    @torch.no_grad()
+    def sample_score_sde(
+        self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
+        fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None
+    ):
+        print('Sampling cell length/angles ...')
+        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+        rl = rl.to(node_mask.device)
+        ra = ra.to(node_mask.device)
+
+        # 1) init Gaussian prior at t=1
+        if fix_noise:
+            z = self.sample_combined_position_feature_noise(
+                1, n_nodes, node_mask
+            ).expand(n_samples, -1, -1).clone()
+        else:
+            z = self.sample_combined_position_feature_noise(
+                n_samples, n_nodes, node_mask
+            )
+
+        B = n_samples
+        device = z.device
+
+        print(f"> Reverse SDE steps = {self.T}")
+
+        # 2) time grid, t in [1 → 0]
+        t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
+
+        for i in range(self.T):
+            t      = float(t_grid[i].item())
+            t_next = float(t_grid[i+1].item())
+            dt     = t_next - t               # negative
+
+            # 只取前 3 维坐标
+            zx = z[:, :, :3]
+
+            # 一个 SDE 反向步
+            zx = self.reverse_sde_step(
+                x=zx,
+                t=t,
+                dt=dt,
+                rl=rl, ra=ra,
+                node_mask=node_mask,
+                edge_mask=edge_mask,
+                context=context,
+                model_out_is_eps=False
+            )
+
+            # z 只替换位置维度（分类特征仍保持默认）
+            z[:, :, :3] = zx
+
+        print('Sampling finished.')
+
+        x = z[:, :, :self.n_dims]
+        h_int = z[:, :, -1:] if self.include_charges else torch.zeros(0, device=z.device)
+        h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes]
+
+        # unnormalize
+        x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
+
+        # post-process one-hot / integer
+        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        h_int = torch.round(h_int).long() * node_mask
+
+        h = {'integer': h_int, 'categorical': h_cat}
+
+        return x, h
+
+
+

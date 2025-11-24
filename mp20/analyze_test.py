@@ -717,19 +717,22 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
             if i % args.n_report_steps == 0:
                 if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':
                     print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
-                              f"NLL: {nll_epoch/n_samples:.2f}", end=', ')
+                            f"NLL: {nll_epoch/n_samples:.2f}", 
+                            f"loss: {loss_dict['loss'].mean().item():.3f}, ",
+                            end=', ')
                     print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end = '')
                     wandb.log({f"{partition}_denoise_x": loss_dict['x_error'].mean().item()}, commit=True)
                     if 'atom_type_loss' in loss_dict:
                         print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
                         wandb.log({f"{partition}_atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
-                    print(f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
-                        f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
-                        f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
-                        f"loss: {loss_dict['loss'].mean().item():.3f}, ",
-                        f"loss_t: {loss_dict['loss_t'].mean().item():.3f}, "
-                        f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}",
-                        end='\n')
+                    if 'loss_term_0' in loss_dict and 'neg_log_constants' in loss_dict \
+                        and 'estimator_loss_terms' in loss_dict and 'loss_t' in loss_dict:
+                        print(f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
+                            f"neg_log_constants: {loss_dict['neg_log_constants'].mean().item():.3f}, "
+                            f"estimator_loss_terms: {loss_dict['estimator_loss_terms'].mean().item():.3f}, ",
+                            f"loss_t: {loss_dict['loss_t'].mean().item():.3f}, ",
+                            f"loss_t_larger_than_zero: {loss_dict['loss_t_larger_than_zero'].mean().item():.3f}",
+                            end='\n')
                     if args.property_pred:
                         if not isinstance(loss_dict['pred_loss'], int):
                             print(f"pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')

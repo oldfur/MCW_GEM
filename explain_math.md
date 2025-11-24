@@ -1,0 +1,1 @@
+我的模型前向过程 $z_t = \alpha_t x_0 + \sigma_t \epsilon$，其中 $\epsilon \sim \mathcal{N}(0,I)$，那么这个过程对应的 VP-SDE 是什么？列出推导过程。
