@@ -228,3 +228,8 @@ python main_LF_train.py --device cpu --no-cuda --exp_name debug_LF_mp20 --n_epoc
 ```
 CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u main_LF_train.py --device cuda --dp True --exp_name train_LF_mp20  --wandb_usr maochenwei-ustc --model DGAP --atom_type_pred 1 --include_charges False --lr 1e-4 --n_epochs 1000 --batch_size 128 --test_epochs 5 --visulaize_epoch 5 --save_epoch 40 --n_report_steps 16 --visualize_every_batch 20000 --n_samples 20 --sample_batch_size 32 --diffusion_steps 1000 --lambda_l 1 --lambda_a 1 --online 0 --num_workers 0 --compute_novelty 1 --compute_novelty_epoch 150 --probabilistic_model diffusion_LF --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model.npy  > train.log 2>&1 &
 ```
+
+### sample diffusion_LF_wrap
+```
+CUDA_VISIBLE_DEVICES=0 nohup python -u main_Lhard_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 50 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ./outputs/train_LF_mp20/diffusion_LF_wrap/generative_model_ema_epoch160.npy --save_dir ./outputs/1125_sample_50 > sample.log 2>&1 &
+```
