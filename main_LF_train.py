@@ -444,6 +444,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--lambda_l", type=float, default=1.0, help="the loss weight of lattice lengths")
     parser.add_argument("--lambda_a", type=float, default=1.0, help="the loss weight of lattice angles")
+    parser.add_argument("--lambda_type", type=float, default=0.1, help="the loss weight of atom type prediction")
 
     parser.add_argument("--visulaize_epoch", type=int, default=60, help="visualize after this epoch")   
     # visulaize_epoch之后打印所需的实验信息

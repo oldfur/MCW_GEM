@@ -313,7 +313,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             str_loss_type = 'denoise_loss', 
             str_sigma_h = 0.05, str_sigma_x = 0.05,
             temp_index = 0, optimal_sampling = 0,
-            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10,
+            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10, lambda_type=1,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -427,6 +427,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("use lambda_a: ", lambda_a)
         
         self.lambda_f = lambda_f
+        self.lambda_type = lambda_type
 
         print(f"{self.__class__.__name__} initialized.")
         
@@ -1445,7 +1446,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # mask the loss term with t > prediction_threshold_t
         pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
         pred_loss_mask = pred_loss_mask.squeeze(1)
-        atom_type_loss = atom_type_loss * pred_loss_mask
+        atom_type_loss = self.lambda_type * (atom_type_loss * pred_loss_mask)
         loss_dict["atom_type_loss"] = atom_type_loss
         loss += atom_type_loss
 
