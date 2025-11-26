@@ -1808,7 +1808,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         #     return x, h, pred, rl, ra
         # return x, h, rl, ra
 
-        x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
+
+        # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
+        #                         context, fix_noise, condition_generate_x, annel_l, pesudo_context)
+        
+        x, h, rl, ra = self.sample_score_sde(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
                                 context, fix_noise, condition_generate_x, annel_l, pesudo_context)
         
         return x, h, rl, ra
@@ -1950,24 +1954,43 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return score
 
-    def beta_from_alpha(self, t):
+    
+    def beta_from_alpha(self, t, x, eps=None):
         """
-        Compute beta(t) = -2 d/dt log(alpha(t))
-        t : [B,1] normalized in [0,1]
+        Finite-difference approximation:
+            beta(t) = -2 d/dt log(alpha(t))
+        t: [B,1] normalized in [0,1]
+        x: [B,N,3] to determine inflation shape
         """
-        t.requires_grad_(True)
-        alpha_t = self.alpha(self.gamma(t), target_tensor=None)   # shape [B,1,1] or [B,1]
-        log_alpha = torch.log(alpha_t)
 
-        grad = torch.autograd.grad(
-            outputs=log_alpha.sum(),
-            inputs=t,
-            create_graph=False,
-            retain_graph=True
-        )[0]                          # [B,1]
-        beta = -2.0 * grad            # [B,1]
+        if eps is None:
+            eps = 1.0 / self.T  # consistent with discrete schedule
 
-        return beta.detach()
+        # ensure valid range
+        t_plus  = (t + eps).clamp(0.0, 1.0)
+        t_minus = (t - eps).clamp(0.0, 1.0)
+
+        # lookup gamma(t)  -> [B,1]
+        gamma_plus  = self.gamma(t_plus)
+        gamma_minus = self.gamma(t_minus)
+
+        # alpha = sqrt(sigmoid(-gamma))
+        def alpha_from_gamma(g):
+            return torch.sqrt(torch.sigmoid(-g))
+
+        alpha_plus = alpha_from_gamma(gamma_plus) # [B,1]
+        alpha_minus = alpha_from_gamma(gamma_minus) # [B,1]
+
+        # central difference derivative of log(alpha)
+        dlog_alpha = torch.log(alpha_plus) - torch.log(alpha_minus)
+        dlog_alpha = dlog_alpha / (t_plus - t_minus + 1e-12)  # numeric safety
+
+        beta = -2.0 * dlog_alpha
+
+        beta = self.inflate_batch_array(beta, x)
+
+        return beta
+
     
     def f_and_g(self, x, t):
         """
@@ -1975,7 +1998,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         VP-SDE: f(x,t) = -0.5 * beta(t) * x
                 g(t)   = sqrt(beta(t))
         """
-        beta_t = self.beta_from_alpha(t)    # [B,1]
+        beta_t = self.beta_from_alpha(t, x)    # [B,1]
 
         # reshape to broadcast
         beta_t = beta_t.view(-1,1,1)        # [B,1,1]
@@ -2027,9 +2050,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         )
 
         # 6) wrap fractional coordinates
-        x_next[:, :, :3] = torch.remainder(x_next[:, :, :3], 1.0)
+        x_next = torch.remainder(x_next, 1.0)
+        z = torch.cat([x_next[:, :, :3], net_out[:, :, 3:]], dim=2)
 
-        return x_next
+        return z
     
     @torch.no_grad()
     def sample_score_sde(
@@ -2059,7 +2083,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
 
-        for i in range(self.T):
+        for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             t      = float(t_grid[i].item())
             t_next = float(t_grid[i+1].item())
             dt     = t_next - t               # negative
@@ -2068,7 +2092,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             zx = z[:, :, :3]
 
             # 一个 SDE 反向步
-            zx = self.reverse_sde_step(
+            z = self.reverse_sde_step(
                 x=zx,
                 t=t,
                 dt=dt,
@@ -2078,9 +2102,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 context=context,
                 model_out_is_eps=False
             )
-
-            # z 只替换位置维度（分类特征仍保持默认）
-            z[:, :, :3] = zx
 
         print('Sampling finished.')
 
@@ -2092,12 +2113,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
 
         # post-process one-hot / integer
+        # Insert this BEFORE line 2118
         h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
         h_int = torch.round(h_int).long() * node_mask
 
         h = {'integer': h_int, 'categorical': h_cat}
 
-        return x, h
+        return x, h, rl, ra
 
 
 
