@@ -158,7 +158,7 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
         frac_pos, h, length, angle = generative_model.sample(LatticeGenModel, batch_size, max_n_nodes, 
                                                       node_mask, edge_mask, context, fix_noise=fix_noise, 
                                                       condition_generate_x=evaluate_condition_generation, 
-                                                      annel_l=args.expand_diff)
+                                                      annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps)
 
         assert_correctly_masked(frac_pos, node_mask)
 

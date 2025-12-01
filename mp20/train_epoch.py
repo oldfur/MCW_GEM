@@ -414,7 +414,7 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
                         f"GradNorm: {grad_norm:.1f}, "
                         f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end='')
                 if 'atom_type_loss' in loss_dict:
-                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.3f}', end='\n')
+                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='\n')
                 if args.property_pred:
                     if not isinstance(loss_dict['pred_loss'], int):
                         print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')

@@ -537,20 +537,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         """Compute the dimensionality on translation-invariant linear subspace where distributions on x are defined."""
         number_of_nodes = torch.sum(node_mask.squeeze(2), dim=1)
         return (number_of_nodes - 1) * self.n_dims
-
-    def normalize(self, x, h, node_mask):
-        delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0]) 
-
-        # Casting to float in case h still has long or int type.
-        h_cat = h['categorical'].float() * node_mask
-        h_int = h['integer'].float()
-        if self.include_charges:
-            h_int = h_int * node_mask
-
-        # Create new h dictionary.
-        h = {'categorical': h_cat, 'integer': h_int}
-
-        return x, h, delta_log_px
     
     def normalize_frac_pos_with_h(self, f, h, node_mask):
         f = f * node_mask
@@ -648,195 +634,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
-    def kl_prior(self, xh, node_mask):
-        # for fra pos, do not compute kl_prior term
-        return 0.0
-
-    def compute_x_pred(self, net_out, zt, gamma_t):
-        # print(f"net_out.shape: {net_out.shape}, zt.shape: {zt.shape}, gamma_t.shape: {gamma_t.shape}")
-        """Commputes x_pred, i.e. the most likely prediction of x."""
-        net_out_new = net_out
-        sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
-        alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
-        eps_t = net_out_new
-        x_pred = 1. / alpha_t * (zt - sigma_t * eps_t)
-        return x_pred
-    
-    def compute_x_pred_score(self, net_out, zt, gamma_t):
-        """
-        Computes x_pred from score model output.
-        score: [B, N, 3]   the denoiser score s(x_t, t)
-        zt:    [B, N, 3]   noisy sample
-        gamma_t: noise schedule input
-        """
-
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-        alpha_t = self.alpha(gamma_t, target_tensor=zt)
-        score = net_out / sigma_t  # convert network output to score
-
-        # score-version:   x_pred = (zt + sigma_t^2 * score) / alpha_t
-        x_pred = (zt + sigma_t * sigma_t * score) / alpha_t
-
-        # wrap to fractional coordinate domain
-        x_pred = wrap_at_boundary(x_pred, wrapping_boundary=1.0) # mod 1 
-
-        return x_pred
-
-
-    def compute_length_pred(self, l_out, zt_l, gamma_t):
-        """Commputes length predictions."""
-        net_out_new = l_out
-        sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
-        alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
-        eps_t = net_out_new
-        length_pred = 1. / alpha_t * (zt_l - sigma_t * eps_t)
-        return length_pred
-
-    def compute_angle_pred(self, a_out, zt_a, gamma_t):
-        """Commputes angle predictions."""
-        net_out_new = a_out
-        sigma_t = self.sigma(gamma_t, target_tensor=net_out_new)
-        alpha_t = self.alpha(gamma_t, target_tensor=net_out_new)
-        eps_t = net_out_new
-        angle_pred = 1. / alpha_t * (zt_a - sigma_t * eps_t)
-        return angle_pred
-
-
-    def compute_error(self, net_out, gamma_t, eps):
-        """Computes error, i.e. the most likely prediction of x."""
-        eps_t = net_out
-        denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
-
-        if self.atom_type_pred:
-            eps_t = eps_t[:, :, :self.n_dims]
-            eps = eps[:, :, :self.n_dims]
-            denom = (self.n_dims) * eps_t.shape[1]
-
-        if self.training and self.loss_type == 'l2':
-            error = sum_except_batch(self.circular_diff_loss(eps, eps_t)) / denom # 正弦/余弦差分loss
-        else:
-            error = sum_except_batch(self.circular_diff_loss(eps, eps_t)) / denom
-        return error
-
-
-    def compute_error_mp20(self, net_out, eps):
-        """Computes error, i.e. the most likely prediction of x."""
-        eps_t = net_out
-        denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
-
-        if self.atom_type_pred:
-            eps_t = eps_t[:, :, :self.n_dims]
-            eps = eps[:, :, :self.n_dims]
-            denom = (self.n_dims) * eps_t.shape[1]
-
-        if self.training and self.loss_type == 'l2':
-            # x_error = sum_except_batch((eps - eps_t) ** 2) / denom
-            x_error = sum_except_batch(self.circular_diff_loss(eps_t, eps)) / denom # 正弦/余弦差分loss
-        else:   # test performance
-            # x_error = sum_except_batch((eps - eps_t) ** 2)
-            x_error = sum_except_batch(self.circular_diff_loss(eps_t, eps)) / denom
-
-        return x_error
-    
-    def circular_diff_loss(self, a, b):
-        diff_sin = torch.sin(2 * np.pi * a) - torch.sin(2 * np.pi * b)
-        diff_cos = torch.cos(2 * np.pi * a) - torch.cos(2 * np.pi * b)
-        return (diff_sin ** 2 + diff_cos ** 2)
-    
-
-    def show_x_error(self, net_out, eps):
-        eps_t = net_out
-        if self.atom_type_pred:
-            eps_t = eps_t[:, :, :self.n_dims]
-            eps = eps[:, :, :self.n_dims]
-
-        if self.training and self.loss_type == 'l2':
-            denom = (self.n_dims + self.in_node_nf) * eps_t.shape[1]
-            if self.atom_type_pred:
-                denom = (self.n_dims) * eps_t.shape[1]
-            error = sum_except_batch((eps - eps_t) ** 2) / denom
-        else:
-            error = sum_except_batch((eps - eps_t) ** 2)
-        print("x error is :", error)
-        return error
-
-
-    def show_l_error(self, l_out, eps_l):
-        eps_t_l = l_out
-        error = sum_except_batch((eps_l - eps_t_l) ** 2) / self.len_dim
-        print("length error is :", error)
-        return error
-
-
-    def show_a_error(self, a_out, eps_a):
-        eps_t_a = a_out
-        error = sum_except_batch((eps_a - eps_t_a) ** 2) / self.angle_dim
-        print("angle error is :", error)
-        return error
-
-
-    def log_constants_p_x_given_z0(self, batch_size, device, node_mask):
-        """Approximate normalization constant for torus diffusion (sigma in  [0.001, 1])."""
-        n_nodes = node_mask.squeeze(2).sum(1)
-        degrees_of_freedom_x = n_nodes * self.n_dims
-
-        zeros = torch.zeros((batch_size, 1), device=device)
-        gamma_0 = self.gamma(zeros)
-        log_sigma_x = -0.5 * gamma_0.view(batch_size)
-        sigma_x = torch.exp(log_sigma_x)
-
-        # 对于 σ < 0.2 保持高斯常数；σ > 0.5 平滑趋向均匀常数（≈ 0）
-        # 用 smooth weighting: w = exp(-(σ/σ_c)^2)
-        sigma_c = 0.3
-        weight = torch.exp(- (sigma_x / sigma_c) ** 2)
-
-        log_const_gaussian = -log_sigma_x - 0.5 * np.log(2 * np.pi)
-        log_const_uniform = torch.zeros_like(log_const_gaussian)
-
-        log_const = weight * log_const_gaussian + (1 - weight) * log_const_uniform
-
-        return degrees_of_freedom_x * log_const
-
-
-    def sample_p_xh_lengths_angles_given_z0(self, z0, rl, ra, node_mask, edge_mask, context, fix_noise=False):
-        """Samples x,h ~ p(x|z0)."""
-        bs = z0.size(0)
-        zeros = torch.zeros(size=(bs, 1), device=z0.device)
-        gamma_0 = self.gamma(zeros)
-        sigma_x = self.SNR(-0.5 * gamma_0).unsqueeze(1)
-
-        if self.property_pred:
-            (net_out, pred) = self.phi(z0, zeros, node_mask, edge_mask, context, rl=rl, ra=ra)
-        else:
-            net_out = self.phi(z0, zeros, node_mask, edge_mask, context, rl=rl, ra=ra)
-
-        # Compute mu for p(zs | zt).
-        mu_x = self.compute_x_pred(net_out, z0, gamma_0)
-        
-        # Sample from Normal distribution
-        if self.atom_type_pred:
-            xh = self.sample_normal(mu=mu_x[:,:,:3], sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
-        else:
-            xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
-        x = xh[:, :, :self.n_dims]
-
-        h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        if self.atom_type_pred: # no include_charges
-            h_cat = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
-        else:
-            h_cat = z0[:, :, self.n_dims:-1]
-
-        # unnormalize x,h
-        x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
-
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        h_int = torch.round(h_int).long() * node_mask
-        h = {'integer': h_int, 'categorical': h_cat}
-
-        if self.property_pred:
-            return x, h, pred
-        return x, h
-
 
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False, only_coord=False):
         """Samples from a Normal distribution."""
@@ -850,451 +647,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             print("mu: ", mu.shape)
         return mu + sigma * eps
     
-
-    def log_pxh_given_z0_without_constants(
-            self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
-        # Discrete properties are predicted directly from z_t.
-        z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
-        z_h_int = z_t[:, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
-
-        # Take only part over x.
-        eps_x = eps[:, :, :self.n_dims]
-        net_x = net_out[:, :, :self.n_dims]
-
-        # Compute sigma_0 and rescale to the integer scale of the data.
-        sigma_0 = self.sigma(gamma_0, target_tensor=z_t)
-        sigma_0_cat = sigma_0 * self.norm_values[1]
-        sigma_0_int = sigma_0 * self.norm_values[2]
-
-        # Computes the error for the distribution N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0),
-        # the weighting in the epsilon parametrization is exactly '1'.
-        log_p_x_given_z_without_constants = -0.5 * self.compute_error(net_x, gamma_0, eps_x) # L_zero first item
-
-        # Compute delta indicator masks.
-        h_integer = torch.round(h['integer'] * self.norm_values[2] + self.norm_biases[2]).long()
-        onehot = h['categorical'] * self.norm_values[1] + self.norm_biases[1]
-
-        estimated_h_integer = z_h_int * self.norm_values[2] + self.norm_biases[2]
-        estimated_h_cat = z_h_cat * self.norm_values[1] + self.norm_biases[1]
-        assert h_integer.size() == estimated_h_integer.size()
-
-        h_integer_centered = h_integer - estimated_h_integer
-
-        # Compute integral from -0.5 to 0.5 of the normal distribution
-        # N(mean=h_integer_centered, stdev=sigma_0_int)
-        log_ph_integer = torch.log(
-            cdf_standard_gaussian((h_integer_centered + 0.5) / sigma_0_int)
-            - cdf_standard_gaussian((h_integer_centered - 0.5) / sigma_0_int)
-            + epsilon)
-        log_ph_integer = sum_except_batch(log_ph_integer * node_mask)
-
-        # Centered h_cat around 1, since onehot encoded.
-        centered_h_cat = estimated_h_cat - 1
-
-        # Compute integrals from 0.5 to 1.5 of the normal distribution
-        # N(mean=z_h_cat, stdev=sigma_0_cat)
-        log_ph_cat_proportional = torch.log(
-            cdf_standard_gaussian((centered_h_cat + 0.5) / sigma_0_cat)
-            - cdf_standard_gaussian((centered_h_cat - 0.5) / sigma_0_cat)
-            + epsilon)
-
-        # Normalize the distribution over the categories.
-        log_Z = torch.logsumexp(log_ph_cat_proportional, dim=2, keepdim=True)
-        log_probabilities = log_ph_cat_proportional - log_Z
-
-        # Select the log_prob of the current category using the onehot
-        # representation.
-        log_ph_cat = sum_except_batch(log_probabilities * onehot * node_mask)
-
-        # Combine categorical and integer log-probabilities.
-        log_p_h_given_z = log_ph_integer + log_ph_cat
-
-        # Combine log probabilities for x and h.
-        log_p_xh_given_z = log_p_x_given_z_without_constants + log_p_h_given_z
-
-        return log_p_xh_given_z
-
-
-    def log_p_xhla_given_z0_without_constants(self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
-        """
-        计算 x, h 在给定 z0 下的log likelihood
-        """
-        # x, h 部分同log_pxh_given_z0_without_constants
-        z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
-        z_h_int = z_t[:, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
-        eps_x = eps[:, :, :self.n_dims]
-        net_x = net_out[:, :, :self.n_dims]
-
-        # x
-        # x ~ N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0)
-        sigma_0 = self.sigma(gamma_0, target_tensor=z_t)
-        sigma_0_cat = sigma_0 * self.norm_values[1]
-        sigma_0_int = sigma_0 * self.norm_values[2]
-        log_p_x_given_z_without_constants = -0.5 * self.compute_error(net_x, gamma_0, eps_x)
-        # print("log_p_x_given_z_without_constants: ", log_p_x_given_z_without_constants.sum(0))
-
-        h_integer = torch.round(h['integer'] * self.norm_values[2] + self.norm_biases[2]).long()
-        onehot = h['categorical'] * self.norm_values[1] + self.norm_biases[1]
-        estimated_h_integer = z_h_int * self.norm_values[2] + self.norm_biases[2]
-        estimated_h_cat = z_h_cat * self.norm_values[1] + self.norm_biases[1]
-        assert h_integer.size() == estimated_h_integer.size()
-        h_integer_centered = h_integer - estimated_h_integer
-        log_ph_integer = torch.log(
-            cdf_standard_gaussian((h_integer_centered + 0.5) / sigma_0_int)
-            - cdf_standard_gaussian((h_integer_centered - 0.5) / sigma_0_int)
-            + epsilon)
-        log_ph_integer = sum_except_batch(log_ph_integer * node_mask)
-        centered_h_cat = estimated_h_cat - 1
-        log_ph_cat_proportional = torch.log(
-            cdf_standard_gaussian((centered_h_cat + 0.5) / sigma_0_cat)
-            - cdf_standard_gaussian((centered_h_cat - 0.5) / sigma_0_cat)
-            + epsilon)
-        log_Z = torch.logsumexp(log_ph_cat_proportional, dim=2, keepdim=True)
-        log_probabilities = log_ph_cat_proportional - log_Z
-        log_ph_cat = sum_except_batch(log_probabilities * onehot * node_mask)
-        log_p_h_given_z = log_ph_integer + log_ph_cat
-        # print("log_p_h_given_z: ", log_p_h_given_z.sum(0))
-
-        # 合并所有对数似然
-        log_p_xh_lengths_angles_given_z = log_p_x_given_z_without_constants + log_p_h_given_z
-        return log_p_xh_lengths_angles_given_z
-    
-
-    def log_p_xhla_given_z0_without_constants_score(self, x, h, z_t, gamma_0, true_score, net_out, node_mask, epsilon=1e-10):
-        """在score-matching下无需计算Reconstruction Loss, 即-log p(x| z0)"""
-        pass
-
-
-    def continuous_var_bayesian_update(self, t, sigma1, x):
-        """
-        x: [N, D]
-        """
-        """
-        TODO: rename this function to bayesian flow
-        """
-        gamma = 1 - torch.pow(sigma1, 2 * t)  # [B]
-        gamma = gamma.reshape(-1, 1 ,1)
-        mu = gamma * x + torch.randn_like(x) * torch.sqrt(gamma * (1 - gamma))
-        return mu, gamma
-    
-    
-    def ctime4continuous_loss(self, t, sigma1, x_pred, x):
-        loss = (x_pred - x).view(x.shape[0], -1).abs().pow(2).sum(dim=1)
-        # return loss
-        return -torch.log(sigma1) * loss * torch.pow(sigma1, -2 * t.view(-1))
-    
-    def ctime4discreteised_loss(self, t, sigma1, x_pred, x):
-        loss = (x_pred - x).view(x.shape[0], -1).abs().pow(2).sum(dim=1)
-        # return loss
-        return -torch.log(sigma1) * loss * torch.pow(sigma1, -2 * t.view(-1))
-    
-    def discretised_cdf(self, mu, sigma, x):
-        """
-        cdf function for the discretised variable
-        """
-        # print("msx",mu,sigma,x)
-        # in this case we use the discretised cdf for the discretised output function
-        mu = mu.unsqueeze(1)
-        sigma = sigma.unsqueeze(1)  # B,1,D
-
-        # print(sigma.min(),sigma.max())
-        # print(mu.min(),mu.max())
-
-        f_ = 0.5 * (1 + torch.erf((x - mu) / ((sigma) * np.sqrt(2))))
-        flag_upper = torch.ge(x, 1)
-        flag_lower = torch.le(x, -1)
-        f_ = torch.where(flag_upper, torch.ones_like(f_), f_)
-        f_ = torch.where(flag_lower, torch.zeros_like(f_), f_)
-        # if not torch.all(f_.isfinite()):
-        #     print("f_", f_.min(), f_.max())
-        #     print("mu", mu.min(), mu.max())
-        #     print("sigma", sigma.min(), sigma.max())
-        #     print("x", x.min(), x.max())
-        #     print("flag_upper", flag_upper.min(), flag_upper.max())
-        #     print("flag_lower", flag_lower.min(), flag_lower.max())
-        #     raise ValueError("f_ is not finite")
-        return f_
-
-
-    def compute_loss(self, x, h, lengths, angles, node_mask, edge_mask, context, t0_always, mask_indicator=None,
-                     property_label=None, time_upperbond=-1, bond_info=None):
-        """
-        Computes an estimator for the variational lower bound, or the simple loss (MSE).
-
-        :param x: [B, N, self.n_dims]
-        :param h: [B, N, self.in_node_nf]
-        :param node_mask: [B, N, 1]
-        :param edge_mask: [B, N, N]
-        :param context: Not used here.
-        训练时的输入
-        :param mask_indicator: 训练时是否使用mask
-        :param property_label: 属性标签
-        :param time_upperbond: 时间上限
-        :param bond_info: 键值对
-
-        :return: loss, loss_dict
-        """
-
-        batch_size = x.size(0)
-
-        # This part is about whether to include loss term 0 always.
-        if t0_always:
-            lowest_t = 1
-        else:
-            lowest_t = 0
-
-        # 采样时间步t,采样范围(int)为: [lowest_t, T], 采样结果变量t_int: [B, 1]
-        if self.property_pred:
-            # 0.5 rate use T+1, 0.5 rate use prediction_threshold_t
-            random_number = torch.rand(1).item()
-            # if random_number < -1:
-            if self.unnormal_time_step:
-                random_th = 0.5
-            elif self.only_noisy_node:
-                random_th = 1
-            else:
-                random_th = -1
-            
-            if random_number < random_th:
-                random_prop = True
-                t_int = torch.randint(
-                    lowest_t, self.prediction_threshold_t + 1, 
-                    size=(batch_size, 1), device=x.device).float()
-                # lowest_t+1
-                """一半的概率介于[0, T+1]，一半的概率介于[0, prediction_threshold_t]"""
-            else:
-                random_prop = False
-                t_int = torch.randint(
-                    lowest_t, self.T + 1, size=(batch_size, 1), device=x.device).float()
-                # lowest_t+1
-            # print("t_int: ", t_int)
-        else:
-            t_int = torch.randint(
-                    lowest_t, self.T + 1, size=(batch_size, 1), device=x.device).float()
-        
-        if time_upperbond >= 0:
-            t_int = torch.ones_like(t_int) * time_upperbond
-
-        if self.half_noisy_node:
-            half_batch_size = batch_size // 2
-            t_int[half_batch_size:,:] = torch.randint(
-                    lowest_t, self.prediction_threshold_t + 1, size=(batch_size - half_batch_size, 1), device=x.device).float()
-            t_int[:half_batch_size,:] = torch.randint(lowest_t, self.T + 1, size=(half_batch_size, 1), device=x.device).float()
-        
-        if self.sep_noisy_node:
-            half_batch_size = batch_size // 2
-            t_int[half_batch_size:,:] = torch.randint(
-                    lowest_t, self.prediction_threshold_t + 1, size=(batch_size - half_batch_size, 1), device=x.device).float()
-            t_int[:half_batch_size,:] = torch.randint(self.prediction_threshold_t + 1, self.T + 1, 
-                                                      size=(half_batch_size, 1), device=x.device).float()
-        
-        s_int = t_int - 1 
-        t_is_zero = (t_int == 0).float()  # Important to compute log p(x | z0).
-
-        # Normalize t and s to [0, 1]. Note that the negative step 
-        # of s will never be used, since then p(x | z0) is computed.
-        # t_int[0] = 1, t_int[1] = 2
-        s = s_int / self.T
-        t = t_int / self.T
-
-        # Compute gamma_s and gamma_t via the network.
-        gamma_s = self.inflate_batch_array(self.gamma(s), x)
-        gamma_t = self.inflate_batch_array(self.gamma(t), x)
-
-        # Compute alpha_t and sigma_t from gamma.
-        alpha_t = self.alpha(gamma_t, x)
-        sigma_t = self.sigma(gamma_t, x)
-        
-        # Sample zt ~ Normal(alpha_t x, sigma_t)
-        eps = self.sample_combined_position_feature_noise(
-            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
-
-        # Concatenate x, h[integer] and h[categorical].
-        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)  
-        # xh: [B, N, n_dims + num_classes + include_charges]
-        fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
-
-        # Sample z_t given x, h for timestep t, from q(z_t | x, h)
-        if self.atom_type_pred:
-            z_t = (alpha_t * x + sigma_t * eps) % 1     # frac
-            z_t = torch.cat([z_t, fix_h], dim=2)
-        else:
-            z_t = alpha_t * xh + sigma_t * eps
-            z_t[:,:,:self.n_dims] = z_t[:,:,:self.n_dims] % 1   # frac
-
-        # phi: noise prediction model
-        if self.property_pred:
-            (net_out, property_pred) = self.phi(z_t, t, node_mask, edge_mask, 
-                                                context, rl=lengths, ra=angles)
-        else:
-            # Neural net prediction.
-            net_out = self.phi(z_t, t, node_mask, edge_mask, 
-                               context, rl=lengths, ra=angles)
-
-        # Compute the error.
-        x_error = self.compute_error_mp20(net_out, eps)
-        if self.training and self.loss_type == 'l2':
-            SNR_weight_x = torch.ones_like(x_error)
-        else:
-            # Compute weighting with SNR: (SNR(s-t) - 1) for epsilon parametrization.
-            SNR_weight_x = (self.SNR(gamma_s - gamma_t) - 1).squeeze(1).squeeze(1)
-        assert x_error.size() == SNR_weight_x.size()
-        loss_t_larger_than_zero = 0.5 * (SNR_weight_x * x_error)
-
-        # The _constants_ depending on sigma_0 from the
-        # cross entropy term E_q(z0 | x) [log p(x | z0)].
-        neg_log_constants = -self.log_constants_p_x_given_z0(batch_size, x.device, node_mask)
-
-        # Reset constants during training with l2 loss.
-        if self.training and self.loss_type == 'l2':
-            neg_log_constants = torch.zeros_like(neg_log_constants)
-
-        # The KL between q(zT | x) and p(zT) = Normal(0, 1). Should be close to zero.
-        kl_prior = self.kl_prior(xh, node_mask)
-
-        # Combining the terms
-        if t0_always:   # test
-            loss_t = loss_t_larger_than_zero
-            num_terms = self.T  # Since t=0 is not included here.
-            estimator_loss_terms = num_terms * loss_t
-
-            # Compute noise values for t = 0.
-            t_zeros = torch.zeros_like(s)
-            gamma_0 = self.inflate_batch_array(self.gamma(t_zeros), x)
-            alpha_0 = self.alpha(gamma_0, x)
-            sigma_0 = self.sigma(gamma_0, x)
-
-            # Sample z_0 given x,l,a,h for timestep t, from q(z_t | x,l,a,h)
-            eps_0 = self.sample_combined_position_feature_noise(
-                n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
-
-            if self.atom_type_pred:
-                z_0 = (alpha_0 * x + sigma_0 * eps_0) % 1 # frac
-                z_0 = torch.cat([z_0, fix_h], dim=2)
-            else:
-                z_0 = alpha_0 * xh + sigma_0 * eps_0
-                z_0[:,:,:self.n_dims] = z_0[:,:,:self.n_dims] % 1 # frac
-
-            if self.property_pred:
-                (net_out, property_pred) = self.phi(z_0, t_zeros, node_mask, edge_mask, context, 
-                                                    rl=lengths, ra=angles)
-            else:
-                net_out = self.phi(z_0, t_zeros, node_mask, edge_mask, context, 
-                                rl=lengths, ra=angles)
-
-            # Compute the error for t = 0.            
-            loss_term_0 = -self.log_p_xhla_given_z0_without_constants(
-                x, h, z_0, gamma_0, eps_0, net_out, node_mask)
-
-            # Combine all terms.
-            loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
-            # print("estimator_loss_terms: ", estimator_loss_terms.sum(0))
-
-        else:
-            # Computes the L_0 term (even if gamma_t is not actually gamma_0)
-            # and this will later be selected via masking.
-            loss_term_0 = -self.log_p_xhla_given_z0_without_constants(
-                x, h, z_t, gamma_t, eps, net_out, node_mask) 
-
-            t_is_not_zero = 1 - t_is_zero
-
-            loss_t = loss_term_0 * t_is_zero.squeeze() + t_is_not_zero.squeeze() * loss_t_larger_than_zero
-            # loss_term_0: main loss term
-
-            # Only upweigh estimator if using the vlb objective.
-            if self.training and self.loss_type == 'l2':
-                estimator_loss_terms = loss_t
-            else:
-                num_terms = self.T + 1  # Includes t = 0.
-                estimator_loss_terms = num_terms * loss_t
-
-            loss = kl_prior + estimator_loss_terms + neg_log_constants # kl=0
-         
-        assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
-
-        loss_dict = {'t': t_int.squeeze(), 
-                     'loss':loss.squeeze(),
-                     'loss_t': loss_t.squeeze(),
-                     'x_error': x_error.squeeze(),
-                     'neg_log_constants': neg_log_constants.squeeze(),
-                     'estimator_loss_terms': estimator_loss_terms.squeeze(),
-                     'loss_term_0': loss_term_0.squeeze(),
-                     'loss_t_larger_than_zero': loss_t_larger_than_zero.squeeze()}
-
-
-        """至此loss已经计算完成, 下面mask掉生长阶段loss"""
-
-        # calc loss for prediction
-        if self.property_pred:
-            if self.target_property is not None:
-                #loss for prediction use l1 loss
-                loss_l1 = torch.nn.L1Loss(reduction='none')
-                # print(property_pred.size(), property_label.size())
-                assert property_pred.size() == property_label.size()
-                pred_loss = loss_l1(property_pred, property_label)
-                if pred_loss.dim() > 1 and pred_loss.size(1) == 53: # basic prob
-                    pred_loss = pred_loss.mean(dim=1)
-            else:
-                # 0 loss for prediction
-                pred_loss = torch.zeros_like(property_pred)
-
-        if self.atom_type_pred:
-            # calculate the loss for atom type
-            h_true = torch.cat([h['categorical'], h['integer']], 
-                               dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
-            h_true_idx = h_true.argmax(dim=2)   # [B,N]
-            h_pred = net_out[:, :, 3:]          # [B,N,C]
-
-            # cross_entropy loss
-            ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
-            atom_type_loss = ce_loss(
-                h_pred.reshape(-1, h_pred.size(-1)), # logits, [B*N, C]
-                h_true_idx.reshape(-1) # targets, [B*N]
-            )
-            atom_type_loss = atom_type_loss.reshape(batch_size, -1)  # [B, N]
-            atom_type_loss = atom_type_loss * node_mask.squeeze(-1)
-            atom_type_loss = atom_type_loss.mean(dim=1)
-
-        if self.property_pred:
-            pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
-
-            if self.use_prop_pred == 0:
-                pred_loss_mask = torch.zeros_like(pred_loss_mask).to(pred_loss_mask.device)
-            pred_rate = pred_loss_mask.sum() / pred_loss_mask.size(0)
-            loss_dict["pred_rate"] = pred_rate
-            pred_loss_mask = pred_loss_mask.squeeze(1)
-            pred_loss = pred_loss * pred_loss_mask
-            # pred_loss = pred_loss.squeeze(1)
-            
-            if not t0_always: # training mode
-                if self.freeze_gradient and random_prop:
-                    loss = 0 # do not generation
-                    self.dynamics.eval() # freeze backbone, when do the property prediction.
-                elif self.freeze_gradient:
-                    pred_loss = 0 # do not do the property prediction when random seed is not less than 0.5
-                    self.dynamics.train() # unfreeze the backbone
-                else:
-                    self.dynamics.train() # unfreeze the backbone
-            
-            # dynamic adjust the weight
-            # pred_loss_weight = (error.mean() / pred_loss.mean()).item()
-            pred_loss_weight = 1
-            
-            loss_dict['pred_loss'] = pred_loss * pred_loss_weight
-            loss += pred_loss              
-
-        if self.atom_type_pred: # True !
-            pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
-            pred_loss_mask = pred_loss_mask.squeeze(1)
-            atom_type_loss = atom_type_loss * pred_loss_mask
-            loss_dict["atom_type_loss"] = atom_type_loss
-            loss += atom_type_loss
-        else:
-            loss_dict['loss'] = loss.squeeze()
-
-
-        return loss, loss_dict   
-
 
     def forward(self, *args, **kwargs):
         """
@@ -1315,33 +667,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             assert property_label is not None, "property_label should not be None in training"
 
         # fractional space 
-        frac_pos, h, delta_log_px = self.normalize_frac_pos_with_h(frac_pos, h, node_mask)
-        lengths, angles, delta_log_pl, delta_log_pa = self.normalize_lengths_angles(lengths, angles)
-        delta_log_pl = torch.tensor(delta_log_pl, device=lengths.device, dtype=lengths.dtype)
-        delta_log_pa = torch.tensor(delta_log_pa, device=angles.device, dtype=angles.dtype)
-
-        # Reset delta_log_px if not vlb objective.
-        if self.training and self.loss_type == 'l2':
-            delta_log_px = torch.zeros_like(delta_log_px)
-            delta_log_pl = torch.zeros_like(delta_log_pl)
-            delta_log_pa = torch.zeros_like(delta_log_pa)
-
-        # compute loss
-        # if self.training:
-        #     loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False, 
-        #                                         mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
-        # else:
-        #     loss, loss_dict = self.compute_loss(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=True, 
-        #                                         mask_indicator=mask_indicator, property_label=property_label, bond_info=bond_info)
-        #
-        # neg_log_pxhla = loss
-        # delta_log_pxla = delta_log_px + delta_log_pl + delta_log_pa
-        #
-        # # Correct for normalization on x, l, a.
-        # assert neg_log_pxhla.size() == delta_log_pxla.size()
-        # neg_log_pxhla = neg_log_pxhla - delta_log_pxla
-        #
-        # return neg_log_pxhla, loss_dict
+        frac_pos, h, _ = self.normalize_frac_pos_with_h(frac_pos, h, node_mask)
+        lengths, angles, _, _ = self.normalize_lengths_angles(lengths, angles)
         
         loss, loss_dict = self.compute_loss_score(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False,
                                                   property_label=property_label)
@@ -1539,186 +866,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         return zs
 
 
-    def sample_p_zs_given_zt(self, s, t, zt, rl, ra, 
-                             node_mask, edge_mask, context, 
-                             fix_noise=False, yt=None, ys=None, force_t_zero=False, 
-                             force_t2_zero=False, pesudo_context=None):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-        alpha_s = self.alpha(gamma_s, target_tensor=zt)
-        alpha_t = self.alpha(gamma_t, target_tensor=zt)
-
-        # Neural net prediction.
-        if self.property_pred:
-            (eps_t, pred) = self.phi(zt, t, node_mask, edge_mask, context, rl=rl, ra=ra)
-        else:
-            eps_t = self.phi(zt, t, node_mask, edge_mask, context, rl=rl, ra=ra)
-
-        # Compute mu for p(zs | zt).
-        if pesudo_context is not None and (t*1000)[0].item() < 100: # growth stage?
-            with torch.enable_grad():
-                loss_fn = torch.nn.L1Loss()
-                zt = zt.clone().detach().requires_grad_(True)
-
-                if (t*1000)[0].item() < 10: # growth stage?
-                    its = 20
-                    opt = torch.optim.SGD([zt], lr=0.001)
-                else:
-                    its = 5
-                    opt = torch.optim.Adam([zt], lr=0.001)
-
-                for i in range(its):
-                    self.dynamics.zero_grad()
-                    # Compute gamma_s and gamma_t via the network.
-                    # Compute alpha_t and sigma_t from gamma.
-                    gamma_s = self.inflate_batch_array(self.gamma(s), zt)
-                    gamma_t = self.inflate_batch_array(self.gamma(t), zt)
-                    alpha_t = self.alpha(gamma_t, zt)
-                    sigma_t = self.sigma(gamma_t, zt)
-                    
-                    if zt.shape[-1] != eps_t.shape[-1]:
-                        eps_tmp = eps_t[:,:,:3].clone().detach()
-                    else:
-                        eps_tmp = eps_t.clone().detach()
-    
-                    z0 = (zt * node_mask - sigma_t * eps_tmp) / alpha_t
-                    z0[:, :, :self.n_dims] = z0[:, :, :self.n_dims] % 1
-
-                    t0 = torch.ones_like(t) * 0.001       
-                    (_, pred) = self.phi(z0, t0, node_mask, edge_mask, context, rl=rl, ra=ra)
-                    
-                    loss = loss_fn(pred, pesudo_context)
-
-                    loss.backward()
-                    opt.step()
-                    opt.zero_grad()
-                    
-        
-        if self.atom_type_pred:
-            atom_type_pred = eps_t[:, :, 3:]
-            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t[:,:,0:3]
-        else:
-            mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
-       
-        # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-
-        # mod 1 to frac space
-        zs[:, :, :self.n_dims] = zs[:, :, :self.n_dims] % 1
-
-        # Project down to avoid numerical runaway of the center of gravity.
-        if self.atom_type_pred:
-            zs = torch.cat(
-                [zs[:, :, :self.n_dims], atom_type_pred], dim=2
-            )
-        else:
-            zs = torch.cat(
-                [zs[:, :, :self.n_dims], zs[:, :, self.n_dims:]], dim=2
-            )
-        
-        return zs
-
-    
-    def sample_p_zs_given_zt_annel_lang(self, s, t, zt, node_mask, edge_mask, context, 
-                                        fix_noise=False, yt=None, ys=None, force_t_zero=False,
-                                        force_t2_zero=False, T2=10, sigma_n=0.04):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-
-        # Neural net prediction.
-        eps_t = self.phi(zt, t, node_mask, edge_mask, context)
-
-        # Compute mu for p(zs | zt).
-        mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
-
-        # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-
-        # print(f't is {t[0].item()}, sigma: {sigma[0].item()}, z coeffient: 
-        # {(1 / alpha_t_given_s)[0][0].item()}, nn output coeffient: 
-        # {(sigma2_t_given_s / alpha_t_given_s / sigma_t)[0][0].item()}')
-        
-        # Project down to avoid numerical runaway of the center of gravity.
-        
-        # split the zs into two parts
-        z_coord = zs[:, :, :self.n_dims]
-        z_atomtype = zs[:, :, self.n_dims:]
-        
-        
-        step = self.T // T2
-        for i in range(T2):
-            # caluate the mean
-            gamma_idx = step * i
-            gamma_t = torch.tensor(self.gamma_lst[gamma_idx], dtype=torch.float32, device=zs.device)
-            eps_coord = eps_t[:,:,:self.n_dims]
-            
-            
-            z_coord_mu = z_coord - (1 /sigma_n) * gamma_t * eps_coord
-            # + torch.sqrt(2 * gamma_t) * zs_coords
-            z_coord_sigma = torch.sqrt(2 * gamma_t).repeat(z_coord_mu.size(0), 1, 1)
-            
-            zs_coords = self.sample_normal(z_coord_mu, z_coord_sigma, node_mask, fix_noise, only_coord=True)
-            
-            # update the zs and the eps_t
-            zs = torch.cat([zs_coords, z_atomtype], dim=2)
-            eps_t = self.phi(zs, t, node_mask, edge_mask, context)
-            
-            # pass
-        
-        zs = torch.cat([zs[:, :, :self.n_dims], zs[:, :, self.n_dims:]], dim=2)
-        
-        return zs
-
-    def sample_p_ys_given_yt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False):
-        """Samples from zs ~ p(zs | zt). Only used during sampling."""
-        gamma_s = self.gamma(s)
-        gamma_t = self.gamma(t)
-
-        sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s = \
-            self.sigma_and_alpha_t_given_s(gamma_t, gamma_s, zt)
-
-        sigma_s = self.sigma(gamma_s, target_tensor=zt)
-        sigma_t = self.sigma(gamma_t, target_tensor=zt)
-
-        # Neural net prediction.
-        if self.property_pred:
-            eps_t, pred = self.phi(zt, t, node_mask, edge_mask, context)
-        else:
-            eps_t = self.phi(zt, t, node_mask, edge_mask, context)
-
-        # Compute mu for p(zs | zt).
-        mu = zt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_t
-
-        # Compute sigma for p(zs | zt).
-        sigma = sigma_t_given_s * sigma_s / sigma_t
-
-        # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
-
-        # Project down to avoid numerical runaway of the center of gravity.
-        zs = torch.cat([zs[:, :, :self.n_dims], zs[:, :, self.n_dims:]], dim=2)
-        return zs
-
-
     def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.
@@ -1747,73 +894,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
-               fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None):
-        # """
-        # Draw samples from the generative model.
-        # """
-        # print('use LatticeGenModel to sample l and a, beginning...')
-        # rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
-        # rl = rl.to(node_mask.device)
-        # ra = ra.to(node_mask.device)
-        # print('sample lengths and angles done.')
-
-        # if fix_noise:
-        #     print("using fixed noise......")
-        #     z = self.sample_combined_position_feature_noise(1, n_nodes, node_mask)
-        # else:
-        #     z = self.sample_combined_position_feature_noise(n_samples, n_nodes, node_mask)
-
-        # print('sample T', self.T)
-        # print('sample x and h beginning...')
-
-        # # for s in reversed(range(0, self.T)):
-        # for s in tqdm(reversed(range(0, self.T)), desc="Sampling diffusion steps"):
-        #     try:
-        #         s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
-        #         t_array = s_array + 1
-        #         s_array = s_array / self.T
-        #         t_array = t_array / self.T
-                                
-        #         if self.atom_type_pred:
-        #             z[:, :, self.n_dims:] = 1 # 默认 h_cat 全为 1，不起作用
-        #             z = self.sample_p_zs_given_zt(s_array, t_array, z[:,:,:3], rl, ra, node_mask, edge_mask, 
-        #                                         context, fix_noise=fix_noise, pesudo_context=pesudo_context)                    
-        #         else:
-        #             z = self.sample_p_zs_given_zt(s_array, t_array, z, rl, ra, node_mask, edge_mask, 
-        #                                         context, fix_noise=fix_noise)
-        #         utils.safe_synchronize()
-        #     except RuntimeError as e:
-        #         if "out of memory" in str(e):
-        #             print(f"Out Of Memory occurred at step {s}")
-        #             utils.print_memory("Before crash")
-        #             torch.cuda.empty_cache()
-        #             raise
-                
-        # # Finally sample p(x, h | z_0).
-        # if self.property_pred:
-        #     if self.atom_type_pred:
-        #         z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
-        #     x, h, pred= self.sample_p_xh_lengths_angles_given_z0(
-        #         z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
-        #         )
-        # else:
-        #     if self.atom_type_pred:
-        #         z[:,:,self.n_dims:] = 1 # 默认 h_cat 全为 1，这一步预测
-        #     x, h = self.sample_p_xh_lengths_angles_given_z0(
-        #         z, rl, ra, node_mask, edge_mask, context, fix_noise=fix_noise
-        #     )
-        # print('sample xh done.')
-
-        # if self.property_pred:
-        #     return x, h, pred, rl, ra
-        # return x, h, rl, ra
-
-
+               fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1):
+        """Samples from the model using score function."""
         # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
         #                         context, fix_noise, condition_generate_x, annel_l, pesudo_context)
         
         x, h, rl, ra = self.sample_score_sde(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
-                                context, fix_noise, condition_generate_x, annel_l, pesudo_context)
+                                context, fix_noise, condition_generate_x, annel_l, pesudo_context, n_corrector_steps)
         
         return x, h, rl, ra
         
@@ -2058,7 +1145,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample_score_sde(
         self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
-        fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None
+        fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
+        n_corrector_steps=1, snr=0.01
     ):
         print('Sampling cell length/angles ...')
         rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
@@ -2079,7 +1167,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         device = z.device
 
         print(f"> Reverse SDE steps = {self.T}")
-
+        print('Corrector steps:', n_corrector_steps)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
 
@@ -2090,8 +1178,38 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             # 只取前 3 维坐标
             zx = z[:, :, :3]
+            t_tensor = torch.full((B,1), fill_value=t, device=device)
 
-            # 一个 SDE 反向步
+            # =======================================================
+            # Corrector (Langevin)
+            # =======================================================
+            
+            for _ in range(n_corrector_steps):
+                # 网络前向 -> 得分
+                net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                gamma_t = self.gamma(t_tensor)
+                sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
+                score = net_out[:, :, :3] / sigma_t
+                # 计算 alpha_t_pc, 见 SDE 论文 P23 Algorithm 3, 5
+                alpha_t_pc = self.alpha(gamma_t, zx) ** 2
+                
+                # 噪声
+                noise = torch.randn_like(zx) * node_mask
+
+                # Langevin 步
+                # SNR 根据 PC 论文设置
+                grad_norm = score.reshape(B, -1).norm(dim=-1) # [B]
+                noise_norm = noise.reshape(B, -1).norm(dim=-1) # [B]
+                eps = 2  * ((snr * noise_norm / (grad_norm + 1e-10))**2) * alpha_t_pc.squeeze() # [B]
+                eps = eps.view(B,1,1)
+                zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                zx = torch.remainder(zx, 1.0) # mod 1
+
+
+            # =======================================================
+            # Predictor (reverse SDE Euler-Maruyama)
+            # =======================================================
+            # 一次 SDE 反向步
             z = self.reverse_sde_step(
                 x=zx,
                 t=t,
