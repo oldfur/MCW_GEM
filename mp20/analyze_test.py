@@ -217,7 +217,9 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
     length = length.detach().cpu().numpy()
     angle = angle.detach().cpu().numpy() 
 
-    for i in range(int(batch_size)):
+    num = int(args.num_rounds * batch_size)
+
+    for i in range(num):
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
                                     angle[i, 0], angle[i, 1], angle[i, 2])
         # 实际上是一般文献的Lattice的转置
@@ -254,10 +256,10 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
     for k, v in metrics_dict.items():
         print(f"{k}: {v.tolist() if isinstance(v, torch.Tensor) else v}")
     wandb.log(metrics_dict)
-    wandb.log({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+    wandb.log({'Validity': metrics_dict["valid_rate"].sum()/num, 
                'Uniqueness': metrics_dict["unique_rate"], 
                'Novelty': metrics_dict["novel_rate"]})
-    print({ 'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
+    print({ 'Validity': metrics_dict["valid_rate"].sum()/num, 
             'Uniqueness': metrics_dict["unique_rate"], 
             'Novelty': metrics_dict["novel_rate"]})
 

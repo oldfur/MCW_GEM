@@ -10,6 +10,7 @@ from torch_scatter import scatter_mean
 from crystalgrw.data_utils import lattice_params_from_matrix
 from equivariant_diffusion.mlp import DiffusionMLP
 from tqdm import tqdm
+import random
 
 
 # Defining some useful util functions.
@@ -894,15 +895,38 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
-               fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1):
+               fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1,
+               num_rounds=1, seed_base=None):
         """Samples from the model using score function."""
         # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
         #                         context, fix_noise, condition_generate_x, annel_l, pesudo_context)
-        
-        x, h, rl, ra = self.sample_score_sde(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
-                                context, fix_noise, condition_generate_x, annel_l, pesudo_context, n_corrector_steps)
-        
-        return x, h, rl, ra
+            
+        results = []
+
+        for i in range(num_rounds):
+            # ---------------------------------
+            # Independent RNG state each round
+            # ---------------------------------
+            if seed_base is not None:
+                seed = seed_base + i
+                torch.manual_seed(seed)
+                np.random.seed(seed)
+                random.seed(seed)
+
+            x, h, rl, ra = self.sample_score_sde(
+                LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
+                context, fix_noise, condition_generate_x,
+                annel_l, pesudo_context,
+                n_corrector_steps
+            )
+
+            results.append((x, h, rl, ra, node_mask))
+
+        # If only 1 sampling, return unpacked
+        if num_rounds == 1:
+            return results[0]
+
+        return results
         
 
     def log_info(self):

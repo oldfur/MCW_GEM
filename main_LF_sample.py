@@ -403,7 +403,8 @@ if __name__ == '__main__':
     parser.add_argument("--pretrained_Lattice_model", type=str, default='', help="the pretrained lattice generation model path")
     parser.add_argument("--lattice_device", type=str, default="cpu", help="device for the lattice gen model")
     parser.add_argument("--LatticeGenModel", type=str, default='diffusion_L', help="the pretrained lattice generation model name")
-    parser.add_argument("--n_corrector_steps", type=int, default=1, help="number of corrector steps")
+    parser.add_argument("--n_corrector_steps", type=int, default=0, help="number of corrector steps")
+    parser.add_argument("--num_rounds", type=int, default=1, help="number of rounds for sample")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()

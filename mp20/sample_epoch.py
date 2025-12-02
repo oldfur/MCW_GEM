@@ -5,6 +5,42 @@ from equivariant_diffusion.utils import assert_mean_zero_with_mask, remove_mean_
     assert_correctly_masked
 
 
+def stack_samples(samples):
+    """
+    Stack multi-round sampling results from model.sample(..., num_rounds=K).
+    
+    Input:
+        samples: list of (x, h, rl, ra)
+                 length = num_rounds
+                 x:  [B, N, 3]
+                 h:  {'integer':[B,N,1], 'categorical':[B,N,C]}
+                 rl: [B, ...]
+                 ra: [B, ...]
+    
+    Output:
+        x_all:  [K*B, N, 3]
+        h_all: dict
+            'integer'    -> [K*B, N, 1]
+            'categorical'-> [K*B, N, C]
+        rl_all: [K*B, ...]
+        ra_all: [K*B, ...]
+    """
+
+    xs      = torch.cat([res[0] for res in samples], dim=0)
+    h_ints  = torch.cat([res[1]['integer']    for res in samples], dim=0)
+    h_cats  = torch.cat([res[1]['categorical'] for res in samples], dim=0)
+    rls     = torch.cat([res[2] for res in samples], dim=0)
+    ras     = torch.cat([res[3] for res in samples], dim=0)
+    node_masks = torch.cat([res[4] for res in samples], dim=0)
+
+    h = {
+        'integer': h_ints,
+        'categorical': h_cats
+    }
+
+    return xs, h, rls, ras, node_masks
+
+
 def sample(args, device, generative_model, dataset_info,
            prop_dist=None, nodesxsample=torch.tensor([10]), # nodesxsample[i]为一个样本的节点数
            context=None, fix_noise=False, evaluate_condition_generation=False, pesudo_context=None, sample_steps=1000):
@@ -155,10 +191,12 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
     if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':        
         print(f'sample with evaluate_condition_generation: [{evaluate_condition_generation}]')
         args.expand_diff = 0
-        frac_pos, h, length, angle = generative_model.sample(LatticeGenModel, batch_size, max_n_nodes, 
-                                                      node_mask, edge_mask, context, fix_noise=fix_noise, 
-                                                      condition_generate_x=evaluate_condition_generation, 
-                                                      annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps)
+        samples = generative_model.sample(LatticeGenModel, batch_size, max_n_nodes, 
+                                        node_mask, edge_mask, context, fix_noise=fix_noise, 
+                                        condition_generate_x=evaluate_condition_generation, 
+                                        annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
+                                        num_rounds=args.num_rounds, seed_base=2025)
+        frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds*B
 
         assert_correctly_masked(frac_pos, node_mask)
 
