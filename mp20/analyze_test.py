@@ -256,10 +256,14 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
     for k, v in metrics_dict.items():
         print(f"{k}: {v.tolist() if isinstance(v, torch.Tensor) else v}")
     wandb.log(metrics_dict)
-    wandb.log({'Validity': metrics_dict["valid_rate"].sum()/num, 
-               'Uniqueness': metrics_dict["unique_rate"], 
-               'Novelty': metrics_dict["novel_rate"]})
-    print({ 'Validity': metrics_dict["valid_rate"].sum()/num, 
+    wandb.log({ 'struct_validity': metrics_dict["struct_valid_rate"].sum()/num,
+                'comp_validity': metrics_dict["comp_valid_rate"].sum()/num,
+                'total_validity': metrics_dict["valid_rate"].sum()/num, 
+                'Uniqueness': metrics_dict["unique_rate"], 
+                'Novelty': metrics_dict["novel_rate"]})
+    print({ 'struct_validity': metrics_dict["struct_valid_rate"].sum()/num,
+            'comp_validity': metrics_dict["comp_valid_rate"].sum()/num,
+            'total_validity': metrics_dict["valid_rate"].sum()/num, 
             'Uniqueness': metrics_dict["unique_rate"], 
             'Novelty': metrics_dict["novel_rate"]})
 
