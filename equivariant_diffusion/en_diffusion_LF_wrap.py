@@ -1137,7 +1137,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         context,
         model_out_is_eps=False
     ):  
-        print("rl.shape:", rl.shape)
         B, N, D = x.shape
         device = x.device
 
