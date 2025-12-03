@@ -195,7 +195,7 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                                         node_mask, edge_mask, context, fix_noise=fix_noise, 
                                         condition_generate_x=evaluate_condition_generation, 
                                         annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
-                                        num_rounds=args.num_rounds, seed_base=2025)
+                                        num_rounds=args.num_rounds, seed_base=args.sample_seed)
         frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds*B
 
         assert_correctly_masked(frac_pos, node_mask)
