@@ -1336,6 +1336,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
             # 一次 SDE 反向步
+            print("rl.shape:", rl.shape)
             z = self.reverse_sde_step(
                 x=zx,
                 t=t,
