@@ -260,7 +260,7 @@ def main(args):
 
             # 分析与保存
             metrics_dict = analyze_and_save_F(args, epoch, model_ema, LatticeGenModel, nodes_dist, dataset_info, 
-                        prop_dist, args.evaluate_condition_generation)
+                        prop_dist, args.evaluate_condition_generation, dataloader=dataloaders['test'])
             sample_validity = metrics_dict["valid_rate"].sum()/args.sample_batch_size
             nll_val = test_F(args, dataloaders['val'], dataset_info, epoch, model_ema_dp, 
                         property_norms, nodes_dist, partition='Val')
@@ -281,8 +281,8 @@ def main(args):
                 print("best validity model at epoch %d" % epoch)
                 best_sample_validity = sample_validity
                 need_save = True
-            if sample_validity >= 0.8:
-                print("validity is >= 0.8 at epoch %d" % epoch)
+            if sample_validity >= 0.75:
+                print("validity is >= 0.75 at epoch %d" % epoch)
                 need_save = True
 
             # save model
@@ -458,6 +458,8 @@ if __name__ == '__main__':
     parser.add_argument("--LatticeGenModel", type=str, default='diffusion_L', help="the pretrained lattice generation model name")
     parser.add_argument("--n_corrector_steps", type=int, default=0, help="number of corrector steps")
     parser.add_argument("--num_rounds", type=int, default=1, help="number of rounds for sample")
+    parser.add_argument("--sample_seed", type=int, default=2025, help="random seed for sampling")
+    parser.add_argument("--sample_realistic_LA", type=int, default=0, help="whether sample realistic lattice lengths and angles")
     parser = setup_shared_args(parser)
     args = parser.parse_args()
     

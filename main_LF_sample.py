@@ -250,7 +250,7 @@ def main(args):
     epoch = 0
 
     analyze_and_save_F(args, epoch, model_ema_dp, LatticeGenModel, nodes_dist, dataset_info, 
-                     prop_dist, args.evaluate_condition_generation)
+                     prop_dist, args.evaluate_condition_generation, dataloader=dataloaders['test'])
                         
 
 
@@ -406,6 +406,7 @@ if __name__ == '__main__':
     parser.add_argument("--n_corrector_steps", type=int, default=0, help="number of corrector steps")
     parser.add_argument("--num_rounds", type=int, default=1, help="number of rounds for sample")
     parser.add_argument("--sample_seed", type=int, default=2025, help="random seed for sampling")
+    parser.add_argument("--sample_realistic_LA", type=int, default=0, help="whether sample realistic lattice lengths and angles")
 
     parser = setup_shared_args(parser)
     args = parser.parse_args()

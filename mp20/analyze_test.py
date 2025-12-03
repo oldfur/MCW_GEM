@@ -197,10 +197,11 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
 
 
 def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, dataset_info, 
-                     prop_dist, evaluate_condition_generation):
+                     prop_dist, evaluate_condition_generation, dataloader=None):
     print(f'Analyzing crystal validity at epoch {epoch}...')
     batch_size = args.sample_batch_size
     device = args.device
+    dtype = args.dtype
     mp20_evaluator = CrystalGenerationEvaluator(
             dataset_cif_list=pd.read_csv(
                 os.path.join(args.dataset_folder_path, f"all.csv")
@@ -211,9 +212,19 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
 
     # sample the crystal structures
     nodesxsample = nodes_dist.sample(batch_size)
-    one_hot, charges, frac_pos, node_mask, length, angle = sample_F(args, device, model_sample, LatticeGenModel, 
-                                                                 prop_dist=prop_dist, nodesxsample=nodesxsample, 
-                                                                 dataset_info=dataset_info)
+    if args.sample_realistic_LA:
+        first_batch = next(iter(dataloader))
+        first_batch = reshape(first_batch, device, dtype, include_charges=True)
+        rl, ra = first_batch['lengths'], first_batch['angles']
+        # test sampling with given L
+        one_hot, charges, frac_pos, node_mask, length, angle = sample_F(args, device, model_sample, LatticeGenModel, 
+                                                                    prop_dist=prop_dist, nodesxsample=nodesxsample, 
+                                                                    dataset_info=dataset_info, rl=rl, ra=ra)
+    else:
+        one_hot, charges, frac_pos, node_mask, length, angle = sample_F(args, device, model_sample, LatticeGenModel, 
+                                                                    prop_dist=prop_dist, nodesxsample=nodesxsample, 
+                                                                    dataset_info=dataset_info)
+    
     length = length.detach().cpu().numpy()
     angle = angle.detach().cpu().numpy() 
 

@@ -896,11 +896,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1,
-               num_rounds=1, seed_base=None):
-        """Samples from the model using score function."""
-        # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
-        #                         context, fix_noise, condition_generate_x, annel_l, pesudo_context)
-            
+               num_rounds=1, seed_base=None, rl=None, ra=None):
+        """Samples from the model using score function."""    
         results = []
 
         for i in range(num_rounds):
@@ -912,13 +909,22 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 torch.manual_seed(seed)
                 np.random.seed(seed)
                 random.seed(seed)
-
-            x, h, rl, ra = self.sample_score_sde(
-                LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
-                context, fix_noise, condition_generate_x,
-                annel_l, pesudo_context,
-                n_corrector_steps
-            )
+            # ---------------------------------
+            if rl is not None and ra is not None:
+                x, h = self.sample_score_sde_Lattice(
+                    rl, ra, n_samples, n_nodes, node_mask, edge_mask,
+                    context, fix_noise, condition_generate_x,
+                    annel_l, pesudo_context, n_corrector_steps
+                )
+            else:
+                # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
+                #                     context, fix_noise, condition_generate_x, annel_l, pesudo_context)            
+                x, h, rl, ra = self.sample_score_sde(
+                    LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
+                    context, fix_noise, condition_generate_x,
+                    annel_l, pesudo_context,
+                    n_corrector_steps
+                )
 
             results.append((x, h, rl, ra, node_mask))
 
@@ -1263,5 +1269,99 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return x, h, rl, ra
 
+    @torch.no_grad()
+    def sample_score_sde_Lattice(
+        self, rl, ra, n_samples, n_nodes, node_mask, edge_mask, context, 
+        fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
+        n_corrector_steps=1, snr=0.01
+    ):
+        print('Sampling cell given real length/angles ...')
+        rl = rl.to(node_mask.device)
+        ra = ra.to(node_mask.device)
 
+        # 1) init Gaussian prior at t=1
+        if fix_noise:
+            z = self.sample_combined_position_feature_noise(
+                1, n_nodes, node_mask
+            ).expand(n_samples, -1, -1).clone()
+        else:
+            z = self.sample_combined_position_feature_noise(
+                n_samples, n_nodes, node_mask
+            )
+
+        B = n_samples
+        device = z.device
+
+        print(f"> Reverse SDE steps = {self.T}")
+        print('Corrector steps:', n_corrector_steps)
+        # 2) time grid, t in [1 → 0]
+        t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
+
+        for i in tqdm(range(self.T), desc="Sampling SDE steps"):
+            t      = float(t_grid[i].item())
+            t_next = float(t_grid[i+1].item())
+            dt     = t_next - t               # negative
+
+            # 只取前 3 维坐标
+            zx = z[:, :, :3]
+            t_tensor = torch.full((B,1), fill_value=t, device=device)
+
+            # =======================================================
+            # Corrector (Langevin)
+            # =======================================================
+            
+            for _ in range(n_corrector_steps):
+                # 网络前向 -> 得分
+                net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                gamma_t = self.gamma(t_tensor)
+                sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
+                score = net_out[:, :, :3] / sigma_t
+                # 计算 alpha_t_pc, 见 SDE 论文 P23 Algorithm 3, 5
+                alpha_t_pc = self.alpha(gamma_t, zx) ** 2
+                
+                # 噪声
+                noise = torch.randn_like(zx) * node_mask
+
+                # Langevin 步
+                # SNR 根据 PC 论文设置
+                grad_norm = score.reshape(B, -1).norm(dim=-1) # [B]
+                noise_norm = noise.reshape(B, -1).norm(dim=-1) # [B]
+                eps = 2  * ((snr * noise_norm / (grad_norm + 1e-10))**2) * alpha_t_pc.squeeze() # [B]
+                eps = eps.view(B,1,1)
+                zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                zx = torch.remainder(zx, 1.0) # mod 1
+
+
+            # =======================================================
+            # Predictor (reverse SDE Euler-Maruyama)
+            # =======================================================
+            # 一次 SDE 反向步
+            z = self.reverse_sde_step(
+                x=zx,
+                t=t,
+                dt=dt,
+                rl=rl, ra=ra,
+                node_mask=node_mask,
+                edge_mask=edge_mask,
+                context=context,
+                model_out_is_eps=False
+            )
+
+        print('Sampling finished.')
+
+        x = z[:, :, :self.n_dims]
+        h_int = z[:, :, -1:] if self.include_charges else torch.zeros(0, device=z.device)
+        h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes]
+
+        # unnormalize
+        x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
+
+        # post-process one-hot / integer
+        # Insert this BEFORE line 2118
+        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        h_int = torch.round(h_int).long() * node_mask
+
+        h = {'integer': h_int, 'categorical': h_cat}
+
+        return x, h
 

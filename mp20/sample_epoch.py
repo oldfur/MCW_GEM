@@ -162,7 +162,8 @@ def sample_withL(args, device, generative_model, LatticeGenModel, dataset_info,
 
 def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
            prop_dist=None, nodesxsample=torch.tensor([10]), # nodesxsample[i]为一个样本的节点数
-           context=None, fix_noise=False, evaluate_condition_generation=False, pesudo_context=None, sample_steps=1000):
+           context=None, fix_noise=False, evaluate_condition_generation=False, 
+           pesudo_context=None, sample_steps=1000, rl=None, ra=None):
     max_n_nodes = dataset_info['max_n_nodes']  # this is the maximum node_size in mp20
 
     assert int(torch.max(nodesxsample)) <= max_n_nodes
@@ -191,11 +192,23 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
     if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':        
         print(f'sample with evaluate_condition_generation: [{evaluate_condition_generation}]')
         args.expand_diff = 0
-        samples = generative_model.sample(LatticeGenModel, batch_size, max_n_nodes, 
-                                        node_mask, edge_mask, context, fix_noise=fix_noise, 
-                                        condition_generate_x=evaluate_condition_generation, 
-                                        annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
-                                        num_rounds=args.num_rounds, seed_base=args.sample_seed)
+        if args.sample_realistic_LA:
+            # test real Lattice condition generation
+            samples = generative_model.sample(
+                LatticeGenModel, batch_size, max_n_nodes, node_mask, edge_mask, context, 
+                fix_noise=fix_noise, condition_generate_x=evaluate_condition_generation, 
+                annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
+                num_rounds=args.num_rounds, seed_base=args.sample_seed,
+                rl=rl, ra=ra
+            )
+        else:
+            samples = generative_model.sample(
+                LatticeGenModel, batch_size, max_n_nodes, 
+                node_mask, edge_mask, context, fix_noise=fix_noise, 
+                condition_generate_x=evaluate_condition_generation, 
+                annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
+                num_rounds=args.num_rounds, seed_base=args.sample_seed)
+        
         frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds*B
 
         assert_correctly_masked(frac_pos, node_mask)
