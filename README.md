@@ -245,3 +245,4 @@ CUDA_VISIBLE_DEVICES=0 nohup python -u main_LF_sample.py --device cuda --dp True
 ```
 CUDA_VISIBLE_DEVICES=2 python -u main_LF_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.001 --n_corrector_steps 1 --sample_seed 2000 --num_rounds 4 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ./outputs/train_LF_mp20/diffusion_LF_wrap/generative_model_ema_epoch120.npy --save_dir ./outputs/1203_sample_128_2
 ```
+若使用真实lattice,加上：--sample_realistic_LA 1 --batch_size 32

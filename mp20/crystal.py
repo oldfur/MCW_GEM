@@ -174,6 +174,7 @@ def structure_validity(crystal, cutoff=0.5):
     # Pad diagonal with a large number
     dist_mat = dist_mat + np.diag(np.ones(dist_mat.shape[0]) * (cutoff + 10.0))
     if dist_mat.min() < cutoff or crystal.volume < 0.1:
+        print(f"Structure invalid: min distance {dist_mat.min():.3f}, volume {crystal.volume:.3f}")
         return False
     else:
         return True
@@ -204,7 +205,7 @@ def array_dict_to_crystal(
         Crystal: Crystal object, optionally saved as a CIF file.
     """
     # Check if the lattice angles are in a valid range
-    if np.all(50 < x["angles"]) and np.all(x["angles"] < 130):
+    if np.all(50 <= x["angles"]) and np.all(x["angles"] <= 130):
         crys = Crystal(x)   # 这一行创建crystal对象，包含有效性
         # Check if the crystal is valid
         if save:    # 如果需要保存
