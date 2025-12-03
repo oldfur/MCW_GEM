@@ -211,10 +211,17 @@ def array_dict_to_crystal(
             if crys.valid:
                 os.makedirs(save_dir_name, exist_ok=True)
                 crys.structure.to(os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif"))
-                print(f"save to {save_dir_name}!!")
+                print(f"valid crystal, save to {save_dir_name}!!")
             else:
                 if hasattr(crys, 'invalid_reason'):
-                    print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
+                    if crys.invalid_reason == 'constructed but structure invalid':
+                        subdir = os.path.join(save_dir_name, "struct_invalid")
+                        os.makedirs(subdir, exist_ok=True)
+                        crys.structure.to(os.path.join(subdir, f"invalid_crystal_{x['sample_idx']}.cif"))
+                        print(f"Crystal is not valid because: {crys.invalid_reason}, save to {subdir}!!")
+                    else:
+                        print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
+
                 else:
                     print("Crystal is not valid")
     else:
