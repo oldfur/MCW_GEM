@@ -53,7 +53,7 @@ def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
 
 def assert_correctly_masked(variable, node_mask):
     assert (variable * (1 - node_mask)).abs().max().item() < 1e-4, \
-        'Variables not masked properly.'
+        f'Variables not masked properly: {(variable * (1 - node_mask)).abs().max().item()}'
 
 
 def center_gravity_zero_gaussian_log_likelihood(x):
