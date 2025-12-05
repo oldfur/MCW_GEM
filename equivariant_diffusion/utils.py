@@ -52,6 +52,14 @@ def assert_mean_zero_with_mask(x, node_mask, eps=1e-10):
 
 
 def assert_correctly_masked(variable, node_mask):
+    if torch.isnan(variable).any():
+        raise ValueError('Variable contains NaNs')
+    if torch.isinf(variable).any():
+        raise ValueError('Variable contains Infs')
+    if torch.isnan(node_mask).any():
+        raise ValueError('Node mask contains NaNs')
+    if torch.isinf(node_mask).any():
+        raise ValueError('Node mask contains Infs')
     assert (variable * (1 - node_mask)).abs().max().item() < 1e-4, \
         f'Variables not masked properly: {(variable * (1 - node_mask)).abs().max().item()}'
 
