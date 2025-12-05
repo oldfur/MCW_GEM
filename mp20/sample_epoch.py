@@ -208,10 +208,8 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                 condition_generate_x=evaluate_condition_generation, 
                 annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
                 num_rounds=args.num_rounds, seed_base=args.sample_seed, sample_realistic_LA=False)
-        if args.num_rounds > 1:
-            frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds*B
-        else:
-            frac_pos, h, length, angle, node_mask = samples
+            
+        frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds * B
 
         assert_correctly_masked(frac_pos, node_mask)
 

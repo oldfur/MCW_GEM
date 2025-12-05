@@ -949,10 +949,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             results.append((x, h, rl, ra, node_mask))
 
-        # If only 1 sampling, return unpacked
-        if num_rounds == 1:
-            return results[0]
-
         return results
         
 
