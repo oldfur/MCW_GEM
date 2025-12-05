@@ -947,7 +947,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     n_corrector_steps
                 )
 
-            results.append((x, h, rl, ra, node_mask))
+            results.append((x, h, rl, ra, node_mask.clone()))
 
         return results
         
@@ -1208,6 +1208,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         B = n_samples
         device = node_mask.device
         len_scale = (volume / (N + 1e-8)).pow(1/3).view(B,1,1)  # [B,1,1]
+        print('Length scale:', len_scale.squeeze().cpu().numpy())
 
         # 1) init Gaussian prior at t=1
         if fix_noise:
