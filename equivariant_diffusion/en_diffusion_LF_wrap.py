@@ -153,6 +153,18 @@ def get_pbc_offsets(pbc: torch.Tensor, max_offset_integer: int = 3) -> torch.Ten
     return pbc_offset_per_molecule
 
 
+def lattice_volume(lengths, angles):
+    # lengths: [B,3], angles: [B,3] in radians
+    angles = torch.deg2rad(angles)  # 转为弧度
+    l1, l2, l3 = lengths[:,0], lengths[:,1], lengths[:,2]
+    alpha, beta, gamma = angles[:,0], angles[:,1], angles[:,2]
+
+    return l1 * l2 * l3 * torch.sqrt(
+        1 + 2*torch.cos(alpha)*torch.cos(beta)*torch.cos(gamma)
+        - torch.cos(alpha)**2 - torch.cos(beta)**2 - torch.cos(gamma)**2
+    )  # [B]
+
+
 class PositiveLinear(torch.nn.Module):
     """Linear layer with weights forced to be positive."""
 
@@ -680,6 +692,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def compute_loss_score(self, x, h, lengths, angles, node_mask, edge_mask, 
                            context, t0_always, time_upperbond=-1, property_label=None,):
         batch_size = x.size(0)
+        # compute atomic counts per structure
+        N = node_mask.squeeze(-1).sum(-1)  # [B]
+        # scale factor for score loss
+        volume = lattice_volume(lengths, angles) # [B]
+        scale = (volume / (N + 1e-8)).pow(2/3)
 
         # whether to include loss term 0 always.
         if t0_always:
@@ -749,6 +766,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         delta = (target - pred) * node_mask # [B,N,3]
         denom = node_mask.squeeze(-1).sum(-1) * 3 # [B]
         score_loss = sum_except_batch(delta.square()) / denom # per atom node in one sample
+        score_loss = score_loss * scale
+
+        # final loss
         kl_prior = torch.zeros_like(score_loss)
         loss = kl_prior + score_loss
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
@@ -896,7 +916,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1,
-               num_rounds=1, seed_base=None, rl=None, ra=None):
+               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False):
         """Samples from the model using score function."""    
         results = []
 
@@ -910,7 +930,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 np.random.seed(seed)
                 random.seed(seed)
             # ---------------------------------
-            if rl is not None and ra is not None:
+            if sample_realistic_LA:
+                assert rl is not None and ra is not None, "When sample_realistic_LA is True, rl and ra must be provided."
                 x, h = self.sample_score_sde_Lattice(
                     rl, ra, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
@@ -1135,7 +1156,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         node_mask,
         edge_mask,
         context,
-        model_out_is_eps=False
+        model_out_is_eps=False,
+        len_scale=None,
     ):  
         B, N, D = x.shape
         device = x.device
@@ -1152,6 +1174,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         sigma_t = self.sigma(self.gamma(t_tensor), target_tensor=x)   # [B,1] or [B,1,1]
         sigma_t = sigma_t.view(B,1,1)
         score = net_out[:, :, :3] / sigma_t
+        score = score / len_scale # scale score according to length scale
 
         # 3) get drift+diffusion
         f, g = self.f_and_g(x, t_tensor)   # f=[B,N,3], g=[B,1,1]
@@ -1182,6 +1205,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
         rl = rl.to(node_mask.device)
         ra = ra.to(node_mask.device)
+        print('sample lengths and angles done.')
+
+        volume = lattice_volume(rl, ra)     # [B]
+        N = node_mask.squeeze(-1).sum(-1)   # [B]        
+        B = n_samples
+        device = node_mask.device
+        len_scale = (volume / (N + 1e-8)).pow(1/3).view(B,1,1)  # [B,1,1]
 
         # 1) init Gaussian prior at t=1
         if fix_noise:
@@ -1192,9 +1222,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             z = self.sample_combined_position_feature_noise(
                 n_samples, n_nodes, node_mask
             )
-
-        B = n_samples
-        device = z.device
 
         print(f"> Reverse SDE steps = {self.T}")
         print('Corrector steps:', n_corrector_steps)
@@ -1220,6 +1247,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 gamma_t = self.gamma(t_tensor)
                 sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
                 score = net_out[:, :, :3] / sigma_t
+                score = score / len_scale # scale score according to length scale
                 # 计算 alpha_t_pc, 见 SDE 论文 P23 Algorithm 3, 5
                 alpha_t_pc = self.alpha(gamma_t, zx) ** 2
                 
@@ -1248,7 +1276,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 node_mask=node_mask,
                 edge_mask=edge_mask,
                 context=context,
-                model_out_is_eps=False
+                model_out_is_eps=False,
+                len_scale=len_scale,
             )
 
         print('Sampling finished.')
@@ -1278,6 +1307,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Sampling cell given real length/angles ...')
         rl = rl.to(node_mask.device)
         ra = ra.to(node_mask.device)
+        B = n_samples
+        device = node_mask.device
+        volume = lattice_volume(rl, ra)     # [B]
+        N = node_mask.squeeze(-1).sum(-1)   # [B]
+
+        len_scale = (volume / (N + 1e-8)).pow(1/3).view(B,1,1)  # [B,1,1]
 
         # 1) init Gaussian prior at t=1
         if fix_noise:
@@ -1288,9 +1323,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             z = self.sample_combined_position_feature_noise(
                 n_samples, n_nodes, node_mask
             )
-
-        B = n_samples
-        device = z.device
 
         print(f"> Reverse SDE steps = {self.T}")
         print('Corrector steps:', n_corrector_steps)
@@ -1316,6 +1348,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 gamma_t = self.gamma(t_tensor)
                 sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
                 score = net_out[:, :, :3] / sigma_t
+                score = score / len_scale # length scale
                 # 计算 alpha_t_pc, 见 SDE 论文 P23 Algorithm 3, 5
                 alpha_t_pc = self.alpha(gamma_t, zx) ** 2
                 
@@ -1344,7 +1377,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 node_mask=node_mask,
                 edge_mask=edge_mask,
                 context=context,
-                model_out_is_eps=False
+                model_out_is_eps=False,
+                len_scale=len_scale,
             )
 
         print('Sampling finished.')
