@@ -1210,7 +1210,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         len_scale = (volume / (N + 1e-8)).pow(1/3).view(B,1,1)  # [B,1,1]
 
         if torch.isnan(len_scale).any():
-            print("len_scale has NaN values!")
+            num_nan = torch.isnan(len_scale).sum().item()
+            print(f"len_scale has {num_nan} NaN values! Replacing with 1.0 to avoid issues.")
             len_scale = torch.where(torch.isnan(len_scale), torch.ones_like(len_scale), len_scale)
 
         # 1) init Gaussian prior at t=1
@@ -1235,9 +1236,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             # 只取前 3 维坐标
             zx = z[:, :, :3]
-            if torch.isnan(zx).any():
-                print("zx has NaN values!")
-                print("time step:", i)
             t_tensor = torch.full((B,1), fill_value=t, device=device)
 
             # =======================================================
