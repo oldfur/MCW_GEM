@@ -806,9 +806,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         loss += atom_type_loss
 
         # calculate the loss for repulsion term
-        score = pred / (sigma_t + 1e-8)  # scale back to score with sigma_t
-        x_hat = (z_t[:, :, :3] - sigma_t * pred) / (alpha_t + 1e-8)   # [B,N,3]
-        x_hat = wrap_at_boundary(x_hat, wrapping_boundary=1.0)
+        score_pred = pred / (sigma_t + 1e-8)  # scale back
+        x_hat = (z_t[:, :, :3] - sigma_t * score_pred) / (alpha_t + 1e-8)   # [B,N,3]
+        x_hat = wrap_at_boundary(x_hat, wrapping_boundary=1.0) # clean sample
         L = self.compute_lattice_matrix(
             *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
         repulsion_loss = self.compute_repulsion_loss_from_fractional(
