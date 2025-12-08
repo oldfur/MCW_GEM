@@ -902,7 +902,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 4. Compute repulsion
         rep = torch.expm1(k * torch.relu(cutoff - dist)) # [B,N,N], exp()-1
         rep = rep * pair_mask
-        print(rep.max().item(), rep.min().item())
 
         # Normalize by number of valid pairs
         denom = pair_mask.sum(dim=(1, 2)).clamp(min=1.0)
