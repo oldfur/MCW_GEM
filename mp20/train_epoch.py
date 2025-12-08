@@ -365,7 +365,9 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
             if 'x_error' in loss_dict:
                 wandb.log({"denoise_coords": loss_dict['x_error'].mean().item()}, commit=True)
             if 'atom_type_loss' in loss_dict:
-                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)    
+                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)   
+            if 'repulsion_loss' in loss_dict:
+                wandb.log({"repulsion_loss": loss_dict['repulsion_loss'].mean().item()}, commit=True)
         else:
             raise NotImplementedError
 
@@ -414,11 +416,14 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
                         f"GradNorm: {grad_norm:.1f}, "
                         f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end='')
                 if 'atom_type_loss' in loss_dict:
-                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='\n')
+                    print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='')
+                if 'repulsion_loss' in loss_dict:
+                    print(f', repulsion_loss: {loss_dict["repulsion_loss"].mean():.4f}', end='')
                 if args.property_pred:
                     if not isinstance(loss_dict['pred_loss'], int):
                         print(f", pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
-                    print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")     
+                    print(f", pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
+                print("\n", end='')     
             else:
                 raise NotImplementedError
         nll_epoch.append(nll.item())

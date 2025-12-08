@@ -326,7 +326,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             str_loss_type = 'denoise_loss', 
             str_sigma_h = 0.05, str_sigma_x = 0.05,
             temp_index = 0, optimal_sampling = 0,
-            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10, lambda_type=1,
+            len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10, 
+            lambda_type=1, lambda_rep=1, cutoff=0.5,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -436,11 +437,17 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.angle_dim = angle_dim
         self.lambda_l = lambda_l
         self.lambda_a = lambda_a
-        print("use lambda_l: ", lambda_l)
-        print("use lambda_a: ", lambda_a)
+        # print("use lambda_l: ", lambda_l)
+        # print("use lambda_a: ", lambda_a)
         
         self.lambda_f = lambda_f
         self.lambda_type = lambda_type
+        self.lambda_rep = lambda_rep
+        self.cutoff = cutoff
+
+        print("use lambda_type: ", lambda_type)
+        print("use lambda_rep: ", lambda_rep)
+        print("cutoff for repulsion loss: ", cutoff)
 
         print(f"{self.__class__.__name__} initialized.")
         
@@ -798,7 +805,114 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         loss_dict["atom_type_loss"] = atom_type_loss
         loss += atom_type_loss
 
+        # calculate the loss for repulsion term
+        score = pred / (sigma_t + 1e-8)  # scale back to score with sigma_t
+        x_hat = (z_t[:, :, :3] - sigma_t * pred) / (alpha_t + 1e-8)   # [B,N,3]
+        x_hat = wrap_at_boundary(x_hat, wrapping_boundary=1.0)
+        L = self.compute_lattice_matrix(
+            *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
+        repulsion_loss = self.compute_repulsion_loss_from_fractional(
+            x_hat, L, node_mask, t_int.squeeze(), cutoff=self.cutoff, t_threshold=self.prediction_threshold_t)
+        repulsion_loss = self.lambda_rep * repulsion_loss
+        loss_dict["repulsion_loss"] = repulsion_loss
+        loss += repulsion_loss
+
         return loss, loss_dict
+    
+
+    def compute_lattice_matrix(self, lengths, angles):
+        """
+        lengths: [B, 3] -> a, b, c
+        angles:  [B, 3] -> alpha, beta, gamma in DEGREES
+        return:  [B, 3, 3] lattice matrix L where columns are v1, v2, v3
+        """
+        # Convert degrees → radians
+        angles = torch.deg2rad(angles)
+        a, b, c = lengths[:, 0], lengths[:, 1], lengths[:, 2]
+        alpha, beta, gamma = angles[:, 0], angles[:, 1], angles[:, 2]
+
+        cosA = torch.cos(alpha)
+        cosB = torch.cos(beta)
+        cosG = torch.cos(gamma)
+        sinG = torch.sin(gamma)
+
+        # v1 = (a, 0, 0)
+        v1 = torch.stack([
+            a,
+            torch.zeros_like(a),
+            torch.zeros_like(a),
+        ], dim=1)  # [B,3]
+
+        # v2 = (b*cosγ, b*sinγ, 0)
+        v2 = torch.stack([
+            b * cosG,
+            b * sinG,
+            torch.zeros_like(b),
+        ], dim=1)
+
+        # v3 computed using triclinic formula
+        cx = c * cosB
+        cy = c * (cosA - cosB * cosG) / sinG
+        cz = torch.sqrt(c**2 - cx**2 - cy**2)
+
+        v3 = torch.stack([cx, cy, cz], dim=1)
+
+        # Columns form the lattice matrix
+        L = torch.stack([v1, v2, v3], dim=2)  # [B,3,3]
+        return L
+
+
+    def compute_repulsion_loss_from_fractional(
+        self,
+        x_hat,          # [B,N,3], fractional coords
+        L,              # [B,3,3], lattice matrix
+        node_mask,      # [B,N,1]
+        t_int,          # [B]
+        cutoff=0.5,
+        t_threshold=10,
+        k=10.0
+    ):
+        """
+        Compute repulsion loss using Cartesian distances obtained from fractional coords.
+        No PBC is applied (use nearest cell).
+        Returns [B] loss.
+        """
+
+        B, N, _ = x_hat.shape
+        nm = node_mask.float()  # [B,N,1]
+        x_hat = x_hat.float()  # Mask out invalid nodes
+
+        # 1. Fractional -> Cartesian
+        X = torch.matmul(x_hat, L)  # [B,N,3]
+
+        # 2. Pairwise distances
+        Xi = X.unsqueeze(2)  # [B,N,1,3]
+        Xj = X.unsqueeze(1)  # [B,1,N,3]
+        dX = Xi - Xj         # [B,N,N,3]
+
+        dist = torch.norm(dX, dim=-1)  # [B,N,N]
+
+        # 3. Mask out invalid nodes
+        pair_mask = (nm * nm.transpose(1, 2)).squeeze(-1)  # [B,N,N]
+
+        # Remove self-distances
+        eye = torch.eye(N, device=x_hat.device).unsqueeze(0)
+        pair_mask = pair_mask * (1 - eye)
+
+        # 4. Compute repulsion
+        rep = torch.expm1(k * torch.relu(cutoff - dist)) # [B,N,N], exp()-1
+        rep = rep * pair_mask
+        print(rep.max().item(), rep.min().item())
+
+        # Normalize by number of valid pairs
+        denom = pair_mask.sum(dim=(1, 2)).clamp(min=1.0)
+        rep_loss = rep.sum(dim=(1, 2)) / denom  # [B]
+
+        # 5. Only apply when t small
+        t_mask = (t_int.view(-1) <= t_threshold).float()
+        rep_loss = rep_loss * t_mask  # [B]
+
+        return rep_loss
 
 
     @torch.no_grad()
