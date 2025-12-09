@@ -775,7 +775,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         score_loss = sum_except_batch(delta.square()) / denom # per atom node in one sample
         score_loss = score_loss * scale
 
-        # final loss
+        # total loss
         kl_prior = torch.zeros_like(score_loss)
         loss = kl_prior + score_loss
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
@@ -783,6 +783,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         loss_dict = {'t': t_int.squeeze(),
                      'loss': loss.squeeze(), 
                      'x_error':(score_loss / sigma_t).squeeze()}
+
+        # ---------------------------------------------------------------------------------
+        # predict physical properties below certain t
+        # ---------------------------------------------------------------------------------
 
         # calculate the loss for atom type
         h_true = torch.cat([h['categorical'], h['integer']], 
@@ -806,8 +810,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         loss += atom_type_loss
 
         # calculate the loss for repulsion term
-        score_pred = pred / (sigma_t + 1e-8)  # scale back
-        x_hat = (z_t[:, :, :3] - sigma_t * score_pred) / (alpha_t + 1e-8)   # [B,N,3]
+        # reconstruct x_hat, x_hat = (z_t + sigma_t ^ 2 * score) / alpha_t
+        # and pred of the net, is to approximate score * sigma_t
+        x_hat = (z_t[:, :, :3] + sigma_t * pred) / (alpha_t + 1e-8)   # [B,N,3]
         x_hat = wrap_at_boundary(x_hat, wrapping_boundary=1.0) # clean sample
         L = self.compute_lattice_matrix(
             *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
