@@ -734,10 +734,10 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
             if i % args.n_report_steps == 0:
                 if args.probabilistic_model == 'diffusion_LF' or args.probabilistic_model == 'diffusion_LF_wrap':
                     print(f"\r {partition} \t epoch: {epoch}, iter: {i}/{n_iterations}, " 
-                            f"NLL: {nll_epoch/n_samples:.2f}", 
-                            f"loss: {loss_dict['loss'].mean().item():.3f}, ",
+                            f"NLL: {nll_epoch/n_samples:.4f}", 
+                            f"loss: {loss_dict['loss'].mean().item():.4f}, ",
                             end='')
-                    print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end = '')
+                    print(f"denoise x: {loss_dict['x_error'].mean().item():.4f}", end = '')
                     wandb.log({f"{partition}_denoise_x": loss_dict['x_error'].mean().item()}, commit=True)
                     if 'atom_type_loss' in loss_dict:
                         print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='')
