@@ -739,6 +739,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # Normalize t and s to [0, 1]
         s = s_int / self.T
         t = t_int / self.T
+        dt = self.inflate_batch_array(s-t, x)  # [B, 1, 1], for repulsion loss, negative
 
         # Compute gamma_s and gamma_t
         gamma_s = self.inflate_batch_array(self.gamma(s), x)
@@ -810,14 +811,16 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         loss += atom_type_loss
 
         # calculate the loss for repulsion term
-        # reconstruct x_hat, x_hat = (z_t + sigma_t ^ 2 * score) / alpha_t
-        # and pred of the net, is to approximate score * sigma_t
-        x_hat = (z_t[:, :, :3] + sigma_t * pred) / (alpha_t + 1e-8)   # [B,N,3]
-        x_hat = wrap_at_boundary(x_hat, wrapping_boundary=1.0) # clean sample
+        score_pred = pred / (sigma_t + 1e-8)  # [B,N,3], unscaled score prediction
+        len_scale = (volume / (N + 1e-8)).pow(1/3).view(batch_size,1,1)  # [B,1,1]
+        zx_s = self.reverse_sde_step_given_pred_training(
+            z_t[:, :, :3], t, dt, node_mask, score_pred, len_scale
+        )
         L = self.compute_lattice_matrix(
             *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
-        repulsion_loss = self.compute_repulsion_loss_from_fractional(
-            x_hat, L, node_mask, t_int.squeeze(), cutoff=self.cutoff, t_threshold=self.prediction_threshold_t)
+        repulsion_loss = self.zbl_repulsion_loss(
+            zx_s, L, h_pred, node_mask, t_int,
+            prediction_threshold_t=self.prediction_threshold_t, min_dist=1.5)
         repulsion_loss = self.lambda_rep * repulsion_loss
         loss_dict["repulsion_loss"] = repulsion_loss
         loss += repulsion_loss
@@ -917,6 +920,104 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         rep_loss = rep_loss * t_mask  # [B]
 
         return rep_loss
+
+
+    def zbl_repulsion_loss(
+        self,
+        x_hat,          # [B,N,3], fractional in [0,1]
+        L,              # [B,3,3]
+        h_pred,         # [B,N,C], logits for atom types
+        node_mask,      # [B,N,1]
+        t_int,          # [B,1]
+        prediction_threshold_t=500,
+        min_dist=0.8,   # Å
+    ):
+
+        B, N, _ = x_hat.shape
+        device = x_hat.device
+
+        # ---------------------------------------------------------
+        # 1. 直接使用 argmax 类型作为真实原子序数 Z
+        # ---------------------------------------------------------
+        Z = h_pred.argmax(dim=-1).float()     # [B,N]
+        x_hat = x_hat.float()                 # [B,N,3]
+        Z_i = Z.unsqueeze(2)                  # [B,N,1]
+        Z_j = Z.unsqueeze(1)                  # [B,1,N]
+
+        Zij = Z_i * Z_j                       # [B,N,N]
+
+        # ---------------------------------------------------------
+        # 2. 分数坐标差 + 最小镜像
+        # ---------------------------------------------------------
+        dx = x_hat.unsqueeze(2) - x_hat.unsqueeze(1)  # [B,N,N,3]
+        dx = wrap_at_boundary(x=dx, wrapping_boundary=1.0) # wrap in fractional
+        dx_flat = dx.reshape(B, N*N, 3)
+        rij = torch.matmul(dx_flat, L).reshape(B, N, N, 3) # [B,N,N,3] cartesian
+        dist = torch.norm(rij, dim=-1) + 1e-12       # [B,N,N]
+
+        # ---------------------------------------------------------
+        # 3.  ZBL potential V(r)
+        # ---------------------------------------------------------
+        # screening length a
+        a0 = 0.529 # Bohr radius (Å)
+        a = 0.8854 * a0 / (Zij.sqrt() + 1e-12)   # [B,N,N]
+
+        # screening function φ(r/a)
+        c = torch.tensor([0.1818, 0.5099, 0.2802, 0.02817], device=device)
+        d = torch.tensor([3.2,    0.9423,  0.4029, 0.2016], device=device)
+
+        x = dist / (a + 1e-12)
+        phi = (c[0] * torch.exp(-d[0] * x) +
+            c[1] * torch.exp(-d[1] * x) +
+            c[2] * torch.exp(-d[2] * x) +
+            c[3] * torch.exp(-d[3] * x))
+
+        ke = 14.3996  # eV·Å/e^2
+        V = ke * Zij * phi / dist   # [B,N,N]
+
+        # ---------------------------------------------------------
+        # 4. 蒙特卡洛式 repulsion：只对近距离施加
+        # ---------------------------------------------------------
+        close_mask = (dist < min_dist).float()
+
+        # 去掉 self-pairs
+        eye = torch.eye(N, device=device).unsqueeze(0)
+        close_mask = close_mask * (1 - eye)
+
+        # node mask 使无效原子不参与
+        nm = node_mask.squeeze(-1).float() # [B,N]
+        pair_mask = nm.unsqueeze(1) * nm.unsqueeze(2)  # [B,N,N]
+
+        mask = close_mask * pair_mask
+
+        rep = (V * mask).sum(dim=(1,2)) / (mask.sum(dim=(1,2)) + 1e-6)  # [B]
+        mask_bool = mask.bool()  # [B,N,N]
+
+        # Debug info
+        # for b in range(B):
+        #     idx = torch.nonzero(mask_bool[b], as_tuple=False)  # [K, 2] indices
+        #     vals = V[b][mask_bool[b]]
+        #     z_vals = Zij[b][mask_bool[b]]
+        #     phi_vals = phi[b][mask_bool[b]]
+        #     print(f"\nBatch {b}:")
+        #     for k in range(idx.size(0)):
+        #         i, j = idx[k].tolist()
+        #         v = vals[k].item()
+        #         z = z_vals[k].item()
+        #         phi_val = phi_vals[k].item()
+        #         print(f"  Pair ({i}, {j}):")
+        #         print(f"    dist = {dist[b,i,j]:.4f} Å")
+        #         print(f"    φ = {phi_val:.6f}")
+        #         print(f"    Z[{i},{j}] = {z:.1f}")
+        #         print(f"    V[{i},{j}] = {v:.6f}")
+                
+        # ---------------------------------------------------------
+        # 5. 时间步 mask
+        # ---------------------------------------------------------
+        pred_mask = (t_int <= prediction_threshold_t).float().squeeze(1) # 噪声小时计算 repulsion loss
+        rep = rep * pred_mask
+
+        return rep
 
 
     @torch.no_grad()
@@ -1285,7 +1386,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         )
 
         # 若模型预测的是乘以sigma_t的score，故转换为score需要除以sigma_t
-        sigma_t = self.sigma(self.gamma(t_tensor), target_tensor=x)   # [B,1] or [B,1,1]
+        sigma_t = self.sigma(self.gamma(t_tensor), target_tensor=x)
         sigma_t = sigma_t.view(B,1,1)
         score = net_out[:, :, :3] / sigma_t
         score = score / len_scale # scale score according to length scale
@@ -1308,6 +1409,28 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         z = torch.cat([x_next[:, :, :3], net_out[:, :, 3:]], dim=2)
 
         return z
+    
+
+    def reverse_sde_step_given_pred_training(
+        self,
+        x,         # [B,N,3]
+        t,         # scalar float (current time), [B,1]
+        dt,        # negative float (t_next - t)
+        node_mask,
+        score_pred,   # [B,N,3], predicted score from training
+        len_scale=1.0,
+    ):  
+        score = score_pred / len_scale # scale score according to length scale
+        f, g = self.f_and_g(x, t)   # f=[B,N,3], g=[B,1,1]
+        noise = torch.randn_like(x) * node_mask
+        x_next = (
+            x
+            + (f - (g*g)*score) * dt
+            + g * (abs(dt)**0.5) * noise
+        )
+        zx = wrap_at_boundary(x_next, wrapping_boundary=1.0) # mod 1
+
+        return zx
     
     @torch.no_grad()
     def sample_score_sde(
