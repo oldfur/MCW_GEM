@@ -740,8 +740,11 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
                     print(f"denoise x: {loss_dict['x_error'].mean().item():.3f}", end = '')
                     wandb.log({f"{partition}_denoise_x": loss_dict['x_error'].mean().item()}, commit=True)
                     if 'atom_type_loss' in loss_dict:
-                        print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='\n')
+                        print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='')
                         wandb.log({f"{partition}_atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
+                    if 'repulsion_loss' in loss_dict:
+                        print(f', repulsion_loss: {loss_dict["repulsion_loss"].mean():.4f}', end='')
+                        wandb.log({f"{partition}_repulsion_loss": loss_dict['repulsion_loss'].mean().item()}, commit=True)
                     if 'loss_term_0' in loss_dict and 'neg_log_constants' in loss_dict \
                         and 'estimator_loss_terms' in loss_dict and 'loss_t' in loss_dict:
                         print(f"loss_term_0: {loss_dict['loss_term_0'].mean().item():.2f}, "
@@ -754,6 +757,7 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
                         if not isinstance(loss_dict['pred_loss'], int):
                             print(f"pred_loss: {loss_dict['pred_loss'].mean().item():.3f}", end='')
                         print(f"pred_rate: {loss_dict['pred_rate'].mean().item():.3f}")
+                    print("", end='\n')
                 else: 
                     raise NotImplementedError
 
