@@ -1880,4 +1880,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         frac_new = frac + alpha * disp_frac
         frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
 
+        if torch.isnan(frac_new).any():
+            idx = torch.isnan(frac_new).nonzero()
+            print("NaN detected at indices:", idx)
+            print("frac before update:", frac[idx[:,0], idx[:,1], :])
+            print("disp_frac:", disp_frac[idx[:,0], idx[:,1], :])
+
         return frac_new
