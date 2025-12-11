@@ -1471,6 +1471,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('sample lengths and angles done.')
 
         volume = lattice_volume(rl, ra)     # [B]
+        cell = self.compute_lattice_matrix(rl, ra)  # [B,3,3]
         N = node_mask.squeeze(-1).sum(-1)   # [B]        
         B = n_samples
         device = node_mask.device
@@ -1553,13 +1554,21 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # =======================================================
             # 在 t 很小时加入 ZBL 排斥力
             if t < 0.01:   #  10 of 1000
-                # ZBL-based relaxation step
-                zx = self.zbl_relax_step(
-                    z, rl, ra,
-                    node_mask=node_mask,
-                    dt=dt,
-                    eps=2e-3,
-                    r_cut=0.5,   
+                # # ZBL-based relaxation step
+                # zx = self.zbl_relax_step(
+                #     z, rl, ra,
+                #     node_mask=node_mask,
+                #     dt=dt,
+                #     eps=2e-3,
+                #     r_cut=0.5,   
+                # )
+                zx = self.local_repulsion_correction(
+                        z[:, :, :3],
+                        cell,
+                        node_mask,
+                        d_min=0.5,
+                        margin=0.05,
+                        alpha=0.5
                 )
                 z[:, :, :3] = zx
 
@@ -1819,3 +1828,56 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         print(f"Batch {b}, atoms {i}-{j}, dist={dist_ij:.4f} Å, |F|={F_norm:.4f}, \
               cos(theta)={cos_theta:.4f}, direction={direction_ok}")
+        
+
+    def local_repulsion_correction(
+        self,
+        frac,                # [B, N, 3] fractional coords
+        cell,                # [B, 3, 3] cell matrix (rows = a,b,c vectors)
+        node_mask,           # [B, N, 1] atom mask
+        d_min=0.5,
+        margin=0.05,         # push to d_min + margin
+        alpha=0.5,           # strength factor (0.3~0.7 recommended)
+        eps=1e-12
+    ):
+        """
+        Perform local, pairwise repulsion correction:
+        - Detect atom pairs with minimal-image distance < d_min
+        - Push them in Cartesian coordinates up to (d_min + margin)
+        - Convert displacement back to fractional space
+        """
+        B, N, _ = frac.shape
+        device = frac.device
+        inv_cell = torch.linalg.pinv(cell) # [B,3,3]
+        x = torch.einsum('bnm,bmk->bnk', frac, cell)   # [B,N,3]
+        
+        # pairwise differences (cartesian)
+        dx = x[:, :, None, :] - x[:, None, :, :]        # [B,N,N,3]
+        dx = self.pbc_minimum_image(dx, cell, inv_cell)     # [B,N,N,3], minimum-image
+        dist = torch.norm(dx, dim=-1) 
+
+        # masks
+        mask = node_mask.squeeze(-1).bool()  # [B,N]
+        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B,N,N]
+        eye = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)  # [1,N,N]
+        pair_mask = pair_mask & (~eye)
+        close_mask = (dist < d_min) & pair_mask  # [B,N,N]
+
+        if not close_mask.any():
+            return frac  # no correction needed
+        
+        print(f"ZBL relaxation: {(close_mask.sum(dim=(1, 2))/2).tolist()} close pairs found.")
+        target = (d_min + margin)   # target distance
+        direction = dx / (dist[..., None] + eps)                   # [B, N, N, 3]
+        delta_mag = (target - dist).clamp(min=0.0)                 # [B, N, N]
+        delta = delta_mag[..., None] * direction                   # [B, N, N, 3]
+        delta = delta * close_mask[..., None].float()
+        disp_i_cart =  0.5 * delta.sum(dim=2)   # [B,N,3], i 方向的位移贡献
+        disp_j_cart = -0.5 * delta.sum(dim=1)   # [B,N,3], j 方向的位移贡献 (negative because j moves opposite)
+        # net per-atom displacement:
+        disp_cart = disp_i_cart + disp_j_cart
+        disp_frac = torch.einsum('bnm,bmk->bnk', disp_cart, inv_cell)   # [B,N,3]
+        frac_new = frac + alpha * disp_frac
+        frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
+
+        return frac_new
