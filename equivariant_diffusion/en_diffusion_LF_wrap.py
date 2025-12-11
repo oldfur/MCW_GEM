@@ -7,10 +7,54 @@ from torch.nn import functional as F
 from equivariant_diffusion import utils as diffusion_utils
 from equivariant_diffusion.mlp import DiffusionMLP
 from torch_scatter import scatter_mean
-from crystalgrw.data_utils import lattice_params_from_matrix
+from crystalgrw.data_utils import lattice_params_from_matrix, lattice_params_to_matrix_torch
 from equivariant_diffusion.mlp import DiffusionMLP
 from tqdm import tqdm
 import random
+
+
+def zbl_force_mag(r, Z1Z2, Z_i=None, Z_j=None, e2_4pie0=14.3996, a0=0.529):
+    """
+    r: [B,N,N] distances in Å
+    Z1Z2: [B,N,N] product of atomic numbers (float or int)
+    Z_i: optional [B,N] atomic numbers for i
+    Z_j: optional [B,N] atomic numbers for j
+    returns: F_mag [B,N,N] (force magnitude, positive outward) in eV/Å
+    """
+    eps = 1e-12
+    r_safe = r.clamp(min=1e-8)
+
+    # prepare Zi, Zj to compute screening length a
+    if (Z_i is None) or (Z_j is None):
+        # fallback: infer approximate Z by sqrt(Z1Z2)
+        Zi = torch.sqrt(Z1Z2.clamp(min=1.0))
+        Zj = Zi
+    else:
+        Zi = Z_i[:, :, None].float() + eps   # [B,N,1]
+        Zj = Z_j[:, None, :].float() + eps   # [B,1,N]
+
+    a = 0.8854 * a0 / (Zi.pow(0.23) + Zj.pow(0.23) + eps)   # [B,N,N]
+    x = r_safe / (a + eps)
+
+    # screening function and derivative
+    phi = (
+        0.1818 * torch.exp(-3.2 * x)
+        + 0.5099 * torch.exp(-0.9423 * x)
+        + 0.2802 * torch.exp(-0.4029 * x)
+        + 0.02817 * torch.exp(-0.2016 * x)
+    )
+    dphi = (
+        -3.2 * 0.1818 * torch.exp(-3.2 * x)
+        -0.9423 * 0.5099 * torch.exp(-0.9423 * x)
+        -0.4029 * 0.2802 * torch.exp(-0.4029 * x)
+        -0.2016 * 0.02817 * torch.exp(-0.2016 * x)
+    )
+
+    common = (Z1Z2.float() * e2_4pie0) / (r_safe * r_safe + eps)   # [B,N,N]
+    dVdr = -common * (phi + x * dphi)   # dV/dr in eV/Å
+    F = -dVdr                           # force magnitude (positive)
+    F = torch.clamp(F, max=1e6)         # avoid blow-ups
+    return F
 
 
 # Defining some useful util functions.
@@ -748,6 +792,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # Compute alpha_t and sigma_t
         alpha_t = self.alpha(gamma_t, x)
         sigma_t = self.sigma(gamma_t, x)
+        # print("sigma_t min/max: ", sigma_t.min().item(), sigma_t.max().item()) # ~0.1, ~0.9
 
         # compute score function
         mean_t = alpha_t * x
@@ -950,7 +995,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 2. 分数坐标差 + 最小镜像
         # ---------------------------------------------------------
         dx = x_hat.unsqueeze(2) - x_hat.unsqueeze(1)  # [B,N,N,3]
-        dx = wrap_at_boundary(x=dx, wrapping_boundary=1.0) # wrap in fractional
+        dx = dx - torch.round(dx) # wrap in fractional
         dx_flat = dx.reshape(B, N*N, 3)
         rij = torch.matmul(dx_flat, L).reshape(B, N, N, 3) # [B,N,N,3] cartesian
         dist = torch.norm(rij, dim=-1) + 1e-12       # [B,N,N]
@@ -991,25 +1036,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         mask = close_mask * pair_mask
 
         rep = (V * mask).sum(dim=(1,2)) / (mask.sum(dim=(1,2)) + 1e-6)  # [B]
-        mask_bool = mask.bool()  # [B,N,N]
-
-        # Debug info
-        # for b in range(B):
-        #     idx = torch.nonzero(mask_bool[b], as_tuple=False)  # [K, 2] indices
-        #     vals = V[b][mask_bool[b]]
-        #     z_vals = Zij[b][mask_bool[b]]
-        #     phi_vals = phi[b][mask_bool[b]]
-        #     print(f"\nBatch {b}:")
-        #     for k in range(idx.size(0)):
-        #         i, j = idx[k].tolist()
-        #         v = vals[k].item()
-        #         z = z_vals[k].item()
-        #         phi_val = phi_vals[k].item()
-        #         print(f"  Pair ({i}, {j}):")
-        #         print(f"    dist = {dist[b,i,j]:.4f} Å")
-        #         print(f"    φ = {phi_val:.6f}")
-        #         print(f"    Z[{i},{j}] = {z:.1f}")
-        #         print(f"    V[{i},{j}] = {v:.6f}")
                 
         # ---------------------------------------------------------
         # 5. 时间步 mask
@@ -1522,6 +1548,21 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 len_scale=len_scale,
             )
 
+            # =======================================================
+            # Repulsion correction
+            # =======================================================
+            # 在 t 很小时加入 ZBL 排斥力
+            if t < 0.01:   #  10 of 1000
+                # ZBL-based relaxation step
+                zx = self.zbl_relax_step(
+                    z, rl, ra,
+                    node_mask=node_mask,
+                    dt=dt,
+                    eps=1e-2,
+                    r_cut=0.5,   
+                )
+                z[:, :, :3] = zx
+
         print('Sampling finished.')
 
         x = z[:, :, :self.n_dims]
@@ -1532,7 +1573,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
 
         # post-process one-hot / integer
-        # Insert this BEFORE line 2118
         h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
         h_int = torch.round(h_int).long() * node_mask
 
@@ -1606,10 +1646,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
                 zx = torch.remainder(zx, 1.0) # mod 1
 
-
             # =======================================================
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
+
             # 一次 SDE 反向步
             z = self.reverse_sde_step(
                 x=zx,
@@ -1622,6 +1662,21 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 model_out_is_eps=False,
                 len_scale=len_scale,
             )
+
+            # =======================================================
+            # Repulsion correction
+            # =======================================================
+            
+            # 在 t 很小时加入 ZBL 排斥力
+            if t < 0.01:
+                zx = self.zbl_relax_step(
+                    z, rl, ra,
+                    node_mask=node_mask,
+                    dt=dt,
+                    eps=1e-2,
+                    r_cut=0.5,   
+                )
+                z[:, :, :3] = zx
 
         print('Sampling finished.')
 
@@ -1641,3 +1696,126 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return x, h
 
+
+    def zbl_relax_step(
+        self, z, rl, ra, node_mask,
+        dt, eps=1e-2, r_cut=0.5, n_inner=5
+    ):  
+        B, N, _ = z.shape
+        device = z.device
+        frac = z[:,:,:self.n_dims]
+        h_cat = z[:,:,self.n_dims:self.n_dims+self.num_classes]
+        cell = self.compute_lattice_matrix(rl, ra)  # [B,3,3]
+        inv_cell = torch.linalg.pinv(cell) # [B,3,3]
+        x = torch.einsum('bnm,bmk->bnk', frac, cell)   # [B,N,3]
+        
+        # pairwise differences (cartesian)
+        dx = x[:, :, None, :] - x[:, None, :, :]        # [B,N,N,3]
+        dx = self.pbc_minimum_image(dx, cell, inv_cell)     # [B,N,N,3], minimum-image
+        dist = torch.norm(dx, dim=-1) 
+
+        # masks
+        mask = node_mask.squeeze(-1).bool()  # [B,N]
+        pair_mask = mask[:, :, None] & mask[:, None, :]  # [B,N,N]
+        eye = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)  # [1,N,N]
+        pair_mask = pair_mask & (~eye)
+        close_mask = (dist < r_cut) & pair_mask  # [B,N,N]
+        if close_mask.sum() == 0:
+            return frac # nothing to do
+        else:
+            print(f"ZBL relaxation: {close_mask.sum(dim=(1, 2)).tolist()} close pairs found.")
+        
+            # compute Z from one-hot h_cat 
+            class_idx = torch.argmax(h_cat, dim=-1)
+            Z = (class_idx * node_mask.squeeze(-1).long()).to(device)   # [B,N], padding zeros
+            Zi = Z.float()
+            Zj = Z.float()
+            Z1Z2 = Zi[:, :, None] * Zj[:, None, :]
+
+            # unit vectors
+            r_hat = dx / (dist[..., None] + 1e-12)         # [B,N,N,3]
+            # compute pairwise force magnitude
+            F_mag = - zbl_force_mag(dist, Z1Z2, Z_i=Zi, Z_j=Zj)   # [B,N,N]
+            F_mag = F_mag * close_mask.float()
+            # per-pair vector forces (cartesian)
+            F_pair = F_mag[..., None] * r_hat # [B,N,N,3]
+            # net force on each atom (sum over j)
+            F_cart = F_pair.sum(dim=2) # [B,N,3]
+
+            # convert cartesian force -> fractional-coord 'force'
+            # small cart displacement dx corresponds to dfrac = dx @ inv_cell
+            F_frac = torch.einsum('bnk,bkl->bnl', F_cart, inv_cell)   # [B,N,3]
+
+            # update fractional coords
+            step = eps * F_frac * abs(float(dt))   # use abs(dt) to scale step size
+            frac_new = frac + step
+            
+            ## debugging info
+            # step_cart = torch.einsum('bnk,bkl->bnl', step, cell)  # [B,N,3] Cartesian
+            # step_cart_mag = torch.norm(step_cart, dim=-1)       # [B,N] Å
+            # idx_b, idx_i, idx_j = torch.where(close_mask)
+            # for b,i,j in zip(idx_b.tolist(), idx_i.tolist(), idx_j.tolist()):
+            #     print(f"Batch {b}, atoms {i}-{j}, step_cart_mag_i \
+            #           = {step_cart_mag[b,i]:.4f} Å, step_cart_mag_j = {step_cart_mag[b,j]:.4f} Å")
+            # self.debug_zbl_force_direction(dist, dx, F_pair, close_mask)
+            
+            frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
+            
+            return frac_new
+    
+    def pbc_minimum_image(self, dx, cell, inv_cell):
+        """
+        dx: [B,N,N,3] raw cartesian difference vectors (xi - xj)
+        cell: [B,3,3] with rows = a,b,c
+        inv_cell: [B,3,3] inverse matrices
+        Returns dx mapped to minimum image under PBC, same shape as dx.
+        """
+        # dx (cart) -> fractional differences: d_frac = dx @ inv_cell^T
+        # einsum notation: 'bnjk,bkl->bnjl' where last index maps to fractional components
+        d_frac = torch.einsum('bnjk,bkl->bnjl', dx, inv_cell)   # [B,N,N,3]
+        d_frac = d_frac - torch.round(d_frac) # wrap to [-0.5,0.5]
+        dx_pbc = torch.einsum('bnjk,bkl->bnjl', d_frac, cell)   # back to cart
+        
+        return dx_pbc
+    
+    def debug_zbl_force_direction(self, dist, dx, F_pair, close_mask):
+        """
+        Debug ZBL force direction.
+
+        Parameters:
+        -----------
+        dist : torch.Tensor [B,N,N]
+            Pairwise Cartesian distances.
+        dx : torch.Tensor [B,N,N,3]
+            Pairwise Cartesian difference vectors (i -> j).
+        F_pair : torch.Tensor [B,N,N,3]
+            Pairwise force vectors on i due to j.
+        close_mask : torch.BoolTensor [B,N,N]
+            Mask indicating which pairs are close enough to apply ZBL.
+
+        Prints:
+        -------
+        For each batch, the closest pairs:
+            - distance
+            - |force|
+            - cos(theta) between force and vector i->j
+            - Suggestion if force is not pushing apart
+        """
+        B, N, _ = dx.shape[:3]
+
+        idx_b, idx_i, idx_j = torch.where(close_mask)
+        for b, i, j in zip(idx_b.tolist(), idx_i.tolist(), idx_j.tolist()):
+            if i >= j:
+                continue  # only upper triangle to avoid duplicates
+
+            rij = dx[b, i, j]
+            dist_ij = dist[b, i, j]
+            F_ij = F_pair[b, i, j]
+            F_norm = torch.norm(F_ij).item()
+
+            # cos(theta) between force vector and rij (should be -1 for repulsion)
+            cos_theta = torch.dot(F_ij, rij) / (torch.norm(F_ij) * torch.norm(rij) + 1e-12)
+            direction_ok = "OK" if cos_theta < 0 else "WRONG"
+
+        print(f"Batch {b}, atoms {i}-{j}, dist={dist_ij:.4f} Å, |F|={F_norm:.4f}, \
+              cos(theta)={cos_theta:.4f}, direction={direction_ok}")
