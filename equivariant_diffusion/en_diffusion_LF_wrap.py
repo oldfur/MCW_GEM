@@ -1558,7 +1558,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     z, rl, ra,
                     node_mask=node_mask,
                     dt=dt,
-                    eps=1e-2,
+                    eps=2e-3,
                     r_cut=0.5,   
                 )
                 z[:, :, :3] = zx
@@ -1673,7 +1673,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     z, rl, ra,
                     node_mask=node_mask,
                     dt=dt,
-                    eps=1e-2,
+                    eps=2e-3,
                     r_cut=0.5,   
                 )
                 z[:, :, :3] = zx
