@@ -1853,6 +1853,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         B, N, _ = frac.shape
         device = frac.device
         inv_cell = torch.linalg.pinv(cell) # [B,3,3]
+        if cell.isnan().any() or inv_cell.isnan().any():
+            print("NaN detected in cell or inv_cell!")
+            inv_cell = torch.nan_to_num(inv_cell, nan=0.0, posinf=0.0, neginf=0.0)
+            cell = torch.nan_to_num(cell, nan=0.0, posinf=0.0, neginf=0.0)
         x = torch.einsum('bnm,bmk->bnk', frac, cell)   # [B,N,3]
         
         # pairwise differences (cartesian)
@@ -1874,11 +1878,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         target = (d_min + margin)   # target distance
         direction = dx / (dist[..., None] + eps)                   # [B, N, N, 3]
         if direction.isnan().any():
-            print("NaN detected in direction computation of local_repulsion_correction!")
             direction = torch.nan_to_num(direction, nan=0.0, posinf=0.0, neginf=0.0)
         delta_mag = (target - dist).clamp(min=0.0)                 # [B, N, N]
         if delta_mag.isnan().any():
-            print("NaN detected in delta_mag computation of local_repulsion_correction!")
             delta_mag = torch.nan_to_num(delta_mag, nan=0.0, posinf=0.0, neginf=0.0)
         delta = delta_mag[..., None] * direction                   # [B, N, N, 3]
         delta = delta * close_mask[..., None].float()
