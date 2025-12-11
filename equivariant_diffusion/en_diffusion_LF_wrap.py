@@ -1498,6 +1498,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
+            if torch.isnan(z).any():
+                print("NaN detected in z during sampling at step", i)
+
             t      = float(t_grid[i].item())
             t_next = float(t_grid[i+1].item())
             dt     = t_next - t               # negative
@@ -1562,8 +1565,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 #     eps=2e-3,
                 #     r_cut=0.5,   
                 # )
+                zx = z[:, :, :3]
                 zx = self.local_repulsion_correction(
-                        z[:, :, :3],
+                        zx,
                         cell,
                         node_mask,
                         d_min=0.5,
@@ -1881,6 +1885,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
 
         if torch.isnan(frac_new).any():
+            print("NaN detected in local_repulsion_correction!")
             idx = torch.isnan(frac_new).nonzero()
             print("NaN detected at indices:", idx)
             print("frac before update:", frac[idx[:,0], idx[:,1], :])
