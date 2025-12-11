@@ -1873,7 +1873,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print(f"ZBL relaxation: {(close_mask.sum(dim=(1, 2))/2).tolist()} close pairs found.")
         target = (d_min + margin)   # target distance
         direction = dx / (dist[..., None] + eps)                   # [B, N, N, 3]
+        if direction.isnan().any():
+            print("NaN detected in direction computation of local_repulsion_correction!")
+            direction = torch.nan_to_num(direction, nan=0.0, posinf=0.0, neginf=0.0)
         delta_mag = (target - dist).clamp(min=0.0)                 # [B, N, N]
+        if delta_mag.isnan().any():
+            print("NaN detected in delta_mag computation of local_repulsion_correction!")
+            delta_mag = torch.nan_to_num(delta_mag, nan=0.0, posinf=0.0, neginf=0.0)
         delta = delta_mag[..., None] * direction                   # [B, N, N, 3]
         delta = delta * close_mask[..., None].float()
         disp_i_cart =  0.5 * delta.sum(dim=2)   # [B,N,3], i 方向的位移贡献
