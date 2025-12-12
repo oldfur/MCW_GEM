@@ -13,6 +13,37 @@ from tqdm import tqdm
 import random
 
 
+def is_valid_cell_params(rl, ra, eps=1e-6):
+    """
+    rl: [3] = (a, b, c)
+    ra: [3] = (alpha, beta, gamma) in degrees
+    """
+    a, b, c = rl
+    alpha, beta, gamma = ra
+    # 边长必须 > 0
+    if (a <= eps) or (b <= eps) or (c <= eps):
+        return False
+    # 转弧度
+    alpha_r = torch.deg2rad(alpha)
+    beta_r  = torch.deg2rad(beta)
+    gamma_r = torch.deg2rad(gamma)
+    # Gram determinant / volume^2 condition
+    G = (
+        1 + 2 * torch.cos(alpha_r) * torch.cos(beta_r) * torch.cos(gamma_r)
+        - torch.cos(alpha_r)**2 - torch.cos(beta_r)**2 - torch.cos(gamma_r)**2
+    )
+    # 必须 > 0
+    if G <= eps:
+        return False
+    return True
+
+def batch_valid_mask(rl, ra):
+    B = rl.shape[0]
+    mask = torch.zeros(B, dtype=torch.bool, device=rl.device)
+    for i in range(B):
+        mask[i] = is_valid_cell_params(rl[i], ra[i])
+    return mask
+
 def zbl_force_mag(r, Z1Z2, Z_i=None, Z_j=None, e2_4pie0=14.3996, a0=0.529):
     """
     r: [B,N,N] distances in Å
@@ -1465,9 +1496,39 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         n_corrector_steps=1, snr=0.01
     ):
         print('Sampling cell length/angles ...')
-        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
-        rl = rl.to(node_mask.device)
-        ra = ra.to(node_mask.device)
+
+        # rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+        # rl = torch.abs(rl).to(node_mask.device)
+        # ra = ra.to(node_mask.device)
+
+        max_retry = 10
+        for _ in range(max_retry):
+            rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+            rl = torch.abs(rl).to(node_mask.device)  # [B,3]
+            ra = ra.to(node_mask.device)  # [B,3]
+            valid = batch_valid_mask(rl, ra)
+            # 如果全部合法，直接使用
+            if valid.all():
+                break
+            # 否则局部重采样非法部分
+            invalid_idx = (~valid).nonzero().flatten().tolist()
+            print(f"Found {len(invalid_idx)} invalid cells, resampling ...")
+            # 再采样一批
+            rl_new, ra_new = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+            rl_new = rl_new.to(node_mask.device)
+            ra_new = ra_new.to(node_mask.device)
+            for i in invalid_idx:
+                rl[i] = rl_new[i]
+                ra[i] = ra_new[i]
+
+        # 最后检查
+        valid = batch_valid_mask(rl, ra)
+        if not valid.all():
+            print("Warning: some cells still invalid after retries, applying clamping fix.")
+            # 强制修复 (可选)
+            rl = rl.clamp(min=1.0)
+            ra = ra.clamp(min=30.0, max=150.0)
+        
         print('sample lengths and angles done.')
 
         volume = lattice_volume(rl, ra)     # [B]
