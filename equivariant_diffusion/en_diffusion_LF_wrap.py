@@ -1586,6 +1586,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
 
         # post-process one-hot / integer
+        h_cat[:, :, 0] = 0.0  # ensure padding type prob = 0 before argmax
         h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
         h_int = torch.round(h_int).long() * node_mask
 
@@ -1889,7 +1890,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # net per-atom displacement:
         disp_cart = disp_i_cart + disp_j_cart
         disp_frac = torch.einsum('bnm,bmk->bnk', disp_cart, inv_cell)   # [B,N,3]
-        frac_new = frac + alpha * disp_frac
+        # frac_new = frac + alpha * disp_frac
+        frac_new = frac + disp_frac
         frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
 
         if torch.isnan(frac_new).any():
