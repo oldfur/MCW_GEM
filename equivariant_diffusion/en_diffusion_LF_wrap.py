@@ -1838,20 +1838,67 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             
             return frac_new
     
+    # def pbc_minimum_image(self, dx, cell, inv_cell):
+    #     """
+    #     dx: [B,N,N,3] raw cartesian difference vectors (xi - xj)
+    #     cell: [B,3,3] with rows = a,b,c
+    #     inv_cell: [B,3,3] inverse matrices
+    #     Returns dx mapped to minimum image under PBC, same shape as dx.
+    #     """
+    #     # dx (cart) -> fractional differences: d_frac = dx @ inv_cell^T
+    #     # einsum notation: 'bnjk,bkl->bnjl' where last index maps to fractional components
+    #     d_frac = torch.einsum('bnjk,bkl->bnjl', dx, inv_cell)   # [B,N,N,3]
+    #     d_frac = d_frac - torch.round(d_frac) # wrap to [-0.5,0.5]
+    #     dx_pbc = torch.einsum('bnjk,bkl->bnjl', d_frac, cell)   # back to cart
+        
+    #     return dx_pbc
+    
     def pbc_minimum_image(self, dx, cell, inv_cell):
         """
         dx: [B,N,N,3] raw cartesian difference vectors (xi - xj)
         cell: [B,3,3] with rows = a,b,c
         inv_cell: [B,3,3] inverse matrices
-        Returns dx mapped to minimum image under PBC, same shape as dx.
+
+        Returns:
+            dx_pbc: [B,N,N,3] shortest cartesian vectors under PBC
+                    (equivalent to pymatgen.coord_cython.pbc_shortest_vectors)
         """
-        # dx (cart) -> fractional differences: d_frac = dx @ inv_cell^T
-        # einsum notation: 'bnjk,bkl->bnjl' where last index maps to fractional components
-        d_frac = torch.einsum('bnjk,bkl->bnjl', dx, inv_cell)   # [B,N,N,3]
-        d_frac = d_frac - torch.round(d_frac) # wrap to [-0.5,0.5]
-        dx_pbc = torch.einsum('bnjk,bkl->bnjl', d_frac, cell)   # back to cart
-        
+        device = dx.device
+        dtype = dx.dtype
+        B, N, _, _ = dx.shape
+
+        # cart -> fractional differences
+        d_frac = torch.einsum('bnjk,bkl->bnjl', dx, inv_cell)  # [B,N,N,3]
+
+        # all integer shifts in {-1,0,1}^3
+        shifts = torch.tensor(
+            [[i, j, k] for i in (-1, 0, 1)
+                        for j in (-1, 0, 1)
+                        for k in (-1, 0, 1)],
+            device=device,
+            dtype=dtype
+        )  # [27,3]
+
+        # apply shifts
+        # [B,N,N,1,3] + [1,1,1,27,3] -> [B,N,N,27,3]
+        d_frac_all = d_frac.unsqueeze(-2) + shifts.view(1, 1, 1, 27, 3)
+
+        # back to cartesian
+        dx_all = torch.einsum(
+            'bnjlk,bkm->bnjlm', d_frac_all, cell
+        )  # [B,N,N,27,3]
+
+        # choose shortest
+        dist2 = (dx_all ** 2).sum(dim=-1)          # [B,N,N,27]
+        min_idx = dist2.argmin(dim=-1)              # [B,N,N]
+
+        dx_pbc = dx_all.gather(
+            dim=-2,
+            index=min_idx[..., None, None].expand(-1, -1, -1, 1, 3)
+        ).squeeze(-2)                               # [B,N,N,3]
+
         return dx_pbc
+
     
     def debug_zbl_force_direction(self, dist, dx, F_pair, close_mask):
         """
@@ -1946,12 +1993,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             delta_mag = torch.nan_to_num(delta_mag, nan=0.0, posinf=0.0, neginf=0.0)
         delta = delta_mag[..., None] * direction                   # [B, N, N, 3]
         delta = delta * close_mask[..., None].float()
-        disp_i_cart =  0.5 * delta.sum(dim=2)   # [B,N,3], i 方向的位移贡献
-        disp_j_cart = -0.5 * delta.sum(dim=1)   # [B,N,3], j 方向的位移贡献 (negative because j moves opposite)
-        # net per-atom displacement:
-        disp_cart = disp_i_cart + disp_j_cart
+
+        # disp_i_cart =  0.5 * delta.sum(dim=2)   # [B,N,3], i 方向的位移贡献
+        # disp_j_cart = -0.5 * delta.sum(dim=1)   # [B,N,3], j 方向的位移贡献 (negative because j moves opposite)
+        # disp_cart = disp_i_cart + disp_j_cart
+        
+        disp_cart = 0.5 * delta.sum(dim=2)   # [B,N,3]
         disp_frac = torch.einsum('bnm,bmk->bnk', disp_cart, inv_cell)   # [B,N,3]
-        # frac_new = frac + alpha * disp_frac
         frac_new = frac + disp_frac
         frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
 
