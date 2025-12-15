@@ -1499,6 +1499,56 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return z
     
+    @torch.no_grad()
+    def reverse_sde_step_all(
+        self,
+        zt,         # [B,N,3+C]
+        t,         # scalar float (current time)
+        dt,        # negative float (t_next - t)
+        rl, ra,
+        node_mask,
+        edge_mask,
+        context,
+        model_out_is_eps=False,
+        len_scale=None,
+    ):  
+        """adapted to full zt input including atom type feature"""
+        B, N, _ = zt.shape
+        device = zt.device
+        x = zt[:, :, :3]  # [B,N,3]
+
+        # 1) prepare input
+        t_tensor = torch.full((B,1), fill_value=t, device=device)
+
+        # 2) model forward (must output score)
+        net_out = self.phi(
+            zt, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra, adjust_type=True
+        )
+
+        # 若模型预测的是乘以sigma_t的score，故转换为score需要除以sigma_t
+        sigma_t = self.sigma(self.gamma(t_tensor), target_tensor=x)
+        sigma_t = sigma_t.view(B,1,1)
+        score = net_out[:, :, :3] / sigma_t
+        score = score / len_scale # scale score according to length scale
+
+        # 3) get drift+diffusion
+        f, g = self.f_and_g(x, t_tensor)   # f=[B,N,3], g=[B,1,1]
+
+        # 4) noise
+        noise = torch.randn_like(x) * node_mask
+
+        # 5) update
+        x_next = (
+            x
+            + (f - (g*g)*score) * dt
+            + g * (abs(dt)**0.5) * noise
+        )
+
+        # 6) wrap fractional coordinates
+        x_next = torch.remainder(x_next, 1.0)
+        z = torch.cat([x_next[:, :, :3], net_out[:, :, 3:]], dim=2)
+
+        return z
 
     def reverse_sde_step_given_pred_training(
         self,
@@ -1589,6 +1639,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Corrector steps:', n_corrector_steps)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
+        switch_time = int((1-0.01) * self.T)
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             if torch.isnan(z).any():
@@ -1634,7 +1685,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
             # 一次 SDE 反向步
-            if i == int((1-0.01) * self.T):
+            if i == switch_time:
+                # predict the atom type, only at this step
+                print("Switching to full dimension prediction at step", i)
+                print("time:", t)
                 z = self.reverse_sde_step(
                     x=zx,
                     t=t,
@@ -1646,7 +1700,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     model_out_is_eps=False,
                     len_scale=len_scale,
                 )   # predict all dimensions at this step, including the atom types!
-            else:
+            elif i < switch_time:
                 # only update position part
                 zx = self.reverse_sde_step(
                     x=zx,
@@ -1660,6 +1714,20 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     len_scale=len_scale,
                 )[:, :, :3]
                 z = torch.cat([zx, z[:, :, 3:]], dim=2)
+            else: # i > switch_time
+                # adjust atom types
+                z = self.reverse_sde_step_all(
+                    zt=z,
+                    t=t,
+                    dt=dt,
+                    rl=rl, ra=ra,
+                    node_mask=node_mask,
+                    edge_mask=edge_mask,
+                    context=context,
+                    model_out_is_eps=False,
+                    len_scale=len_scale,
+                )
+
 
             # =======================================================
             # Repulsion correction
@@ -1685,14 +1753,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 )
                 z[:, :, :3] = zx
 
-                if self.adjust_atom_type:
-                    # atom type adjustment step
-                    h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes] # from net prediction
-                    zs = torch.cat([zx, h_cat], dim=2)
-                    net_out_adjust = self.phi(zs, t_next_tensor, node_mask, edge_mask, context, \
-                                              rl=rl, ra=ra, adjust_type=True)
-                    h_cat_adjusted = net_out_adjust[:, :, self.n_dims:self.n_dims+self.num_classes]
-                    z[:, :, self.n_dims:self.n_dims+self.num_classes] = h_cat_adjusted
 
         print('Sampling finished.')
 
