@@ -582,6 +582,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         B, N= zx.size(0), zx.size(1)
         if adjust_type:
             h_cat_pred = zxh[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
+            h_cat_pred[:, :, 0] = 0.0  # ensure padding type prob = 0 before argmax
             # h_int = zxh[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
             #     if self.include_charges else torch.zeros(0).to(z.device) # [B, N, 1]
 
