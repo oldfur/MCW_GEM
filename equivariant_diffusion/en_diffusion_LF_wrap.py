@@ -402,7 +402,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             str_sigma_h = 0.05, str_sigma_x = 0.05,
             temp_index = 0, optimal_sampling = 0,
             len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10, 
-            lambda_type=1, lambda_rep=1, cutoff=0.5,
+            lambda_type=1, lambda_rep=1, cutoff=0.5, adjust_atom_type=False,
+            lambda_type_adjust=1,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -519,10 +520,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.lambda_type = lambda_type
         self.lambda_rep = lambda_rep
         self.cutoff = cutoff
+        self.adjust_atom_type = adjust_atom_type
+        self.lambda_type_adjust = lambda_type_adjust
 
         print("use lambda_type: ", lambda_type)
+        print("use lambda_type_adjust: ", lambda_type_adjust)
         print("use lambda_rep: ", lambda_rep)
         print("cutoff for repulsion loss: ", cutoff)
+        print("adjust atom type during diffusion: ", adjust_atom_type)
 
         print(f"{self.__class__.__name__} initialized.")
         
@@ -569,16 +574,16 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 f'large with sigma_0 {sigma_0:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
 
-    def phi(self, zxh, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None):
-        """noise predict network"""   
-        # h_cat = zxh[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
-        # h_cat = self.phi_unnormalize_h_cat(h_cat, node_mask)
-        # h_int = zxh[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
-        #     if self.include_charges else torch.zeros(0).to(z.device) # [B, N, 1]
+    def phi(self, zxh, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None, adjust_type=False):
+        """score funtion predict network"""   
         
-        """prepare input for eps x"""
+        # prepare inputs
         zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
         B, N= zx.size(0), zx.size(1)
+        if adjust_type:
+            h_cat_pred = zxh[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
+            # h_int = zxh[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
+            #     if self.include_charges else torch.zeros(0).to(z.device) # [B, N, 1]
 
         # for example, x: R -> [0,1]
         if rl is not None and ra is not None:
@@ -589,14 +594,19 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # atom_types 默认全是 1 ，作为dynamics的输入
         zx, atom_types, natoms, rl, ra, batch = \
             self.prepare_inputs_for_equiformer(t, zx, rl, ra, node_mask)
-        
-        """forward for x, h"""
+        if adjust_type:
+            atom_types = torch.argmax(h_cat_pred, dim=-1)        # [B, N]
+            atom_types = atom_types[node_mask.squeeze(-1).bool()]  # [N_total]
+            atom_types = atom_types.long() # Embedding 接口的类型门槛
+            # print("input atom_types: ", atom_types.tolist())
+
+        # forward for x, h
         net_outs = self.dynamics(t, zx, atom_types, natoms, \
                 lengths=rl, angles=ra, batch=batch)
         
         # outputs reshape
         net_eps_x, net_pred_h = self.reshape_outputs(
-            net_outs, B, N, node_mask, natoms, batch)
+            net_outs, B, N, node_mask, natoms, batch, adjust_type)
         # normalize, cause dynamics works on physical space, so its output is unnormalized
         net_pred_h = self.phi_normalize_h(net_pred_h, node_mask)
         net_eps_xh = torch.cat([net_eps_x, net_pred_h], dim=2) # [B, N, 3 + num_classes]
@@ -865,28 +875,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # predict physical properties below certain t
         # ---------------------------------------------------------------------------------
 
-        # calculate the loss for atom type
-        h_true = torch.cat([h['categorical'], h['integer']], 
-                            dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
-        h_true_idx = h_true.argmax(dim=2)   # [B,N]
+        # 1) calculate the loss for repulsion term
         h_pred = net_out[:, :, 3:]          # [B,N,C]
-        # cross_entropy loss
-        ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
-        atom_type_loss = ce_loss(
-            h_pred.reshape(-1, h_pred.size(-1)), # logits, [B*N, C]
-            h_true_idx.reshape(-1) # targets, [B*N]
-        )
-        atom_type_loss = atom_type_loss.reshape(batch_size, -1)  # [B, N]
-        atom_type_loss = atom_type_loss * node_mask.squeeze(-1)
-        atom_type_loss = atom_type_loss.mean(dim=1)
-        # mask the loss term with t > prediction_threshold_t
-        pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
-        pred_loss_mask = pred_loss_mask.squeeze(1)
-        atom_type_loss = self.lambda_type * (atom_type_loss * pred_loss_mask)
-        loss_dict["atom_type_loss"] = atom_type_loss
-        loss += atom_type_loss
-
-        # calculate the loss for repulsion term
         score_pred = pred / (sigma_t + 1e-8)  # [B,N,3], unscaled score prediction
         len_scale = (volume / (N + 1e-8)).pow(1/3).view(batch_size,1,1)  # [B,1,1]
         zx_s = self.reverse_sde_step_given_pred_training(
@@ -900,6 +890,45 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         repulsion_loss = self.lambda_rep * repulsion_loss
         loss_dict["repulsion_loss"] = repulsion_loss
         loss += repulsion_loss
+
+        # 2) calculate the loss for atom type
+        h_true = torch.cat([h['categorical'], h['integer']], 
+                            dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
+        h_true_idx = h_true.argmax(dim=2)   # [B,N]
+        # cross_entropy loss, purely for atom type prediction
+        ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        atom_type_loss = ce_loss(
+            h_pred.reshape(-1, h_pred.size(-1)), # logits, [B*N, C]
+            h_true_idx.reshape(-1) # targets, [B*N]
+        )
+        atom_type_loss = atom_type_loss.reshape(batch_size, -1)  # [B, N]
+        atom_type_loss = atom_type_loss * node_mask.squeeze(-1)
+        atom_type_loss = atom_type_loss.sum(dim=1) / node_mask.squeeze(-1).sum(dim=1).clamp(min=1)
+        # mask the loss term with t > prediction_threshold_t
+        pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
+        pred_loss_mask = pred_loss_mask.squeeze(1)
+        atom_type_loss = self.lambda_type * (atom_type_loss * pred_loss_mask)
+        loss_dict["atom_type_loss"] = atom_type_loss
+        loss += atom_type_loss
+        if self.adjust_atom_type:
+            # additional adjustment for atom type prediction
+            zs_phi = torch.cat([zx_s, h_pred], dim=2)
+            net_out_adjust = self.phi(zs_phi, t, node_mask, edge_mask, context, rl=lengths, ra=angles, adjust_type=True)
+            h_pred_adjust = net_out_adjust[:, :, 3:]          # [B,N,C]
+            ce_loss_adjust = torch.nn.CrossEntropyLoss(reduction='none')
+            atom_type_loss_adjust = ce_loss_adjust(
+                h_pred_adjust.reshape(-1, h_pred_adjust.size(-1)), # logits, [B*N, C]
+                h_true_idx.reshape(-1) # targets, [B*N]
+            )
+            atom_type_loss_adjust = atom_type_loss_adjust.reshape(batch_size, -1)  # [B, N]
+            atom_type_loss_adjust = atom_type_loss_adjust * node_mask.squeeze(-1)
+            atom_type_loss_adjust = atom_type_loss_adjust.sum(dim=1) / node_mask.squeeze(-1).sum(dim=1).clamp(min=1)
+            # mask the loss term with t > prediction_threshold_t
+            pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
+            pred_loss_mask = pred_loss_mask.squeeze(1)
+            atom_type_loss_adjust = self.lambda_type_adjust * (atom_type_loss_adjust * pred_loss_mask)
+            loss_dict["atom_type_loss_adjust"] = atom_type_loss_adjust
+            loss += atom_type_loss_adjust
 
         return loss, loss_dict
     
@@ -1263,6 +1292,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         natoms = node_mask.squeeze(-1).sum(dim=1).long()   # 每个晶体真实的原子个数，强制转为整数类型
         # 2) 展平后的坐标 [N_total, 3]
         pos = x[node_mask.squeeze(-1).bool()]       # 取出有效原子
+        # x[mask]  ≡  x.view(-1)[mask.view(-1)]
         # 3) batch 索引 [N_total]
         batch = torch.arange(B, device=device).repeat_interleave(natoms)
         # 4) 原子种类 [N_total] (这里用dummy，实际应替换成数据里的 atom_types)
@@ -1272,7 +1302,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
 
     
-    def reshape_outputs(self, outs, B, N, node_mask, natoms, batch):
+    def reshape_outputs(self, outs, B, N, node_mask, natoms, batch,  adjust_type=False):
         """
         outs: 模型输出字典，outs["coords"] 是 [Σ natoms, 3]
         B, N: batch_size, 最大原子数
@@ -1288,6 +1318,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             pred_x[i, :n_i] = outs["coords"][batch == i]
 
         atom_types_flat = outs["atom_types"]
+        if adjust_type:
+            atom_types_flat = outs["atom_types_adjust"]
         pred_atom_types = self.reshape_atom_types(atom_types_flat, node_mask, self.num_classes, batch, natoms)
 
         return pred_x, pred_atom_types
@@ -1569,6 +1601,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # 只取前 3 维坐标
             zx = z[:, :, :3]
             t_tensor = torch.full((B,1), fill_value=t, device=device)
+            t_next_tensor = torch.full((B,1), fill_value=t_next, device=device)
 
             # =======================================================
             # Corrector (Langevin)
@@ -1601,17 +1634,32 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
             # 一次 SDE 反向步
-            z = self.reverse_sde_step(
-                x=zx,
-                t=t,
-                dt=dt,
-                rl=rl, ra=ra,
-                node_mask=node_mask,
-                edge_mask=edge_mask,
-                context=context,
-                model_out_is_eps=False,
-                len_scale=len_scale,
-            )
+            if i == int((1-0.01) * self.T):
+                z = self.reverse_sde_step(
+                    x=zx,
+                    t=t,
+                    dt=dt,
+                    rl=rl, ra=ra,
+                    node_mask=node_mask,
+                    edge_mask=edge_mask,
+                    context=context,
+                    model_out_is_eps=False,
+                    len_scale=len_scale,
+                )   # predict all dimensions at this step, including the atom types!
+            else:
+                # only update position part
+                zx = self.reverse_sde_step(
+                    x=zx,
+                    t=t,
+                    dt=dt,
+                    rl=rl, ra=ra,
+                    node_mask=node_mask,
+                    edge_mask=edge_mask,
+                    context=context,
+                    model_out_is_eps=False,
+                    len_scale=len_scale,
+                )[:, :, :3]
+                z = torch.cat([zx, z[:, :, 3:]], dim=2)
 
             # =======================================================
             # Repulsion correction
@@ -1637,6 +1685,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 )
                 z[:, :, :3] = zx
 
+                if self.adjust_atom_type:
+                    # atom type adjustment step
+                    h_cat = z[:, :, self.n_dims:self.n_dims+self.num_classes] # from net prediction
+                    zs = torch.cat([zx, h_cat], dim=2)
+                    net_out_adjust = self.phi(zs, t_next_tensor, node_mask, edge_mask, context, \
+                                              rl=rl, ra=ra, adjust_type=True)
+                    h_cat_adjusted = net_out_adjust[:, :, self.n_dims:self.n_dims+self.num_classes]
+                    z[:, :, self.n_dims:self.n_dims+self.num_classes] = h_cat_adjusted
+
         print('Sampling finished.')
 
         x = z[:, :, :self.n_dims]
@@ -1654,6 +1711,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         h = {'integer': h_int, 'categorical': h_cat}
 
         return x, h, rl, ra
+
 
     @torch.no_grad()
     def sample_score_sde_Lattice(

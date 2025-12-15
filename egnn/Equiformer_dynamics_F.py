@@ -536,8 +536,43 @@ class EquiformerV2(BaseModel):
                     self.use_grid_mlp,
                     self.use_sep_s2_act
                 )
+                self.atom_block_adjust = FeedForwardNetwork(
+                    self.sphere_channels,
+                    self.ffn_hidden_channels*2,
+                    MAX_ATOMIC_NUM,
+                    self.lmax_list,
+                    self.mmax_list,
+                    self.SO3_grid,
+                    self.ffn_activation,
+                    self.use_gate_act,
+                    self.use_grid_mlp,
+                    self.use_sep_s2_act
+                )
             elif self.atom_readout == "so2":
                 self.atom_block = SO2EquivariantGraphAttention(
+                    self.sphere_channels,
+                    self.attn_hidden_channels,
+                    self.num_heads,
+                    self.attn_alpha_channels,
+                    self.attn_value_channels,
+                    MAX_ATOMIC_NUM,
+                    self.lmax_list,
+                    self.mmax_list,
+                    self.SO3_rotation,
+                    self.mappingReduced,
+                    self.SO3_grid,
+                    self.max_num_elements,
+                    self.edge_channels_list,
+                    self.block_use_atom_edge_embedding,
+                    self.use_m_share_rad,
+                    self.attn_activation,
+                    self.use_s2_act_attn,
+                    self.use_attn_renorm,
+                    self.use_gate_act,
+                    self.use_sep_s2_act,
+                    alpha_drop=0.0
+                )
+                self.atom_block_adjust = SO2EquivariantGraphAttention( 
                     self.sphere_channels,
                     self.attn_hidden_channels,
                     self.num_heads,
@@ -806,12 +841,18 @@ class EquiformerV2(BaseModel):
         if self.regress_atoms:
             if self.atom_readout == "ffn":
                 A_t = self.atom_block(x)
+                A_t_adjust = self.atom_block_adjust(x)
             elif self.atom_readout == "so2":
                 A_t = self.atom_block(x,
                                       atomic_numbers,
                                       edge_distance,
                                       edge_index)
+                A_t_adjust = self.atom_block_adjust(x,
+                                                    atomic_numbers,
+                                                    edge_distance,
+                                                    edge_index)
             outs["atoms"] = A_t.embedding.narrow(1, 0, 1).squeeze(1)
+            outs["atoms_adjust"] = A_t_adjust.embedding.narrow(1, 0, 1).squeeze(1)
 
         ###############################################################
         # Force estimation
@@ -1051,7 +1092,7 @@ class BaseDynamics(nn.Module):
         self.embed_lattices = embed_lattices
         self.embed_coord = embed_coord
         self.is_decode = is_decode
-        self.keys = {"forces": "coords", "atoms": "atom_types",
+        self.keys = {"forces": "coords", "atoms": "atom_types", "atoms_adjust": "atom_types_adjust",
                      "lattices": "lattices", "lengths": "lengths", "angles": "angles"}
 
         if is_decode:

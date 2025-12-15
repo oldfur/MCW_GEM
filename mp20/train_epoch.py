@@ -365,7 +365,9 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
             if 'x_error' in loss_dict:
                 wandb.log({"denoise_coords": loss_dict['x_error'].mean().item()}, commit=True)
             if 'atom_type_loss' in loss_dict:
-                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)   
+                wandb.log({"atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
+            if 'atom_type_loss_adjust' in loss_dict:
+                wandb.log({"atom_type_loss_adjust": loss_dict['atom_type_loss_adjust'].mean().item()}, commit=True)   
             if 'repulsion_loss' in loss_dict:
                 wandb.log({"repulsion_loss": loss_dict['repulsion_loss'].mean().item()}, commit=True)
         else:
@@ -417,6 +419,8 @@ def train_epoch_F(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
                         f"denoise x: {loss_dict['x_error'].mean().item():.4f}", end='')
                 if 'atom_type_loss' in loss_dict:
                     print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='')
+                if 'atom_type_loss_adjust' in loss_dict:
+                    print(f', atom_type_loss_adjust: {loss_dict["atom_type_loss_adjust"].mean():.4f}', end='')
                 if 'repulsion_loss' in loss_dict:
                     print(f', repulsion_loss: {loss_dict["repulsion_loss"].mean():.4f}', end='')
                 if args.property_pred:

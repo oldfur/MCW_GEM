@@ -742,6 +742,9 @@ def test_F(args, loader, info, epoch, eval_model, property_norms, nodes_dist, pa
                     if 'atom_type_loss' in loss_dict:
                         print(f', atom_type_loss: {loss_dict["atom_type_loss"].mean():.4f}', end='')
                         wandb.log({f"{partition}_atom_type_loss": loss_dict['atom_type_loss'].mean().item()}, commit=True)
+                    if 'atom_type_loss_adjust' in loss_dict:
+                        print(f', atom_type_loss_adjust: {loss_dict["atom_type_loss_adjust"].mean():.4f}', end='')
+                        wandb.log({f"{partition}_atom_type_loss_adjust": loss_dict['atom_type_loss_adjust'].mean().item()}, commit=True)
                     if 'repulsion_loss' in loss_dict:
                         print(f', repulsion_loss: {loss_dict["repulsion_loss"].mean():.4f}', end='')
                         wandb.log({f"{partition}_repulsion_loss": loss_dict['repulsion_loss'].mean().item()}, commit=True)
