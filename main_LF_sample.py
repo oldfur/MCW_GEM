@@ -407,7 +407,9 @@ if __name__ == '__main__':
     parser.add_argument("--num_rounds", type=int, default=1, help="number of rounds for sample")
     parser.add_argument("--sample_seed", type=int, default=2025, help="random seed for sampling")
     parser.add_argument("--sample_realistic_LA", type=int, default=0, help="whether sample realistic lattice lengths and angles")
-
+    parser.add_argument("--adjust_atom_type", type=int, default=0, help="adjust atom type according to the positions")
+    parser.add_argument("--lambda_type_adjust", type=float, default=0, help="the weight for adjusting atom type")
+    
     parser = setup_shared_args(parser)
     args = parser.parse_args()
     
