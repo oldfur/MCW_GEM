@@ -911,25 +911,28 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         atom_type_loss = self.lambda_type * (atom_type_loss * pred_loss_mask)
         loss_dict["atom_type_loss"] = atom_type_loss
         loss += atom_type_loss
+
+        # 3) additional adjustment for atom type prediction during diffusion
         if self.adjust_atom_type:
-            # additional adjustment for atom type prediction
-            zs_phi = torch.cat([zx_s, h_pred], dim=2)
-            net_out_adjust = self.phi(zs_phi, t, node_mask, edge_mask, context, rl=lengths, ra=angles, adjust_type=True)
-            h_pred_adjust = net_out_adjust[:, :, 3:]          # [B,N,C]
-            ce_loss_adjust = torch.nn.CrossEntropyLoss(reduction='none')
-            atom_type_loss_adjust = ce_loss_adjust(
-                h_pred_adjust.reshape(-1, h_pred_adjust.size(-1)), # logits, [B*N, C]
-                h_true_idx.reshape(-1) # targets, [B*N]
-            )
-            atom_type_loss_adjust = atom_type_loss_adjust.reshape(batch_size, -1)  # [B, N]
-            atom_type_loss_adjust = atom_type_loss_adjust * node_mask.squeeze(-1)
-            atom_type_loss_adjust = atom_type_loss_adjust.sum(dim=1) / node_mask.squeeze(-1).sum(dim=1).clamp(min=1)
-            # mask the loss term with t > prediction_threshold_t
-            pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
-            pred_loss_mask = pred_loss_mask.squeeze(1)
-            atom_type_loss_adjust = self.lambda_type_adjust * (atom_type_loss_adjust * pred_loss_mask)
-            loss_dict["atom_type_loss_adjust"] = atom_type_loss_adjust
-            loss += atom_type_loss_adjust
+            print("adjust atom type failed to be used currently.")
+            # # additional adjustment for atom type prediction
+            # zs_phi = torch.cat([zx_s, h_pred], dim=2)
+            # net_out_adjust = self.phi(zs_phi, t, node_mask, edge_mask, context, rl=lengths, ra=angles, adjust_type=True)
+            # h_pred_adjust = net_out_adjust[:, :, 3:]          # [B,N,C]
+            # ce_loss_adjust = torch.nn.CrossEntropyLoss(reduction='none')
+            # atom_type_loss_adjust = ce_loss_adjust(
+            #     h_pred_adjust.reshape(-1, h_pred_adjust.size(-1)), # logits, [B*N, C]
+            #     h_true_idx.reshape(-1) # targets, [B*N]
+            # )
+            # atom_type_loss_adjust = atom_type_loss_adjust.reshape(batch_size, -1)  # [B, N]
+            # atom_type_loss_adjust = atom_type_loss_adjust * node_mask.squeeze(-1)
+            # atom_type_loss_adjust = atom_type_loss_adjust.sum(dim=1) / node_mask.squeeze(-1).sum(dim=1).clamp(min=1)
+            # # mask the loss term with t > prediction_threshold_t
+            # pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
+            # pred_loss_mask = pred_loss_mask.squeeze(1)
+            # atom_type_loss_adjust = self.lambda_type_adjust * (atom_type_loss_adjust * pred_loss_mask)
+            # loss_dict["atom_type_loss_adjust"] = atom_type_loss_adjust
+            # loss += atom_type_loss_adjust
 
         return loss, loss_dict
     
@@ -1686,49 +1689,17 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
             # 一次 SDE 反向步
-            if i == switch_time:
-                # predict the atom type, only at this step
-                print("Switching to full dimension prediction at step", i)
-                print("time:", t)
-                z = self.reverse_sde_step(
-                    x=zx,
-                    t=t,
-                    dt=dt,
-                    rl=rl, ra=ra,
-                    node_mask=node_mask,
-                    edge_mask=edge_mask,
-                    context=context,
-                    model_out_is_eps=False,
-                    len_scale=len_scale,
-                )   # predict all dimensions at this step, including the atom types!
-            elif i < switch_time:
-                # only update position part
-                zx = self.reverse_sde_step(
-                    x=zx,
-                    t=t,
-                    dt=dt,
-                    rl=rl, ra=ra,
-                    node_mask=node_mask,
-                    edge_mask=edge_mask,
-                    context=context,
-                    model_out_is_eps=False,
-                    len_scale=len_scale,
-                )[:, :, :3]
-                z = torch.cat([zx, z[:, :, 3:]], dim=2)
-            else: # i > switch_time
-                # adjust atom types
-                z = self.reverse_sde_step_all(
-                    zt=z,
-                    t=t,
-                    dt=dt,
-                    rl=rl, ra=ra,
-                    node_mask=node_mask,
-                    edge_mask=edge_mask,
-                    context=context,
-                    model_out_is_eps=False,
-                    len_scale=len_scale,
-                )
-
+            z = self.reverse_sde_step(
+                x=zx,
+                t=t,
+                dt=dt,
+                rl=rl, ra=ra,
+                node_mask=node_mask,
+                edge_mask=edge_mask,
+                context=context,
+                model_out_is_eps=False,
+                len_scale=len_scale,
+            )
 
             # =======================================================
             # Repulsion correction
