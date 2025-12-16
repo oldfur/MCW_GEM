@@ -218,7 +218,12 @@ def array_dict_to_crystal(
                     if crys.invalid_reason == 'constructed but structure invalid':
                         subdir = os.path.join(save_dir_name, "struct_invalid")
                         os.makedirs(subdir, exist_ok=True)
-                        crys.structure.to(os.path.join(subdir, f"invalid_crystal_{x['sample_idx']}.cif"))
+                        crys.structure.to(os.path.join(subdir, f"struct_invalid_crystal_{x['sample_idx']}.cif"))
+                        print(f"Crystal is not valid because: {crys.invalid_reason}, save to {subdir}!!")
+                    elif crys.invalid_reason == 'structure valid but comp invalid':
+                        subdir = os.path.join(save_dir_name, "comp_invalid")
+                        os.makedirs(subdir, exist_ok=True)
+                        crys.structure.to(os.path.join(subdir, f"comp_invalid_crystal_{x['sample_idx']}.cif"))
                         print(f"Crystal is not valid because: {crys.invalid_reason}, save to {subdir}!!")
                     else:
                         print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
