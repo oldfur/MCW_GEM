@@ -1643,7 +1643,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Corrector steps:', n_corrector_steps)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
-        switch_time = int((1-0.01) * self.T)
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             if torch.isnan(z).any():
@@ -1705,7 +1704,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # Repulsion correction
             # =======================================================
             # 在 t 很小时加入 ZBL 排斥力
-            if t < 0.01:   #  10 of 1000
+            if i >= self.T - self.prediction_threshold_t:
                 # # ZBL-based relaxation step
                 # zx = self.zbl_relax_step(
                 #     z, rl, ra,
