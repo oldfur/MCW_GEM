@@ -11,6 +11,128 @@ from crystalgrw.data_utils import lattice_params_from_matrix, lattice_params_to_
 from equivariant_diffusion.mlp import DiffusionMLP
 from tqdm import tqdm
 import random
+from mp20.crystal import smact_validity
+from collections import Counter
+import itertools
+
+def composition_from_elem_idx(elem_idx, node_mask):
+    """
+    elem_idx: [N]  (int)
+    node_mask: [N,1]
+    return:
+        elems: tuple[int]
+        comps: tuple[int]   # gcd-normalized stoichiometry
+    """
+    mask = node_mask.squeeze(-1).bool()
+    elems_list = elem_idx[mask].tolist()
+
+    counter = Counter(elems_list)
+    elems = tuple(sorted(counter.keys()))
+    counts = np.array([counter[e] for e in elems], dtype=np.int64)
+
+    # gcd normalization（与你现有代码完全一致）
+    gcd = np.gcd.reduce(counts)
+    counts = counts // gcd
+
+    return elems, tuple(counts.tolist())
+
+def select_candidate_atoms(logits, node_mask, max_atoms=6):
+    """
+    logits: [N, C]
+    node_mask: [N,1]
+    """
+    probs = torch.softmax(logits, dim=-1)
+    entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)  # [N]
+
+    entropy = entropy.masked_fill(~node_mask.squeeze(-1).bool(), -1e9)
+
+    k = min(max_atoms, int(node_mask.sum().item()))
+    _, idx = torch.topk(entropy, k)
+    return idx.tolist()
+
+
+def repair_composition_single(
+    logits,             # [N,C]
+    node_mask,          # [N,1]
+    smact_validity_fn,
+    topk=4,
+    max_replace_atoms=2
+):
+    """
+    返回:
+        elem_idx: [N]
+        repaired: bool
+    """
+
+    N, C = logits.shape
+    device = logits.device
+
+    # padding 不可选
+    logits = logits.clone()
+    logits[:, 0] = -1e9
+
+    # 原始 argmax
+    elem_idx = torch.argmax(logits, dim=-1) # [N]
+
+    comp, count = composition_from_elem_idx(elem_idx, node_mask)
+    if smact_validity_fn(comp, count):
+        return elem_idx, False   # 不需要 repair
+
+    # Top-k 候选
+    topk_vals, topk_idx = torch.topk(logits, topk, dim=-1)  # [N, K]
+
+    # 选择可替换原子
+    candidate_atoms = select_candidate_atoms(
+        logits, node_mask, max_atoms=6
+    )
+
+    best_solution = None
+
+    for r in range(1, max_replace_atoms + 1):
+        for atom_subset in itertools.combinations(candidate_atoms, r):
+            # 每个 atom 有 topk 个候选
+            choices = [topk_idx[a].tolist() for a in atom_subset]
+
+            for replacement in itertools.product(*choices):
+                trial_elem_idx = elem_idx.clone()
+                for a, e in zip(atom_subset, replacement):
+                    trial_elem_idx[a] = e
+
+                comp, count = composition_from_elem_idx(
+                    trial_elem_idx, node_mask
+                )
+
+                if smact_validity_fn(comp, count):
+                    return trial_elem_idx, True
+
+    # repair 失败，返回原始结果
+    return elem_idx, False
+
+
+def repair_composition_batch(
+    logits,          # [B, N, C]
+    node_mask,       # [B, N, 1]
+    smact_validity_fn,
+    topk=4,
+    max_replace_atoms=2
+):
+    B, N, C = logits.shape
+    final_elem_idx = []
+    repaired_flags = []
+
+    for b in range(B):
+        elem_idx, repaired = repair_composition_single(
+            logits[b],
+            node_mask[b],
+            smact_validity_fn,
+            topk=topk,
+            max_replace_atoms=max_replace_atoms
+        )
+        final_elem_idx.append(elem_idx)
+        repaired_flags.append(repaired)
+
+    final_elem_idx = torch.stack(final_elem_idx, dim=0)
+    return final_elem_idx, repaired_flags
 
 
 def is_valid_cell_params(rl, ra, eps=1e-6):
@@ -1735,8 +1857,30 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
 
         # post-process one-hot / integer
-        h_cat[:, :, 0] = 0.0  # ensure padding type prob = 0 before argmax
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        # h_cat[:, :, 0] = 0.0  # ensure padding type prob = 0 before argmax
+        # h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        logits = h_cat.clone() # [B,N,C]
+        elem_idx_before = torch.argmax(logits, dim=2)   # [B, N]
+        logits[:, :, 0] = -1e9
+        elem_idx, repaired_flags = repair_composition_batch(
+            logits,
+            node_mask,
+            smact_validity_fn=smact_validity,
+            topk=4,
+            max_replace_atoms=2
+        )
+        h_cat = F.one_hot(elem_idx, self.num_classes) * node_mask
+        # print repair info
+        for b, repaired in enumerate(repaired_flags):
+            if not repaired:
+                continue
+            mask = node_mask[b].squeeze(-1).bool()
+            before = elem_idx_before[b][mask].tolist()
+            after  = elem_idx[b][mask].tolist()
+            print(f"\n[Sample {b}]")
+            print("  before:", before)
+            print("  after :", after)
+
         h_int = torch.round(h_int).long() * node_mask
 
         h = {'integer': h_int, 'categorical': h_cat}
