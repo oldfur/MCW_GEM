@@ -17,14 +17,16 @@ from mp20.get_model import get_model, get_Lattice_model
 from mp20.utils import *
 from mp20.analyze_test import analyze_and_save_F
 
-# 计算 novelty 时忽略 pymatgen 解析 CIF 文件时的警告
+
 import warnings
-warnings.filterwarnings(
-    "ignore",
-    message=".*Issues encountered while parsing CIF.*",
-    category=UserWarning,
-    module="pymatgen.core.structure"
-)
+# warnings.filterwarnings(
+#     "ignore",
+#     message=".*Issues encountered while parsing CIF.*",
+#     category=UserWarning,
+#     module="pymatgen.core.structure"
+# )
+warnings.filterwarnings("ignore")
+
 
 
 
