@@ -1,3 +1,12 @@
+import warnings
+# warnings.filterwarnings(
+#     "ignore",
+#     message=".*Issues encountered while parsing CIF.*",
+#     category=UserWarning,
+#     module="pymatgen.core.structure"
+# )
+warnings.filterwarnings("ignore")
+
 import os
 import copy
 import time
@@ -16,18 +25,6 @@ from mp20.mp20 import MP20
 from mp20.get_model import get_model, get_Lattice_model
 from mp20.utils import *
 from mp20.analyze_test import analyze_and_save_F
-
-
-import warnings
-# warnings.filterwarnings(
-#     "ignore",
-#     message=".*Issues encountered while parsing CIF.*",
-#     category=UserWarning,
-#     module="pymatgen.core.structure"
-# )
-warnings.filterwarnings("ignore")
-
-
 
 
 def get_dataset(args):
