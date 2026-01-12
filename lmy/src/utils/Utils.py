@@ -10,12 +10,12 @@ import torch.nn.functional as F
 @dataclass
 class HTGPConfig:
     # --- 基础超参 ---
-    num_atom_types: int = 60
+    num_atom_types: int = 100
     hidden_dim: int = 128
     num_layers: int = 2
     cutoff: float = 6.0
     num_rbf: int = 12
-    atom_types_map: list = field(default_factory=lambda: [1, 5, 6, 7, 8, 9, 15, 16, 17, 35, 53])
+    atom_types_map: list = field(default_factory=lambda: list(range(1, 101)))
 
     # --- 模块开关 (Global Flags) ---
     use_L0: bool = True   # 标量通道 (必需)
