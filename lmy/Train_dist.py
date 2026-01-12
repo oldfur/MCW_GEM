@@ -48,7 +48,7 @@ class Config:
 
     # 模型配置 (HTGP)
     MODEL_PARAMS = dict(
-        num_atom_types=55, 
+        num_atom_types=100, 
         hidden_dim=128, 
         num_layers=2, 
         cutoff=7.0, 
