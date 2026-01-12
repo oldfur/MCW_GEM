@@ -38,7 +38,7 @@ class Config:
 
     # 训练超参
     # 🔥 注意: 这里的 BATCH_SIZE 指的是 "每个 Batch 的最大原子数 (Cost)"
-    MAX_COST_PER_BATCH = 6800  # 针对 H100/A100 优化
+    MAX_COST_PER_BATCH = 2000  # 针对 H100/A100 优化
     LR = 1e-3
     EPOCHS = 15
     
@@ -51,7 +51,7 @@ class Config:
         num_atom_types=100, 
         hidden_dim=128, 
         num_layers=2, 
-        cutoff=7.0, 
+        cutoff=6.0, 
         num_rbf=10,
         use_L0=True, 
         use_L1=True,

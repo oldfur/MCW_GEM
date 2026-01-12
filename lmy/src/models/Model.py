@@ -25,8 +25,8 @@ class HTGPModel(nn.Module):
         else:
             self.used_atomic_numbers = [1, 5, 6, 7, 8, 9, 15, 16, 17, 35, 53]
             
-        num_actual_types = len(self.used_atomic_numbers) # 通常为 11
-        max_z = max(self.used_atomic_numbers)            # 通常为 53
+        num_actual_types = len(self.used_atomic_numbers)
+        max_z = max(self.used_atomic_numbers) 
 
         # 注册映射表 buffer (会自动转到 GPU，但不更新梯度)
         # 初始化为 -1，方便后续检查非法原子
