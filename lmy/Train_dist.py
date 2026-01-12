@@ -34,7 +34,7 @@ class Config:
     TRAIN_META = "train_metadata.pt"         # 训练集元数据
     TEST_META = "test_metadata.pt"           # 测试集元数据
     E0_PATH = "../dataset_h5/meta_data.pt" # 原子能量参考值
-    LOG_DIR = "Checkpoints"                  # 模型保存路径
+    LOG_DIR = "../lmy_Checkpoints"                  # 模型保存路径
 
     # 训练超参
     # 🔥 注意: 这里的 BATCH_SIZE 指的是 "每个 Batch 的最大原子数 (Cost)"
