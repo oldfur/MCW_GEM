@@ -200,12 +200,12 @@ def main():
     # --- C. 构建模型 ---
     log_info("\n[2/4] Building Model...", rank)\
     
-    restart = True
+    restart = False  # 是否从检查点恢复训练
     if not restart:
         avg_neighborhood = 1 / train_sampler.edge_weight
         model = build_model(device, rank, avg_neighborhood)
     else:
-        checkpoint_path = "Checkpoints/model_epoch_2.pt"
+        checkpoint_path = "../lmy_Checkpoints/model_epoch_2.pt"
         checkpoint_weights = torch.load(checkpoint_path, map_location=device, weights_only=False)
         saved_config = checkpoint_weights['model_config']
 
