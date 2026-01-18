@@ -40,7 +40,7 @@ class Config:
     # 🔥 注意: 这里的 BATCH_SIZE 指的是 "每个 Batch 的最大原子数 (Cost)"
     MAX_COST_PER_BATCH = 2000  # 针对 H100/A100 优化
     LR = 1e-3
-    EPOCHS = 15
+    EPOCHS = 45
     
     # 系统配置
     NUM_WORKERS = 8            # DataLoader 进程数
@@ -200,12 +200,12 @@ def main():
     # --- C. 构建模型 ---
     log_info("\n[2/4] Building Model...", rank)\
     
-    restart = False  # 是否从检查点恢复训练
+    restart = True  # 是否从检查点恢复训练
     if not restart:
         avg_neighborhood = 1 / train_sampler.edge_weight
         model = build_model(device, rank, avg_neighborhood)
     else:
-        checkpoint_path = "../lmy_Checkpoints/model_epoch_2.pt"
+        checkpoint_path = "../lmy_Checkpoints/model_epoch_5.pt"
         checkpoint_weights = torch.load(checkpoint_path, map_location=device, weights_only=False)
         saved_config = checkpoint_weights['model_config']
 
