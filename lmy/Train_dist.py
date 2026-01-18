@@ -132,7 +132,7 @@ def build_model(device, rank, avg_neighborhood, **karwgs):
         model_config.avg_neighborhood = avg_neighborhood
         model = HTGPModel(model_config).to(device)
     else:
-        model_config = HTGPConfig(**karwgs["model_config"])
+        model_config = karwgs["model_config"]
         model_config.avg_neighborhood = avg_neighborhood
         model = HTGPModel(model_config).to(device)
         state_dict = karwgs["state_dict"]
