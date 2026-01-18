@@ -124,12 +124,16 @@ def get_dataloader(data_dir, meta_file, rank, world_size, is_train=True):
 
 def build_model(device, rank, avg_neighborhood, **karwgs):
     """构建模型并加载 E0"""
+    
     # 初始化配置和模型
+
     if "restart" not in karwgs:
         model_config = HTGPConfig(**Config.MODEL_PARAMS)
         model_config.avg_neighborhood = avg_neighborhood
         model = HTGPModel(model_config).to(device)
     else:
+        model_config = HTGPConfig(**karwgs["model_config"])
+        model_config.avg_neighborhood = avg_neighborhood
         model = HTGPModel(model_config).to(device)
         state_dict = karwgs["state_dict"]
         new_state_dict = {}
