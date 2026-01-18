@@ -169,6 +169,9 @@ def build_model(device, rank, avg_neighborhood, **karwgs):
 
     # DDP 包装
     if dist.is_initialized():
+        for p in model.parameters():
+            if not p.is_contiguous():
+                p.data = p.data.contiguous()
         model = DDP(model, device_ids=[device.index], output_device=device.index, find_unused_parameters=True)
     
     return model
@@ -214,9 +217,7 @@ def main():
         saved_config = checkpoint_weights['model_config']
 
         model = build_model(device, rank, avg_neighborhood, restart=restart, model_config=saved_config, state_dict=checkpoint_weights)
-        for p in model.parameters():
-            if not p.is_contiguous():
-                p.data = p.data.contiguous()
+
 
     # --- D. 初始化 Trainer ---
     log_info("\n[3/4] Initializing Trainer...", rank)
