@@ -273,7 +273,10 @@ def main():
                 f"MAE_F: {train_metrics['mae_f']*1000:.1f}/{val_metrics['mae_f']*1000:.1f} meV/A"
             )
             print(log_msg)
-            trainer.save(f'model_epoch_{epoch}.pt')
+
+            # save model
+            total_epoch = epoch + 5 # 从 epoch 5 恢复训练，则加 5
+            trainer.save(f'model_epoch_{total_epoch}.pt')
 
         # 4. 同步：确保所有卡都跑完了这个 Epoch
         if dist.is_initialized():
