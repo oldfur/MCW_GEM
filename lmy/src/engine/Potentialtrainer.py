@@ -140,7 +140,6 @@ class PotentialTrainer:
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.999)
 
         # 3. 学习率调度器
-
         if self.finetune_mode:
             # ---> 分支 A: 微调使用 ReduceLROnPlateau <---
             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -185,7 +184,7 @@ class PotentialTrainer:
 
         # Loss 配置
         self.huber_delta = 0.01
-        self.w_e = 50.0
+        self.w_e = 10.0
         self.w_f = 10.0
         self.w_s = 10.0
         
@@ -218,6 +217,47 @@ class PotentialTrainer:
                 f"{data['loss_f']:.6f}", f"{data['loss_s']:.6f}",
                 f"{data['mae_e']*1000:.6f}", f"{data['mae_f']*1000:.6f}", f"{data['mae_s_gpa']:.6f}"
             ])
+
+
+    # 加载权重
+    def load_checkpoint(self, checkpoint_dict):
+        """
+        加载优化器、调度器。
+        如果 checkpoint 里没有 EMA，则用当前加载好的模型重置 EMA，防止验证集崩盘。
+        """
+        # 1. 加载 Optimizer
+        if 'optimizer_state_dict' in checkpoint_dict:
+            self.optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
+            # 修复 device 问题
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(self.device)
+            if self.rank == 0: print("✅ Optimizer state loaded.")
+
+        # 2. 加载 Scheduler
+        if 'scheduler_state_dict' in checkpoint_dict:
+            self.scheduler.load_state_dict(checkpoint_dict['scheduler_state_dict'])
+            if self.rank == 0: print("✅ Scheduler state loaded.")
+
+        # 3. 加载 EMA (带兜底逻辑)
+        if 'ema_state_dict' in checkpoint_dict:
+            # A. 正常情况：加载保存的 EMA
+            self.ema.load_state_dict(checkpoint_dict['ema_state_dict'])
+            self.ema.to(self.device)
+            if self.rank == 0: print("✅ EMA state loaded.")
+        else:
+            # B. 补救情况：你之前没存 EMA
+            # 必须把刚才加载好的 model 权重，重新注册进 EMA，否则 EMA 里全是随机噪声
+            if self.rank == 0: 
+                print("⚠️ Warning: No EMA state in checkpoint. Resetting EMA from current model weights!")
+            
+            # 重新初始化 EMA，使其与当前加载好的模型同步
+            # 注意：decay 参数要和你 __init__ 里的一致，默认是 0.999
+            self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.999)
+            self.ema.to(self.device)
+
+
 
     def step(self, batch, train=True, batch_idx=0):
         # 🔥 使用 non_blocking 加速传输
@@ -299,7 +339,7 @@ class PotentialTrainer:
         
         # 缓存 scatter buffer 避免重复创建 (微小优化)
         if not hasattr(self, '_ones_buffer') or self._ones_buffer.shape[0] != batch.batch.shape[0]:
-             self._ones_buffer = torch.ones_like(batch.batch, dtype=torch.float64)
+             self._ones_buffer = torch.ones_like(batch.batch, dtype=torch.float32)
         
         num_atoms = scatter_add(self._ones_buffer, batch.batch, dim=0, dim_size=num_graphs).view(-1).clamp(min=1)
         

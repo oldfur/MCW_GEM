@@ -24,15 +24,15 @@ torch.backends.cudnn.allow_tf32 = True
 # 1. 训练配置
 # ==========================================
 class Config:
-    DATA_DIR = "../dataset_h5"      # 数据根目录
-    TRAIN_META = "train_metadata.pt"         # 训练集元数据
-    TEST_META = "test_metadata.pt"           # 测试集元数据
-    E0_PATH = "../dataset_h5/meta_data.pt" # 原子能量参考值
-    LOG_DIR = "../lmy_Checkpoints"                  # 模型保存路径
+    DATA_DIR = "/dev/shm/dataset_h5_r6_inorg"
+    TRAIN_META = "train_metadata.pt"
+    TEST_META = "test_metadata.pt"
+    E0_PATH = "/dev/shm/dataset_h5_r6_inorg/meta_data.pt"
+    LOG_DIR = "Checkpoints"
 
-    MAX_COST_PER_BATCH = 2000 # 4000 cutoff 为7
+    MAX_COST_PER_BATCH = 10000 # 4000 cutoff 为7
     LR = 1e-3
-    EPOCHS = 45
+    EPOCHS = 100
     
     NUM_WORKERS = 8
     PREFETCH_FACTOR = 2
@@ -40,7 +40,7 @@ class Config:
     # 基础模型参数 (用于新建模型时)
     MODEL_PARAMS = dict(
         num_atom_types=100, 
-        hidden_dim=128, 
+        hidden_dim=96, 
         num_layers=2, 
         cutoff=6.0, 
         num_rbf=10,
@@ -170,7 +170,7 @@ def main():
     # --- C. 准备配置 (Restart 逻辑的核心) ---
     # !!! 设置这里 !!!
     RESTART = True
-    CHECKPOINT_PATH = "../lmy_Checkpoints/model_epoch_14.pt"
+    CHECKPOINT_PATH = "Checkpoints_break_2/model_epoch_47.pt"
     
     start_epoch = 0
     checkpoint_state = None
@@ -187,7 +187,7 @@ def main():
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
         
         # 1. 恢复 Epoch
-        start_epoch = checkpoint.get('epoch', 15)
+        start_epoch = checkpoint.get('epoch', 47)
         
         # 2. 恢复 Config (非常重要，这就包含了 avg_neighborhood)
         if 'model_config' in checkpoint:

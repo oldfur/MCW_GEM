@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import math
 from typing import Dict, Optional, Tuple, List
-from src.utils import scatter_add, scatter_mean, HTGPConfig
+from lmy.src.utils import scatter_add, scatter_mean, HTGPConfig
 
 # ==========================================
 # 🔥 核心 JIT 数学引擎 (安全加速区)

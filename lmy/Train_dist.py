@@ -30,26 +30,26 @@ torch.backends.cudnn.allow_tf32 = True
 # ==========================================
 class Config:
     # 路径配置
-    DATA_DIR = "../dataset_h5"      # 数据根目录
+    DATA_DIR = "/dev/shm/dataset_h5_r6"          # 数据根目录
     TRAIN_META = "train_metadata.pt"         # 训练集元数据
     TEST_META = "test_metadata.pt"           # 测试集元数据
-    E0_PATH = "../dataset_h5/meta_data.pt" # 原子能量参考值
-    LOG_DIR = "../lmy_Checkpoints"                  # 模型保存路径
+    E0_PATH = "/var/tmp/lmy_test/meta_e0_data.pt" # 原子能量参考值
+    LOG_DIR = "Checkpoints"                  # 模型保存路径
 
     # 训练超参
     # 🔥 注意: 这里的 BATCH_SIZE 指的是 "每个 Batch 的最大原子数 (Cost)"
-    MAX_COST_PER_BATCH = 2000  # 针对 H100/A100 优化
+    MAX_COST_PER_BATCH = 10000  # 针对 H100/A100 优化
     LR = 1e-3
-    EPOCHS = 45
+    EPOCHS = 15
     
     # 系统配置
     NUM_WORKERS = 8            # DataLoader 进程数
-    PREFETCH_FACTOR = 2        # 预取因子
+    PREFETCH_FACTOR = 4        # 预取因子
 
     # 模型配置 (HTGP)
     MODEL_PARAMS = dict(
-        num_atom_types=100, 
-        hidden_dim=128, 
+        num_atom_types=55, 
+        hidden_dim=64, 
         num_layers=2, 
         cutoff=6.0, 
         num_rbf=10,
@@ -122,56 +122,35 @@ def get_dataloader(data_dir, meta_file, rank, world_size, is_train=True):
     
     return loader, sampler
 
-def build_model(device, rank, avg_neighborhood, **karwgs):
+def build_model(device, rank):
     """构建模型并加载 E0"""
-    
     # 初始化配置和模型
-
-    if "restart" not in karwgs:
-        model_config = HTGPConfig(**Config.MODEL_PARAMS)
-        model_config.avg_neighborhood = avg_neighborhood
-        model = HTGPModel(model_config).to(device)
-    else:
-        model_config = karwgs["model_config"]
-        model_config.avg_neighborhood = avg_neighborhood
-        model = HTGPModel(model_config).to(device)
-        state_dict = karwgs["state_dict"]
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith('module.'):
-                new_state_dict[k[7:]] = v 
-            else:
-                new_state_dict[k] = v
-        print()
+    model_config = HTGPConfig(**Config.MODEL_PARAMS)
+    model = HTGPModel(model_config).to(device)
     
     # 打印参数量
     if rank == 0:
         param_count = sum(p.numel() for p in model.parameters())
         log_info(f"🧠 Model Parameters: {param_count:,}", rank)
 
-
     # 注入 E0 (原子参考能量)
-    if "restart" not in karwgs:
-        if os.path.exists(Config.E0_PATH):
-            # map_location='cpu' 防止占用显存
-            meta_data = torch.load(Config.E0_PATH, map_location='cpu', weights_only=False)
-            e0_dict = meta_data.get('e0_dict', None)
-            
-            model.load_external_e0(e0_dict)
-            model.atomic_ref.weight.requires_grad = False # 冻结 E0
-            if rank == 0:
-                log_info(f"Adding E0 from {Config.E0_PATH}...", rank)
+    if os.path.exists(Config.E0_PATH):
+        # map_location='cpu' 防止占用显存
+        meta_data = torch.load(Config.E0_PATH, map_location='cpu', weights_only=False)
+        e0_dict = meta_data.get('e0_dict', None)
+        
+        model.load_external_e0(e0_dict)
+        model.atomic_ref.weight.requires_grad = False # 冻结 E0
+        if rank == 0:
+            log_info(f"Adding E0 from {Config.E0_PATH}...", rank)
 
-        else:
-            # 如果没有 E0 文件，确保类型正确
-            model.atomic_ref.weight = model.atomic_ref.weight.float()
-            log_info("⚠️ meta_e0_data.pt not found, skipping E0 injection.", rank)
+    else:
+        # 如果没有 E0 文件，确保类型正确
+        model.atomic_ref.weight = model.atomic_ref.weight.float()
+        log_info("⚠️ meta_e0_data.pt not found, skipping E0 injection.", rank)
 
     # DDP 包装
     if dist.is_initialized():
-        for p in model.parameters():
-            if not p.is_contiguous():
-                p.data = p.data.contiguous()
         model = DDP(model, device_ids=[device.index], output_device=device.index, find_unused_parameters=True)
     
     return model
@@ -205,19 +184,8 @@ def main():
     # test_loader = test_result[0] if test_result else None
 
     # --- C. 构建模型 ---
-    log_info("\n[2/4] Building Model...", rank)\
-    
-    restart = True  # 是否从检查点恢复训练
-    avg_neighborhood = 1 / train_sampler.edge_weight
-    if not restart:
-        model = build_model(device, rank, avg_neighborhood)
-    else:
-        checkpoint_path = "../lmy_Checkpoints/model_epoch_5.pt"
-        checkpoint_weights = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        saved_config = checkpoint_weights['model_config']
-
-        model = build_model(device, rank, avg_neighborhood, restart=restart, model_config=saved_config, state_dict=checkpoint_weights)
-
+    log_info("\n[2/4] Building Model...", rank)
+    model = build_model(device, rank)
 
     # --- D. 初始化 Trainer ---
     log_info("\n[3/4] Initializing Trainer...", rank)
@@ -231,20 +199,13 @@ def main():
         test_total_steps = test_sampler.precompute_total_steps(Config.EPOCHS)
         log_info(f"📊 Estimated total steps for testing: {test_total_steps}", rank)
 
-    if not restart:
-        trainer = PotentialTrainer(
+    trainer = PotentialTrainer(
         model, 
         total_steps=train_total_steps,
         max_lr=Config.LR, 
         device=device, 
-        checkpoint_dir=Config.LOG_DIR)
-    else:
-        trainer = PotentialTrainer(
-        model, 
-        total_steps=train_total_steps,
-        max_lr=Config.LR, 
-        device=device, 
-        checkpoint_dir=Config.LOG_DIR)
+        checkpoint_dir=Config.LOG_DIR
+    )
 
     # --- E. 训练循环 ---
     log_info("\n[4/4] Starting Loop...", rank)
@@ -273,10 +234,7 @@ def main():
                 f"MAE_F: {train_metrics['mae_f']*1000:.1f}/{val_metrics['mae_f']*1000:.1f} meV/A"
             )
             print(log_msg)
-
-            # save model
-            total_epoch = epoch + 5 # 从 epoch 5 恢复训练，则加 5
-            trainer.save(f'model_epoch_{total_epoch}.pt')
+            trainer.save(f'model_epoch_{epoch}.pt')
 
         # 4. 同步：确保所有卡都跑完了这个 Epoch
         if dist.is_initialized():

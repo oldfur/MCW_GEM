@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .Modules import (
+from lmy.src.models.Modules import (
     GeometricBasis, LeibnizCoupling, PhysicsGating, CartesianDensityBlock, LatentLongRange)
-from src.utils import scatter_add, HTGPConfig
+from lmy.src.utils import scatter_add, HTGPConfig
 
 # ==========================================
 # 7. 主模型 (Main Model)
@@ -25,8 +25,8 @@ class HTGPModel(nn.Module):
         else:
             self.used_atomic_numbers = [1, 5, 6, 7, 8, 9, 15, 16, 17, 35, 53]
             
-        num_actual_types = len(self.used_atomic_numbers)
-        max_z = max(self.used_atomic_numbers) 
+        num_actual_types = len(self.used_atomic_numbers) # 通常为 11
+        max_z = max(self.used_atomic_numbers)            # 通常为 53
 
         # 注册映射表 buffer (会自动转到 GPU，但不更新梯度)
         # 初始化为 -1，方便后续检查非法原子
@@ -61,8 +61,6 @@ class HTGPModel(nn.Module):
             
         if config.use_long_range:
             self.long_range = LatentLongRange(config)
-        else:
-            print("not used long_range")
             
         # Atomic Ref: 同样缩小尺寸
         self.atomic_ref = nn.Embedding(num_actual_types, 1)
@@ -71,6 +69,7 @@ class HTGPModel(nn.Module):
     def forward(self, data, capture_weights=False, capture_descriptors=False):
         if capture_descriptors:
             self.all_layer_descriptors = []
+        
         # ============================================================
         # 🔥 修改 3: Forward 中应用映射
         # ============================================================
@@ -87,8 +86,7 @@ class HTGPModel(nn.Module):
         # 1. 几何计算
         row, col = data.edge_index
         # 处理 shifts_int (PBC)
-        cell = getattr(data, 'cell', None)
-        if hasattr(data, 'shifts_int') and data.shifts_int is not None and cell is not None:
+        if hasattr(data, 'shifts_int') and data.shifts_int is not None:
             batch_cell = data.cell[data.batch[row]]          # (E, 3, 3)
             current_shifts = torch.bmm(
                 data.shifts_int.unsqueeze(1), batch_cell
@@ -158,11 +156,8 @@ class HTGPModel(nn.Module):
             
         # 4. 长程修正
         if self.cfg.use_long_range and self.cfg.use_L1 and h1 is not None:
-            cell = getattr(data, 'cell', None)
-            e_long = self.long_range(h0, h1, data.pos, data.batch, cell, capture_descriptors=capture_descriptors)
-            print("to see how much of e_long:", e_long)
+            e_long = self.long_range(h0, h1, data.pos, data.batch, data.cell)
             total_energy = total_energy + e_long
-        
             
         # Atomic Ref (使用 z_idx)
         total_energy = total_energy + scatter_add(self.atomic_ref(z_idx), data.batch, dim=0, dim_size=data.num_graphs)

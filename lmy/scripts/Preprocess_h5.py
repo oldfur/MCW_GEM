@@ -184,14 +184,14 @@ if __name__ == '__main__':
 
     # 2. 配置路径 (根据您的实际情况修改)
     # 原代码中的路径列表
-    file_dirs = [r"../mptrj_xyz/train", r"../mptrj_xyz/test", r"../mptrj_xyz/val"]
-    SAVE_DIR = "../dataset_h5"  # 建议使用新目录
+    file_dirs = [r"../../005_all", r"../../100_all", r"../../outcar_selected_xyz", r"../../xyz_grouped"]
+    SAVE_DIR = "dataset_h5_r7"  # 建议使用新目录
     
     # 3. 核心参数
-    NUM_WORKERS = 8           # 您的原设置
+    NUM_WORKERS = 96           # 您的原设置
     TRAIN_CHUNK_SIZE = 5000    # H5 模式下，5000 是个健康的数字
     TEST_CHUNK_SIZE = 2000
-    CUTOFF = 6.0
+    CUTOFF = 7.0
     test_ratio = 0.05
 
     # 4. 收集文件 & 提取唯一标识 (Unique Names)
@@ -250,5 +250,5 @@ if __name__ == '__main__':
 
     print("\n--- Processing Train Set ---")
     process_manager(train_files, SAVE_DIR, "train", NUM_WORKERS, TRAIN_CHUNK_SIZE, CUTOFF)
- 
+
     print("\n✅ All processing finished.")

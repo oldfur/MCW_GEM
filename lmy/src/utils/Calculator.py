@@ -39,49 +39,44 @@ class HTGP_Calculator(Calculator):
         # -----------------------------------------------------------
         data = self._atoms_to_pyg_data(atoms)
         
-        original_pos = data.pos
-        original_cell = getattr(data, 'cell', None)
-        displacement = None # 初始化为 None，防止报错
-        
-        # 判断是否需要计算应力
-        is_periodic = atoms.pbc.any()
-        calc_stress = 'stress' in properties and is_periodic
-
-        # 开启梯度（这是必须的，否则无法反向传播求 Force）
+        # 开启位置梯度 (用于计算 Force)
         data.pos.requires_grad = True
-
+        is_periodic = atoms.pbc.any()
+        # -----------------------------------------------------------
+        # 2. 虚拟应变构造 (Virtual Strain Construction) - 复刻训练代码
+        # -----------------------------------------------------------
+        # 只有在需要计算 Stress 时才构建计算图，但为了保持和训练一致性，
+        # 建议始终保持这个路径，或者只在 properties 包含 stress 时开启。
+        calc_stress = 'stress' in properties and is_periodic
+        
+        # ASE 每次只算一个结构，所以 num_graphs = 1
+        displacement = torch.zeros((1, 3, 3), dtype=data.pos.dtype, device=self.device)
+        
         if calc_stress:
-            # === 分支 A: 需要算应力 (构建变形图) ===
-            
-            # 构造虚拟应变
-            displacement = torch.zeros((1, 3, 3), dtype=data.pos.dtype, device=self.device)
             displacement.requires_grad = True
-            symmetric_strain = 0.5 * (displacement + displacement.transpose(-1, -2))
-            strain_on_graph = symmetric_strain[0]
             
-            # ⚠️ 关键：坐标变形
-            # 这里 data.pos 被替换为计算图的一个节点（pos + strain）
-            pos_deformed = original_pos + torch.matmul(original_pos, strain_on_graph.T)
-            data.pos = pos_deformed
-            
-            # 晶胞变形 (如果有)
-            if original_cell is not None:
-                cell_deformed = original_cell + torch.matmul(original_cell, symmetric_strain)
-                data.cell = cell_deformed
-                
-            # 记录求导目标：原始坐标 和 应变
-            inputs_to_grad = [original_pos, displacement]
-            
-        else:
-            # === 分支 B: 不需要算应力 (保持纯净) ===
-            
-            # ⚠️ 关键：不进行任何变形操作
-            # data.pos 保持为原始的叶子节点 (Leaf Node)
-            # 求导目标直接就是 data.pos
-            inputs_to_grad = [data.pos]
-            
-            # 显式重置 cell 为原始值（防止被污染），仅用于 volume 计算
-            data.cell = original_cell
+        symmetric_strain = 0.5 * (displacement + displacement.transpose(-1, -2))
+        
+        # --- 应用变形 (Apply Deformation) ---
+        # 训练代码: pos_deformed = batch.pos + torch.einsum('ni,nij->nj', batch.pos, strain_per_atom)
+        # 对应 ASE 单图逻辑: pos @ strain.T
+        # symmetric_strain[0] shape is (3, 3)
+        strain_on_graph = symmetric_strain[0] 
+        
+        # 保存原始用于求导
+        original_pos = data.pos
+        original_cell = data.cell
+        
+        # 坐标变形
+        pos_deformed = original_pos + torch.matmul(original_pos, strain_on_graph.T)
+        
+        # 晶胞变形 (训练代码: cell_deformed = original_cell + bmm(original_cell, symmetric_strain))
+        cell_deformed = original_cell + torch.bmm(original_cell, symmetric_strain)
+        
+        # 将变形后的数据喂给模型
+        data.pos = pos_deformed
+        data.cell = cell_deformed
+        
         # -----------------------------------------------------------
         # 3. 前向传播 (Forward)
         # -----------------------------------------------------------
@@ -129,9 +124,6 @@ class HTGP_Calculator(Calculator):
             
         if self.capture_descriptors:
             self.results['descriptors'] = self._get_descriptors()
-
-        if self.get_charges:
-            self.results['charges'] = self._get_charges()
 
     def _get_weights(self):
         """
@@ -193,30 +185,6 @@ class HTGP_Calculator(Calculator):
         return descriptors_numpy
 
 
-    def _get_charges(self):
-        """
-        从模型中提取每一层的原子特征 (h0, h1, h2)。
-        你的模型代码里已经把它们存到了 self.model.all_layer_descriptors 列表里。
-        """
-        if not hasattr(self.model, 'all_layer_descriptors'):
-            return None
-            
-        descriptors_numpy = []
-        
-        # 遍历模型保存的特征列表
-        for layer_feats in self.model.all_layer_descriptors:
-            layer_dict = {}
-            for key, val in layer_feats.items():
-                # 模型里已经做了 .detach().cpu()，这里只需要转 numpy
-                if val is not None:
-                    layer_dict[key] = val.numpy()
-                else:
-                    layer_dict[key] = None
-            descriptors_numpy.append(layer_dict)
-            
-        return descriptors_numpy
-
-
     def _atoms_to_pyg_data(self, atoms):
         """
         转换函数 (保持不变，除了不用压缩数据类型)
@@ -226,17 +194,9 @@ class HTGP_Calculator(Calculator):
         
         # ASE get_cell returns [a, b, c], shape (3,3)
         # Model expects (1, 3, 3)
-        if atoms.pbc.any():
-            cell_np = atoms.get_cell().array
-            # 再次检查体积，防止 pbc=True 但 cell 是 0 的极端情况
-            if np.abs(np.linalg.det(cell_np)) > 1e-6:
-                cell = torch.from_numpy(cell_np).to(torch.float32).unsqueeze(0).to(self.device)
-            else:
-                cell = None
-        else:
-            # 单分子/非周期体系，强制设为 None
-            cell = None
-
+        cell_np = atoms.get_cell().array
+        cell = torch.from_numpy(cell_np).to(torch.float32).unsqueeze(0).to(self.device)
+        
         # Neighbor List
         i_idx, j_idx, _, S_integers = neighbor_list('ijdS', atoms, self.cutoff)
         

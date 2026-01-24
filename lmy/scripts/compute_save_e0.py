@@ -15,17 +15,16 @@ def main():
     # 1. 配置参数
     # ==========================================
     # 你的数据文件夹
-    # 只针对训练集计算 E0
-    file_dirs = ["../mptrj_xyz/train"]
+    file_dirs = [r"005_all", r"100_all", r"outcar_selected_xyz", r"xyz_grouped"]
     
     # 结果保存位置
-    SAVE_DIR = "../dataset_h5" # 请确保和你的训练脚本一致
+    SAVE_DIR = "/var/lib/kubelet/MUYU_data" # 请确保和你的训练脚本一致
     SAVE_NAME = "meta_data.pt"
     
     CUTOFF = 6.0
     
     # 🎯 只需要收集 3000 ~ 5000 个样本就足够精确了
-    TARGET_SAMPLE_COUNT = 5000 
+    TARGET_SAMPLE_COUNT = 30000 
 
     # ==========================================
     # 2. 搜集并打乱文件
