@@ -14,6 +14,7 @@ import random
 from mp20.crystal import smact_validity
 from collections import Counter
 import itertools
+from guidance.symmetry_guidance import symmetry_guidance_gradient
 
 def composition_from_elem_idx(elem_idx, node_mask):
     """
@@ -1767,6 +1768,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
+        # --- begin of for T steps
             if torch.isnan(z).any():
                 print("NaN detected in z during sampling at step", i)
 
@@ -1805,10 +1807,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
                 zx = torch.remainder(zx, 1.0) # mod 1
 
-
             # =======================================================
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
+            
             # 一次 SDE 反向步
             z = self.reverse_sde_step(
                 x=zx,
@@ -1823,11 +1825,45 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             )
 
             # =======================================================
+            # Symmetry guidance
+            # =======================================================
+            
+            # 示例：简单的反演对称性
+            # 临时设置参数，后续放入 args 中
+            lambda_sym = 0.1  # 对称性引导强度系数
+            current_space_group_ops = [
+                {
+                    "R": -torch.eye(3),
+                    "t": torch.zeros(3),
+                },
+                {
+                    "R": torch.eye(3),
+                    "t": torch.zeros(3),
+                }
+            ]
+#########################################################
+            x_t = zx
+            x_prev_standard = z[:, :, :3] 
+            # 计算对称性引导梯度
+            # 注意：x_t 需要开启梯度追踪
+            with torch.enable_grad():
+                x_in = x_t.detach().requires_grad_(True)
+                sym_grad = symmetry_guidance_gradient(x_in, cell, current_space_group_ops, 
+                                                      scale=5.0, num_ops_sample=1, bidirectional=True)
+            # 修正去噪方向 (梯度下降，让 Loss 变小)
+            x_prev_guided = x_prev_standard - lambda_sym * sym_grad
+            z[:, :, :3] = x_prev_guided
+
+            if i == 0:
+                print("Applied symmetry guidance success!")
+
+            # =======================================================
             # Repulsion correction
             # =======================================================
+            
             # 在 t 很小时加入 ZBL 排斥力
             if i >= self.T - self.prediction_threshold_t:
-                # # ZBL-based relaxation step
+                # ZBL-based relaxation step
                 # zx = self.zbl_relax_step(
                 #     z, rl, ra,
                 #     node_mask=node_mask,
@@ -1845,7 +1881,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                         alpha=0.5
                 )
                 z[:, :, :3] = zx
-
+        # --- end of for T steps
 
         print('Sampling finished.')
 
