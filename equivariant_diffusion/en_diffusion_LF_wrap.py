@@ -668,7 +668,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 min_coverage=5.0,
                 require_gt1=True,
                 max_offset_integer=3,
-                device=device,
             )
             
         self.freeze_gradient = freeze_gradient
@@ -780,7 +779,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         min_coverage: float = 1.0,
         require_gt1: bool = True,
         max_offset_integer: int = 3,
-        device: torch.device = None,
     ):
         """
         Check whether sigma_max (sigma at t=1) is too small for VE-SDE sampling.
@@ -809,9 +807,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             max_offset_integer used in wrapped_normal_score_batch.
             Ensures sigma_max is large enough to mix across periodic images.
         """
-
-        zeros = torch.zeros((1, 1), device=device)
-        ones  = torch.ones((1, 1), device=device)
+        device = self.gamma.gamma.device
+        ones  = torch.ones((1,1), device=device)
+        # zeros = torch.zeros((1,1), device=device)
 
         # sigma(t=1)
         gamma_1 = self.gamma(ones)
