@@ -434,6 +434,8 @@ if __name__ == '__main__':
     parser.add_argument("--sample_steps", type=int, default=1000, help="bfn sample steps")
     parser.add_argument("--use_get", type=int, default=0, help="use GET network for bond prediction")
     parser.add_argument("--bond_pred", type=int, default=0, help="bond prediction")
+    # sde type
+    parser.add_argument("--sde_type", type=str, default="ve", help="type of sde")
     # bfn str
     parser.add_argument("--bfn_str", type=int, default=0, help="using str schedule in the bfn")
     parser.add_argument("--str_loss_type", type=str, default="denoise_loss", help="loss type for the str schedule")
@@ -445,6 +447,7 @@ if __name__ == '__main__':
     parser.add_argument("--lambda_l", type=float, default=1.0, help="the loss weight of lattice lengths")
     parser.add_argument("--lambda_a", type=float, default=1.0, help="the loss weight of lattice angles")
     parser.add_argument("--lambda_type", type=float, default=0.1, help="the loss weight of atom type prediction")
+    parser.add_argument("--lambda_rep", type=float, default=0.0, help="the loss weight of repulsion term")
 
     parser.add_argument("--visulaize_epoch", type=int, default=60, help="visualize after this epoch")   
     # visulaize_epoch之后打印所需的实验信息
@@ -462,6 +465,9 @@ if __name__ == '__main__':
     parser.add_argument("--sample_realistic_LA", type=int, default=0, help="whether sample realistic lattice lengths and angles")
     parser.add_argument("--adjust_atom_type", type=int, default=0, help="adjust atom type according to the positions")
     parser.add_argument("--lambda_type_adjust", type=float, default=0, help="the weight for adjusting atom type")
+    # the strength of symmetry gradient for sampling
+    parser.add_argument("--lambda_sym", type=float, default=0.0, help="the weight of symmetry term for guidance sampling")
+    
     parser = setup_shared_args(parser)
     args = parser.parse_args()
     

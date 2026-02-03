@@ -246,3 +246,19 @@ CUDA_VISIBLE_DEVICES=0 nohup python -u main_LF_sample.py --device cuda --dp True
 CUDA_VISIBLE_DEVICES=2 python -u main_LF_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.001 --n_corrector_steps 1 --sample_seed 2000 --num_rounds 4 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ./outputs/train_LF_mp20/diffusion_LF_wrap/generative_model_ema_epoch120.npy --save_dir ./outputs/1203_sample_128_2
 ```
 若使用真实lattice,加上：--sample_realistic_LA 1 --batch_size 32
+
+
+
+### 指定 SDE 为 VE-SDE
+```
+python main_LF_train.py --device cpu --no-cuda --exp_name debug_LF_mp20 --n_epochs 2 --batch_size 2  --sample_batch_size 2 --test_epochs 1 --visulaize_epoch 1 --num_rounds 2 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --include_charges False --visualize_every_batch 20000 --num_train 20  --num_val 20 --num_test 20 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 0 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --sde_type ve
+```
+
+- 若使用原版，改为: --sde_type vp
+
+### 目前表现最好的模型
+```
+CUDA_VISIBLE_DEVICES=5 python -u main_LF_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 0 --sample_seed 202 --num_rounds 32 --include_charges False --compute_novelty 1 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ./outputs/train_LF_mp20/diffusion_LF_wrap_1213_best/generative_model_ema_epoch70.npy --save_dir ./outputs/1221_sample_1024
+```
+
+

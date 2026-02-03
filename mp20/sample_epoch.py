@@ -199,7 +199,7 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                 fix_noise=fix_noise, condition_generate_x=evaluate_condition_generation, 
                 annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
                 num_rounds=args.num_rounds, seed_base=args.sample_seed,
-                rl=rl, ra=ra, sample_realistic_LA=True
+                rl=rl, ra=ra, sample_realistic_LA=True, lambda_sym=args.lambda_sym
             )
         else:
             samples = generative_model.sample(
@@ -207,7 +207,8 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                 node_mask, edge_mask, context, fix_noise=fix_noise, 
                 condition_generate_x=evaluate_condition_generation, 
                 annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
-                num_rounds=args.num_rounds, seed_base=args.sample_seed, sample_realistic_LA=False)
+                num_rounds=args.num_rounds, seed_base=args.sample_seed, 
+                sample_realistic_LA=False, lambda_sym=args.lambda_sym)
             
         frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds * B
 

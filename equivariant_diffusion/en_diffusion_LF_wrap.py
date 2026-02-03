@@ -411,7 +411,23 @@ class SinusoidalPosEmb(torch.nn.Module):
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
-    
+
+
+def ve_loglinear_gamma_schedule(timesteps: int, sigma_min: float, sigma_max: float):
+    """
+    VE-native schedule:
+        sigma(t) = sigma_min * (sigma_max/sigma_min)^t
+        gamma(t) = log sigma(t)^2
+    returns:
+        gamma: numpy array of shape [T+1]
+    """
+    assert sigma_min > 0 and sigma_max > 0 and sigma_max > sigma_min
+    T = timesteps
+    t = np.linspace(0.0, 1.0, T + 1, dtype=np.float64)  # [T+1]
+    sigma = sigma_min * (sigma_max / sigma_min) ** t
+    gamma = 2.0 * np.log(sigma)  # log(sigma^2)
+    return gamma.astype(np.float32)
+
 
 class PredefinedNoiseSchedule(torch.nn.Module):
     """
@@ -453,6 +469,59 @@ class PredefinedNoiseSchedule(torch.nn.Module):
     def forward(self, t):
         t_int = torch.round(t * self.timesteps).long()
         return self.gamma[t_int]
+    
+
+class PredefinedNoiseSchedule_ve(torch.nn.Module):
+    """
+    VE-native predefined schedule:
+        gamma(t) = log sigma(t)^2   (NOT log(sigmas^2/alphas^2))
+    """
+    def __init__(
+        self,
+        noise_schedule: str,
+        timesteps: int,
+        sigma_min: float = 1e-2,
+        sigma_max: float = 20.0,
+        print_info: bool = True,
+    ):
+        super().__init__()
+        self.timesteps = int(timesteps)
+
+        if noise_schedule in ["ve_loglinear", "ve", "ve_native"]:
+            gamma = ve_loglinear_gamma_schedule(self.timesteps, sigma_min, sigma_max)  # [T+1]
+        else:
+            raise ValueError(f"Unknown VE-native noise_schedule: {noise_schedule}")
+
+        # store as buffer (not a Parameter)
+        self.register_buffer("gamma", torch.from_numpy(gamma).float())  # [T+1]
+
+        if print_info:
+            with np.printoptions(threshold=10, edgeitems=6):
+                print("VE-native noise schedule:")
+                print("gamma(head/tail):", gamma)
+            # quick sanity: sigma range
+            sigma0 = float(np.exp(0.5 * gamma[0]))
+            sigma1 = float(np.exp(0.5 * gamma[-1]))
+            print(f"sigma(t=0)={sigma0:.6g}, sigma(t=1)={sigma1:.6g}")
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Continuous lookup with linear interpolation.
+        t: [B,1] (or any shape) in [0,1]
+        returns gamma(t): same shape as t
+        """
+        t = t.clamp(0.0, 1.0)
+        T = self.timesteps
+        # table length is T+1, valid indices [0..T]
+        u = t * T  # map [0,1] -> [0,T]
+        i0 = torch.floor(u).long()
+        i0 = torch.clamp(i0, 0, T - 1)    # so i1 won't exceed T
+        i1 = i0 + 1                       # max T
+        w = (u - i0.float()).clamp(0.0, 1.0)
+
+        g0 = self.gamma[i0]
+        g1 = self.gamma[i1]
+        return g0 + (g1 - g0) * w
 
 
 class GammaNetwork(torch.nn.Module):
@@ -526,7 +595,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             temp_index = 0, optimal_sampling = 0,
             len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10, 
             lambda_type=1, lambda_rep=1, cutoff=0.5, adjust_atom_type=False,
-            lambda_type_adjust=1,
+            lambda_type_adjust=1, sde_type="ve",
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -539,7 +608,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.second_dynamics = second_dynamics
         self.sampling_threshold_t = sampling_threshold_t
         
-        
+        # sde type
+        self.sde_type = sde_type
+        print("SDE type: ", sde_type)
+
         # bfn schedule
         self.bfn_schedule = bfn_schedule
 
@@ -558,16 +630,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         if noise_schedule == 'learned':
             self.gamma = GammaNetwork()
-            self.gamma_lengths = GammaNetwork()
-            self.gamma_angles = GammaNetwork()
         else:
-            self.gamma = PredefinedNoiseSchedule(noise_schedule, timesteps=timesteps,
-                                                 precision=noise_precision)
-            self.gamma_lengths = PredefinedNoiseSchedule(noise_schedule, timesteps=timesteps,
-                                                 precision=noise_precision, print_info=False)
-            self.gamma_angles = PredefinedNoiseSchedule(noise_schedule, timesteps=timesteps,
-                                                 precision=noise_precision, print_info=False)
-            print("Using predefined noise schedule for gamma, l and a is same as x.")
+            if self.sde_type == "ve":
+                self.gamma = PredefinedNoiseSchedule_ve(noise_schedule="ve_loglinear", timesteps=timesteps)
+                print("Using VE-native predefined noise schedule for gamma.")
+            else: # "vp"
+                self.gamma = PredefinedNoiseSchedule(noise_schedule, timesteps=timesteps,
+                                                    precision=noise_precision)
+                print("Using predefined (VP-SDE) noise schedule for gamma.")
 
         # The network that will predict the denoising.
         self.dynamics = dynamics
@@ -591,8 +661,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         else:
             self.mask_indicator = None
 
-        if noise_schedule != 'learned':
-            self.check_issues_norm_values()
+        if noise_schedule != 'learned' and self.sde_type == "ve":
+            # self.check_issues_norm_values()
+            self.check_sigma_max_too_small(
+                num_stdevs=8,
+                min_coverage=5.0,
+                require_gt1=True,
+                max_offset_integer=3,
+                device=device,
+            )
             
         self.freeze_gradient = freeze_gradient
         
@@ -647,9 +724,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.lambda_type_adjust = lambda_type_adjust
 
         print("use lambda_type: ", lambda_type)
-        print("use lambda_type_adjust: ", lambda_type_adjust)
         print("use lambda_rep: ", lambda_rep)
         print("cutoff for repulsion loss: ", cutoff)
+        print("use lambda_type_adjust: ", lambda_type_adjust)
         print("adjust atom type during diffusion: ", adjust_atom_type)
 
         print(f"{self.__class__.__name__} initialized.")
@@ -696,6 +773,85 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 f'Value for normalization value {max_norm_value} probably too '
                 f'large with sigma_0 {sigma_0:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
+    
+    def check_sigma_max_too_small(
+        self,
+        num_stdevs: int = 8,
+        min_coverage: float = 1.0,
+        require_gt1: bool = True,
+        max_offset_integer: int = 3,
+        device: torch.device = None,
+    ):
+        """
+        Check whether sigma_max (sigma at t=1) is too small for VE-SDE sampling.
+
+        This function is intended for VE-native schedules where:
+            gamma(t) = log sigma(t)^2
+            sigma(t) = exp(0.5 * gamma(t))
+
+        Parameters
+        ----------
+        num_stdevs : int
+            How many standard deviations define "effective coverage".
+            Typical values: 6~10 (default: 8).
+
+        min_coverage : float
+            Required minimum coverage relative to normalized unit length (1.0).
+            Condition:
+                sigma_max * num_stdevs >= min_coverage
+            - 1.0  : barely covers one unit interval
+            - 5.0+ : strong exploration / flat prior
+
+        require_gt1 : bool
+            If True, also require sigma_max > 1.0 (coarse but very useful VE sanity check).
+
+        max_offset_integer : int
+            max_offset_integer used in wrapped_normal_score_batch.
+            Ensures sigma_max is large enough to mix across periodic images.
+        """
+
+        zeros = torch.zeros((1, 1), device=device)
+        ones  = torch.ones((1, 1), device=device)
+
+        # sigma(t=1)
+        gamma_1 = self.gamma(ones)
+        sigma_1 = self.sigma(gamma_1, target_tensor=ones).item()
+
+        # -------------------------
+        # (A) Coverage check
+        # -------------------------
+        if sigma_1 * num_stdevs < min_coverage:
+            raise ValueError(
+                f'sigma_max too small: sigma(t=1)={sigma_1:.5g}. '
+                f'sigma_max * num_stdevs = {sigma_1 * num_stdevs:.5g} '
+                f'< min_coverage={min_coverage}. '
+                f'Increase sigma_max in VE schedule.'
+            )
+
+        # -------------------------
+        # (B) Simple VE sanity
+        # -------------------------
+        if require_gt1 and sigma_1 <= 1.0:
+            raise ValueError(
+                f'sigma_max too small for VE sampling: sigma(t=1)={sigma_1:.5g} <= 1. '
+                f'For VE-native crystal generation, sigma_max is typically > 1 '
+                f'(often 10–50).'
+            )
+
+        # -------------------------
+        # (C) Periodic mixing heuristic
+        # -------------------------
+        # Weak condition: sigma_max should not be far smaller than the wrapping scale
+        # implied by the number of periodic offsets.
+        sigma_mix_min = 1.0 / (2.0 * max_offset_integer)
+        if sigma_1 < sigma_mix_min:
+            raise ValueError(
+                f'sigma_max too small for periodic mixing: '
+                f'sigma(t=1)={sigma_1:.5g} < {sigma_mix_min:.5g} '
+                f'(max_offset_integer={max_offset_integer}). '
+                f'Increase sigma_max or max_offset_integer.'
+            )
+
 
     def phi(self, zxh, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None, adjust_type=False):
         """score funtion predict network"""   
@@ -750,17 +906,72 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         target_shape = (array.size(0),) + (1,) * (len(target.size()) - 1)
         return array.view(target_shape)
 
+    # def sigma(self, gamma, target_tensor):
+    #     """Computes sigma given gamma."""
+    #     return self.inflate_batch_array(torch.sqrt(torch.sigmoid(gamma)), target_tensor)
+    
     def sigma(self, gamma, target_tensor):
-        """Computes sigma given gamma."""
-        return self.inflate_batch_array(torch.sqrt(torch.sigmoid(gamma)), target_tensor)
+        """
+        Computes sigma given gamma.
 
+        VP mode (legacy VDM):
+            gamma = log(sigma_vp^2 / alpha_vp^2)
+            sigma_vp^2 = sigmoid(gamma)
+            sigma_vp   = sqrt(sigmoid(gamma))
+
+        VE mode (VE-native):
+            gamma = log(sigma_ve^2)
+            sigma_ve = exp(0.5 * gamma)
+        """
+        if self.sde_type == "ve":
+            sigma = torch.exp(0.5 * torch.clamp(gamma, -30.0, 30.0))
+            return self.inflate_batch_array(sigma, target_tensor)
+        else:
+            return self.inflate_batch_array(torch.sqrt(torch.sigmoid(gamma)), target_tensor)
+
+
+    # def alpha(self, gamma, target_tensor):
+    #     """Computes alpha given gamma."""
+    #     return self.inflate_batch_array(torch.sqrt(torch.sigmoid(-gamma)), target_tensor)
+    
     def alpha(self, gamma, target_tensor):
-        """Computes alpha given gamma."""
-        return self.inflate_batch_array(torch.sqrt(torch.sigmoid(-gamma)), target_tensor)
+        """
+        Computes alpha given gamma.
 
+        VP mode:
+            alpha_vp^2 = sigmoid(-gamma)
+            alpha_vp   = sqrt(sigmoid(-gamma))
+
+        VE mode:
+            VE has no alpha (no shrink). For compatibility, return 1.
+        """
+        if self.sde_type == "ve":
+            ones = torch.ones_like(gamma)
+            return self.inflate_batch_array(ones, target_tensor)
+        else:
+            return self.inflate_batch_array(torch.sqrt(torch.sigmoid(-gamma)), target_tensor)
+
+    # def SNR(self, gamma):
+    #     """Computes signal to noise ratio (alpha^2/sigma^2) given gamma."""
+    #     return torch.exp(-gamma)
+    
     def SNR(self, gamma):
-        """Computes signal to noise ratio (alpha^2/sigma^2) given gamma."""
-        return torch.exp(-gamma)
+        """
+        Computes signal-to-noise ratio.
+
+        VP mode:
+            SNR = alpha^2 / sigma^2 = exp(-gamma)
+
+        VE mode:
+            There is no alpha. If you still want a monotonically decreasing proxy:
+                SNR_proxy = 1 / sigma_ve^2 = exp(-gamma)
+            which is consistent if gamma = log(sigma_ve^2).
+        """
+        if self.sde_type == "ve":
+            # proxy SNR: 1 / sigma^2
+            return torch.exp(-torch.clamp(gamma, -30.0, 30.0))
+        else:
+            return torch.exp(-gamma)
 
     def subspace_dimensionality(self, node_mask):
         """Compute the dimensionality on translation-invariant linear subspace where distributions on x are defined."""
@@ -876,7 +1087,54 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             print("mu: ", mu.shape)
         return mu + sigma * eps
     
+    def _gamma_table(self):
+        return self.gamma.gamma  # PredefinedNoiseSchedule's tensor [T_sched]
 
+    def interp_gamma(self, t01: torch.Tensor) -> torch.Tensor:
+        """t01: [B,1] in [0,1] -> gamma: [B,1] via linear interpolation."""
+        tab = self._gamma_table()
+        T_sched = int(tab.shape[0])
+
+        t01 = t01.clamp(0.0, 1.0)
+        u = t01 * (T_sched - 1)
+        i0 = torch.floor(u).long()
+        i1 = torch.clamp(i0 + 1, max=T_sched - 1)
+        w = (u - i0.float()).clamp(0.0, 1.0)
+
+        i0f = i0.view(-1)
+        i1f = i1.view(-1)
+        g0 = tab[i0f].view_as(t01)
+        g1 = tab[i1f].view_as(t01)
+        return g0 + (g1 - g0) * w
+
+    def sigma_ve(self, t01: torch.Tensor, target_tensor: torch.Tensor) -> torch.Tensor:
+        """return sigma_ve(t) inflated to [B,1,1] for broadcasting with x."""
+        gamma_t = self.interp_gamma(t01)
+        gamma_t = torch.clamp(gamma_t, -30.0, 30.0)
+        sigma = torch.exp(0.5 * gamma_t)  # [B,1]
+        return self.inflate_batch_array(sigma, target_tensor)  # [B,1,1]
+
+    def g2_ve(self, t01: torch.Tensor, x: torch.Tensor, eps: float = None) -> torch.Tensor:
+        """return g(t)^2 = d/dt sigma^2(t), inflated to [B,1,1]."""
+        tab = self._gamma_table()
+        T_sched = int(tab.shape[0])
+        if eps is None:
+            eps = 1.0 / (T_sched - 1)
+
+        t_plus  = (t01 + eps).clamp(0.0, 1.0)
+        t_minus = (t01 - eps).clamp(0.0, 1.0)
+
+        gp = torch.clamp(self.interp_gamma(t_plus),  -30.0, 30.0)
+        gm = torch.clamp(self.interp_gamma(t_minus), -30.0, 30.0)
+
+        sigma2_p = torch.exp(gp)
+        sigma2_m = torch.exp(gm)
+
+        dsigma2_dt = (sigma2_p - sigma2_m) / (t_plus - t_minus + 1e-12)
+        g2 = torch.clamp(dsigma2_dt, min=1e-20)
+        return self.inflate_batch_array(g2, x)  # [B,1,1]
+
+    
     def forward(self, *args, **kwargs):
         """
         Computes the loss (type l2 or NLL) if training. And if eval then always computes NLL.
@@ -899,8 +1157,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         frac_pos, h, _ = self.normalize_frac_pos_with_h(frac_pos, h, node_mask)
         lengths, angles, _, _ = self.normalize_lengths_angles(lengths, angles)
         
-        loss, loss_dict = self.compute_loss_score(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False,
-                                                  property_label=property_label)
+        if self.sde_type == "ve":
+            loss, loss_dict = self.compute_loss_score_ve(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False,
+                                                      property_label=property_label)
+        else: # "vp"
+            loss, loss_dict = self.compute_loss_score(frac_pos, h, lengths, angles, node_mask, edge_mask, context, t0_always=False,
+                                                      property_label=property_label)
 
         return loss, loss_dict
     
@@ -951,7 +1213,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         dt = self.inflate_batch_array(s-t, x)  # [B, 1, 1], for repulsion loss, negative
 
         # Compute gamma_s and gamma_t
-        gamma_s = self.inflate_batch_array(self.gamma(s), x)
+        # gamma_s = self.inflate_batch_array(self.gamma(s), x)
         gamma_t = self.inflate_batch_array(self.gamma(t), x)
 
         # Compute alpha_t and sigma_t
@@ -1038,28 +1300,154 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 3) additional adjustment for atom type prediction during diffusion
         if self.adjust_atom_type:
             print("adjust atom type failed to be used currently.")
-            # # additional adjustment for atom type prediction
-            # zs_phi = torch.cat([zx_s, h_pred], dim=2)
-            # net_out_adjust = self.phi(zs_phi, t, node_mask, edge_mask, context, rl=lengths, ra=angles, adjust_type=True)
-            # h_pred_adjust = net_out_adjust[:, :, 3:]          # [B,N,C]
-            # ce_loss_adjust = torch.nn.CrossEntropyLoss(reduction='none')
-            # atom_type_loss_adjust = ce_loss_adjust(
-            #     h_pred_adjust.reshape(-1, h_pred_adjust.size(-1)), # logits, [B*N, C]
-            #     h_true_idx.reshape(-1) # targets, [B*N]
-            # )
-            # atom_type_loss_adjust = atom_type_loss_adjust.reshape(batch_size, -1)  # [B, N]
-            # atom_type_loss_adjust = atom_type_loss_adjust * node_mask.squeeze(-1)
-            # atom_type_loss_adjust = atom_type_loss_adjust.sum(dim=1) / node_mask.squeeze(-1).sum(dim=1).clamp(min=1)
-            # # mask the loss term with t > prediction_threshold_t
-            # pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
-            # pred_loss_mask = pred_loss_mask.squeeze(1)
-            # atom_type_loss_adjust = self.lambda_type_adjust * (atom_type_loss_adjust * pred_loss_mask)
-            # loss_dict["atom_type_loss_adjust"] = atom_type_loss_adjust
-            # loss += atom_type_loss_adjust
 
         return loss, loss_dict
     
 
+    def compute_loss_score_ve(self, x, h, lengths, angles, node_mask, edge_mask,
+                       context, t0_always, time_upperbond=-1, property_label=None):
+        batch_size = x.size(0)
+        device = x.device
+
+        # compute atomic counts per structure
+        N = node_mask.squeeze(-1).sum(-1)  # [B]
+        volume = lattice_volume(lengths, angles)  # [B]
+        scale = (volume / (N + 1e-8)).pow(2/3)
+
+        # whether to include loss term 0 always.
+        lowest_t = 1 if t0_always else 0
+
+        # sample t_int: [B,1] in {lowest_t,...,T}
+        t_int = torch.randint(lowest_t, self.T + 1, size=(batch_size, 1), device=device).float()
+        if time_upperbond >= 0:
+            t_int = torch.ones_like(t_int) * time_upperbond
+
+        if self.half_noisy_node:
+            half_batch_size = batch_size // 2
+            t_int[half_batch_size:, :] = torch.randint(
+                lowest_t, self.prediction_threshold_t + 1,
+                size=(batch_size - half_batch_size, 1), device=device
+            ).float()
+            t_int[:half_batch_size, :] = torch.randint(
+                lowest_t, self.T + 1,
+                size=(half_batch_size, 1), device=device
+            ).float()
+
+        if self.sep_noisy_node:
+            half_batch_size = batch_size // 2
+            t_int[half_batch_size:, :] = torch.randint(
+                lowest_t, self.prediction_threshold_t + 1,
+                size=(batch_size - half_batch_size, 1), device=device
+            ).float()
+            t_int[:half_batch_size, :] = torch.randint(
+                self.prediction_threshold_t + 1, self.T + 1,
+                size=(half_batch_size, 1), device=device
+            ).float()
+
+        # normalize t to [0,1]
+        s_int = t_int - 1 
+        t = t_int / self.T  # [B,1]
+        s = s_int / self.T
+        dt = self.inflate_batch_array(s-t, x)  # [B, 1, 1], for repulsion loss, negative
+
+        # ---- VE sigma(t) ----
+        sigma_t = self.sigma_ve(t, x)  # [B,1,1]
+
+        # sample eps in position space
+        eps = self.sample_combined_position_feature_noise(
+            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask
+        )  # [B,N,3]
+
+        # ---- VE perturbation: z = x + sigma eps ----
+        z_pos = x + sigma_t * eps
+        z_pos = wrap_at_boundary(z_pos, wrapping_boundary=1.0)
+
+        # ---- VE target score on torus: score wrt z_pos, mean=x, var=sigma^2 ----
+        mean_t = x  # [B,N,3]
+        variance_t = sigma_t.pow(2).expand(-1, x.shape[1], -1)  # [B,N,1]
+        variance_t = torch.clamp(variance_t, min=1e-12)         # stability for small sigma
+
+        wrapped_score = self.wrapped_normal_score_batch(
+            z_pos, mean_t, variance_t, node_mask,
+            wrapping_boundary=1.0, max_offset_integer=3
+        )  # [B,N,3]
+
+        # keep your stabilization: predict sigma * score
+        target = wrapped_score * sigma_t  # [B,N,3]
+
+        # build network input exactly like before
+        fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
+        z_t = torch.cat([z_pos, fix_h], dim=2)
+
+        net_out = self.phi(z_t, t, node_mask, edge_mask, context, rl=lengths, ra=angles)
+        pred = net_out[:, :, :self.n_dims]  # [B,N,3]  ~ sigma*score
+
+        # l2 loss per atom
+        delta = (target - pred) * node_mask
+        denom = node_mask.squeeze(-1).sum(-1) * 3  # [B]
+        score_loss = sum_except_batch(delta.square()) / denom
+        score_loss = score_loss * scale
+
+        loss = score_loss  # no KL prior term here (same as your current)
+        assert len(loss.shape) == 1
+
+        # logging: estimate avg |score error| magnitude (rough)
+        sigma_scalar = torch.clamp(sigma_t.view(batch_size, -1).mean(dim=1), min=1e-12)
+        x_error = (score_loss / sigma_scalar)
+
+        loss_dict = {
+            't': t_int.squeeze(),
+            'loss': loss.squeeze(),
+            'x_error': x_error.squeeze(),
+        }
+
+        # ---------------------------------------------------------------------------------
+        # predict physical properties below certain t
+        # ---------------------------------------------------------------------------------
+
+        # 1) calculate the loss for repulsion term
+        h_pred = net_out[:, :, 3:]          # [B,N,C]
+        score_pred = pred / (sigma_t + 1e-8)  # [B,N,3], unscaled score prediction
+        len_scale = (volume / (N + 1e-8)).pow(1/3).view(batch_size,1,1)  # [B,1,1]
+        zx_s = self.reverse_sde_step_given_pred_training(
+            z_t[:, :, :3], t, dt, node_mask, score_pred, len_scale
+        )
+        L = self.compute_lattice_matrix(
+            *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
+        repulsion_loss = self.zbl_repulsion_loss(
+            zx_s, L, h_pred, node_mask, t_int,
+            prediction_threshold_t=self.prediction_threshold_t, min_dist=1.5)
+        repulsion_loss = self.lambda_rep * repulsion_loss
+        loss_dict["repulsion_loss"] = repulsion_loss
+        loss += repulsion_loss
+
+        # 2) calculate the loss for atom type
+        h_true = torch.cat([h['categorical'], h['integer']], 
+                            dim=2).clone().detach().requires_grad_(True).to(torch.float32).to(x.device)
+        h_true_idx = h_true.argmax(dim=2)   # [B,N]
+        # cross_entropy loss, purely for atom type prediction
+        ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
+        atom_type_loss = ce_loss(
+            h_pred.reshape(-1, h_pred.size(-1)), # logits, [B*N, C]
+            h_true_idx.reshape(-1) # targets, [B*N]
+        )
+        atom_type_loss = atom_type_loss.reshape(batch_size, -1)  # [B, N]
+        atom_type_loss = atom_type_loss * node_mask.squeeze(-1)
+        atom_type_loss = atom_type_loss.sum(dim=1) / node_mask.squeeze(-1).sum(dim=1).clamp(min=1)
+        # mask the loss term with t > prediction_threshold_t
+        pred_loss_mask = (t_int <= self.prediction_threshold_t).float()
+        pred_loss_mask = pred_loss_mask.squeeze(1)
+        atom_type_loss = self.lambda_type * (atom_type_loss * pred_loss_mask)
+        loss_dict["atom_type_loss"] = atom_type_loss
+        loss += atom_type_loss
+
+        # 3) additional adjustment for atom type prediction during diffusion
+        if self.adjust_atom_type:
+            print("adjust atom type failed to be used currently.")
+
+        return loss, loss_dict
+
+    
     def compute_lattice_matrix(self, lengths, angles):
         """
         lengths: [B, 3] -> a, b, c
@@ -1348,7 +1736,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1,
-               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False):
+               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False, lambda_sym=0.1):
         """Samples from the model using score function."""    
         results = []
 
@@ -1367,7 +1755,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 x, h = self.sample_score_sde_Lattice(
                     rl, ra, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
-                    annel_l, pesudo_context, n_corrector_steps
+                    annel_l, pesudo_context, n_corrector_steps, lambda_sym=lambda_sym
                 )
             else:
                 # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
@@ -1376,7 +1764,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
                     annel_l, pesudo_context,
-                    n_corrector_steps
+                    n_corrector_steps, lambda_sym=lambda_sym
                 )
 
             results.append((x, h, rl, ra, node_mask.clone()))
@@ -1587,7 +1975,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         node_mask,
         edge_mask,
         context,
-        model_out_is_eps=False,
         len_scale=None,
     ):  
         B, N, D = x.shape
@@ -1698,13 +2085,67 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         return zx
     
+    # VE-SDE
+    def f_and_g_ve(self, x, t_tensor):
+        """
+        VE-SDE:
+            dx = g(t) dW
+        return f=[B,N,3]=0, g=[B,1,1]
+        """
+        g2 = self.g2_ve(t_tensor, x)  # [B,1,1]
+        f = torch.zeros_like(x)
+        g = torch.sqrt(torch.clamp(g2, min=1e-20))
+        return f, g
+    
+    @torch.no_grad()
+    def reverse_sde_step_ve(
+        self,
+        x,         # [B,N,3]
+        t,         # scalar float
+        dt,        # negative float
+        rl, ra,
+        node_mask,
+        edge_mask,
+        context,
+        len_scale=None,
+    ):
+        B, N, D = x.shape
+        device = x.device
+        t_tensor = torch.full((B, 1), fill_value=float(t), device=device)
+
+        # sigma(t) for unscaling network output
+        sigma_t = self.sigma_ve(t_tensor, x)  # [B,1,1]
+
+        net_out = self.phi(x, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+        pred_scaled_score = net_out[:, :, :3]                # ≈ sigma * score
+        score = pred_scaled_score / torch.clamp(sigma_t, 1e-12)
+
+        if len_scale is not None:
+            score = score / len_scale
+
+        f, g = self.f_and_g(x, t_tensor)
+
+        noise = torch.randn_like(x) * node_mask
+        dt_abs = -dt if dt < 0 else dt  # should be positive
+
+        # reverse VE update
+        drift = (f - (g * g) * score) * node_mask
+        x_next = x + drift * dt + g * (dt_abs ** 0.5) * noise
+
+        x_next = torch.remainder(x_next, 1.0)
+        z = torch.cat([x_next, net_out[:, :, 3:]], dim=2)
+        return z
+
+    
     @torch.no_grad()
     def sample_score_sde(
         self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01
-    ):
-        print('Sampling cell length/angles ...')
+        n_corrector_steps=1, snr=0.01, lambda_sym=0.1
+    ):  
+        # =======================================================
+        # Sampling cell length/angles
+        # =======================================================
 
         # rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
         # rl = torch.abs(rl).to(node_mask.device)
@@ -1738,7 +2179,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             rl = rl.clamp(min=1.0)
             ra = ra.clamp(min=30.0, max=150.0)
         
-        print('sample lengths and angles done.')
+        # =======================================================
+        # Sample frac coordinates and atom types via score-based SDE
+        # =======================================================
 
         volume = lattice_volume(rl, ra)     # [B]
         cell = self.compute_lattice_matrix(rl, ra)  # [B,3,3]
@@ -1763,6 +2206,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             )
 
         print(f"> Reverse SDE steps = {self.T}")
+        print('SDE type:', self.sde_type)
         print('Corrector steps:', n_corrector_steps)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
@@ -1784,78 +2228,100 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # =======================================================
             # Corrector (Langevin)
             # =======================================================
-            
-            for _ in range(n_corrector_steps):
-                # 网络前向 -> 得分
-                net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
-                gamma_t = self.gamma(t_tensor)
-                sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
-                score = net_out[:, :, :3] / sigma_t
-                score = score / len_scale # scale score according to length scale
-                # 计算 alpha_t_pc, 见 SDE 论文 P23 Algorithm 3, 5
-                alpha_t_pc = self.alpha(gamma_t, zx) ** 2
-                
-                # 噪声
-                noise = torch.randn_like(zx) * node_mask
 
-                # Langevin 步
-                # SNR 根据 PC 论文设置
-                grad_norm = score.reshape(B, -1).norm(dim=-1) # [B]
-                noise_norm = noise.reshape(B, -1).norm(dim=-1) # [B]
-                eps = 2  * ((snr * noise_norm / (grad_norm + 1e-10))**2) * alpha_t_pc.squeeze() # [B]
-                eps = eps.view(B,1,1)
-                zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
-                zx = torch.remainder(zx, 1.0) # mod 1
+            if self.sde_type == 've': # VE-SDE
+                for _ in range(n_corrector_steps):
+                    net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                    sigma_t = self.sigma_ve(t_tensor, zx).view(B, 1, 1)  # [B,1,1]
+                    score = net_out[:, :, :3] / torch.clamp(sigma_t, min=1e-12)
+                    score = score / len_scale
+                    noise = torch.randn_like(zx) * node_mask
+                    grad_norm  = score.reshape(B, -1).norm(dim=-1)         # [B]
+                    noise_norm = noise.reshape(B, -1).norm(dim=-1)         # [B]
+                    # Song PC-style: eps = 2 * (snr * ||noise|| / ||grad||)^2
+                    eps = 2.0 * (snr * noise_norm / (grad_norm + 1e-12))**2   # [B]
+                    eps = torch.minimum(eps, (0.1 * sigma_t)**2)   # 经验：每次 corrector 不要走超过 sigma 的某个比例
+                    eps = eps.view(B, 1, 1)
+                    zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                    zx = torch.remainder(zx, 1.0)
+            else: # VP-SDE
+                for _ in range(n_corrector_steps):
+                    # 网络前向 -> 得分
+                    net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                    gamma_t = self.gamma(t_tensor)
+                    sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
+                    score = net_out[:, :, :3] / sigma_t
+                    score = score / len_scale # scale score according to length scale
+                    # 计算 alpha_t_pc, see SDE paper P23 Algorithm 3, 5
+                    alpha_t_pc = self.alpha(gamma_t, zx) ** 2
+                    noise = torch.randn_like(zx) * node_mask # 噪声
+                    # Langevin 步
+                    # SNR 根据 PC 论文设置
+                    grad_norm = score.reshape(B, -1).norm(dim=-1) # [B]
+                    noise_norm = noise.reshape(B, -1).norm(dim=-1) # [B]
+                    eps = 2.0 * ((snr * noise_norm / (grad_norm + 1e-10))**2) * alpha_t_pc.squeeze() # [B]
+                    eps = eps.view(B,1,1)
+                    zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                    zx = torch.remainder(zx, 1.0) # mod 1
 
             # =======================================================
             # Predictor (reverse SDE Euler-Maruyama)
             # =======================================================
             
             # 一次 SDE 反向步
-            z = self.reverse_sde_step(
-                x=zx,
-                t=t,
-                dt=dt,
-                rl=rl, ra=ra,
-                node_mask=node_mask,
-                edge_mask=edge_mask,
-                context=context,
-                model_out_is_eps=False,
-                len_scale=len_scale,
-            )
+            if self.sde_type == 've':
+                z = self.reverse_sde_step_ve(
+                    x=zx,
+                    t=t,
+                    dt=dt,
+                    rl=rl, ra=ra,
+                    node_mask=node_mask,
+                    edge_mask=edge_mask,
+                    context=context,
+                    len_scale=len_scale,
+                )
+            else: # vp
+                z = self.reverse_sde_step(
+                    x=zx,
+                    t=t,
+                    dt=dt,
+                    rl=rl, ra=ra,
+                    node_mask=node_mask,
+                    edge_mask=edge_mask,
+                    context=context,
+                    len_scale=len_scale,
+                )
 
             # =======================================================
             # Symmetry guidance
             # =======================================================
             
             # 示例：简单的反演对称性
-            # 临时设置参数，后续放入 args 中
-            lambda_sym = 0.1  # 对称性引导强度系数
-            current_space_group_ops = [
-                {
-                    "R": -torch.eye(3),
-                    "t": torch.zeros(3),
-                },
-                {
-                    "R": torch.eye(3),
-                    "t": torch.zeros(3),
-                }
-            ]
-#########################################################
-            x_t = zx
-            x_prev_standard = z[:, :, :3] 
-            # 计算对称性引导梯度
-            # 注意：x_t 需要开启梯度追踪
-            with torch.enable_grad():
-                x_in = x_t.detach().requires_grad_(True)
-                sym_grad = symmetry_guidance_gradient(x_in, cell, current_space_group_ops, 
-                                                      scale=5.0, num_ops_sample=1, bidirectional=True)
-            # 修正去噪方向 (梯度下降，让 Loss 变小)
-            x_prev_guided = x_prev_standard - lambda_sym * sym_grad
-            z[:, :, :3] = x_prev_guided
+            # lambda_sym 为引导强度系数
+            if lambda_sym > 1e-6:
+                current_space_group_ops = [
+                    {
+                        "R": -torch.eye(3),
+                        "t": torch.zeros(3),
+                    },
+                    {
+                        "R": torch.eye(3),
+                        "t": torch.zeros(3),
+                    }
+                ]
+                x_t = zx
+                x_prev_standard = z[:, :, :3] 
+                # 计算对称性引导梯度, 需要开启梯度追踪
+                with torch.enable_grad():
+                    x_in = x_t.detach().requires_grad_(True)
+                    sym_grad = symmetry_guidance_gradient(x_in, cell, current_space_group_ops, 
+                                                        scale=5.0, num_ops_sample=1, bidirectional=True)
+                # 修正去噪方向 (梯度下降，让 Loss 变小)
+                x_prev_guided = x_prev_standard - lambda_sym * sym_grad
+                z[:, :, :3] = x_prev_guided
 
-            if i == 0:
-                print("Applied symmetry guidance success!")
+                if i == 0:
+                    print("Applied symmetry guidance success!")
 
             # =======================================================
             # Repulsion correction
@@ -1928,7 +2394,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde_Lattice(
         self, rl, ra, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01
+        n_corrector_steps=1, snr=0.01, lambda_sym=0.1
     ):
         print('Sampling cell given real length/angles ...')
         rl = rl.to(node_mask.device)
@@ -2003,7 +2469,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 node_mask=node_mask,
                 edge_mask=edge_mask,
                 context=context,
-                model_out_is_eps=False,
                 len_scale=len_scale,
             )
 

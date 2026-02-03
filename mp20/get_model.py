@@ -730,6 +730,7 @@ def get_model(args, device, dataset_info, dataloader_train,
             temp_index=args.temp_index if "temp_index" in args else 0,
             lambda_l=args.lambda_l, lambda_a=args.lambda_a, lambda_type=args.lambda_type,
             adjust_atom_type=args.adjust_atom_type, lambda_type_adjust=args.lambda_type_adjust,
+            lambda_rep=args.lambda_rep, sde_type=args.sde_type
         )
         total_params = sum(p.numel() for p in vdm.parameters())
         trainable_params = sum(p.numel() for p in vdm.parameters() if p.requires_grad)
