@@ -1110,7 +1110,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         gamma_t = self.interp_gamma(t01)
         gamma_t = torch.clamp(gamma_t, -30.0, 30.0)
         sigma = torch.exp(0.5 * gamma_t)  # [B,1]
-        return self.inflate_batch_array(sigma, target_tensor)  # [B,1,1]
+        return self.inflate_batch_array(sigma, target_tensor)
 
     def g2_ve(self, t01: torch.Tensor, x: torch.Tensor, eps: float = None) -> torch.Tensor:
         """return g(t)^2 = d/dt sigma^2(t), inflated to [B,1,1]."""
@@ -2238,7 +2238,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     noise_norm = noise.reshape(B, -1).norm(dim=-1)         # [B]
                     # Song PC-style: eps = 2 * (snr * ||noise|| / ||grad||)^2
                     eps = 2.0 * (snr * noise_norm / (grad_norm + 1e-12))**2   # [B]
-                    eps = torch.minimum(eps, (0.1 * sigma_t)**2)   # 经验：每次 corrector 不要走超过 sigma 的某个比例
+                    eps = torch.minimum(eps, (0.1 * sigma_t.squeeze())**2)   # 经验：每次 corrector 不要走超过 sigma 的某个比例
                     eps = eps.view(B, 1, 1)
                     zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
                     zx = torch.remainder(zx, 1.0)
