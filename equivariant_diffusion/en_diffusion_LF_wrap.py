@@ -1357,7 +1357,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         )  # [B,N,3]
 
         # ---- VE perturbation: z = x + sigma eps ----
-        z_pos = x + sigma_t * eps
+        z_pos = x + sigma_t * eps # note: z_pos = x + sqrt(sigma_t^2-sigma_0^2) * eps is standard VE formula
         z_pos = wrap_at_boundary(z_pos, wrapping_boundary=1.0)
 
         # ---- VE target score on torus: score wrt z_pos, mean=x, var=sigma^2 ----
@@ -2121,7 +2121,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         if len_scale is not None:
             score = score / len_scale
 
-        f, g = self.f_and_g(x, t_tensor)
+        f, g = self.f_and_g_ve(x, t_tensor)
 
         noise = torch.randn_like(x) * node_mask
         dt_abs = -dt if dt < 0 else dt  # should be positive
