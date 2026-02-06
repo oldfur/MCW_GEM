@@ -2313,7 +2313,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 with torch.enable_grad():
                     x_in = x_t.detach().requires_grad_(True)
                     sym_grad = symmetry_guidance_gradient(x_in, cell, current_space_group_ops, 
-                                                        scale=5.0, num_ops_sample=1, bidirectional=True)
+                                                        scale=5.0, num_ops_sample=len(current_space_group_ops), 
+                                                        bidirectional=True)
                 # 修正去噪方向 (梯度下降，让 Loss 变小)
                 x_prev_guided = x_prev_standard - lambda_sym * sym_grad
                 z[:, :, :3] = x_prev_guided
