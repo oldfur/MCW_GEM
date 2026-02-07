@@ -61,6 +61,6 @@ def analyze_crystal_folder(folder_path, result_save_path, symprec=0.1):
 if __name__ == "__main__":
     # 使用示例
     # 替换为你的 cif 文件夹路径
-    folder_to_process = "../0131_sample_128_sym_guide"
-    result_save_path = "../spacegroup_analysis_results.csv"
-    analysis_df = analyze_crystal_folder(folder_to_process, result_save_path, symprec=0.4)
+    folder_to_process = "../0206_2_sample_128_ve_sym_guide"
+    result_save_path = "../0206_2_spacegroup_analysis_results.csv"
+    analysis_df = analyze_crystal_folder(folder_to_process, result_save_path, symprec=0.3)
