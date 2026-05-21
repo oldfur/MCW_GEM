@@ -1,6 +1,8 @@
 from equivariant_diffusion import utils
+import json
 import numpy as np
 import math
+import os
 import torch
 from egnn import Equiformer_dynamics
 from torch.nn import functional as F
@@ -15,6 +17,7 @@ from mp20.crystal import smact_validity
 from collections import Counter
 import itertools
 from guidance.symmetry_guidance import symmetry_guidance_gradient
+from mp20.atom_type_mapping import ATOM_TYPE_SOFTMAX_DIM, class_index_to_symbol
 
 def composition_from_elem_idx(elem_idx, node_mask):
     """
@@ -596,6 +599,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1, lambda_f=10, 
             lambda_type=1, lambda_rep=1, cutoff=0.5, adjust_atom_type=False,
             lambda_type_adjust=1, sde_type="ve",
+            debug_atom_types=False, debug_atom_dir=None, atom_decoder=None,
+            known_atom_class_ids=None, unknown_atom_type_idx=0,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -721,6 +726,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.cutoff = cutoff
         self.adjust_atom_type = adjust_atom_type
         self.lambda_type_adjust = lambda_type_adjust
+        self.atom_decoder = list(atom_decoder) if atom_decoder is not None else None
+        self.known_atom_class_ids = list(known_atom_class_ids) if known_atom_class_ids is not None else None
+        self.unknown_atom_type_idx = int(unknown_atom_type_idx)
+        self.debug_atom_types = bool(debug_atom_types) or os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
+        self.debug_atom_dir = debug_atom_dir or os.environ.get("DEBUG_ATOM_TYPES_DIR")
+        self._atom_debug_decoder_written = False
+        self._input_atom_type_debug_written = False
+        self._last_prepare_inputs_debug = {}
+        self._last_dynamics_atom_debug_info = {}
 
         print("use lambda_type: ", lambda_type)
         print("use lambda_rep: ", lambda_rep)
@@ -728,11 +742,345 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("use lambda_type_adjust: ", lambda_type_adjust)
         print("adjust atom type during diffusion: ", adjust_atom_type)
 
+        if self.debug_atom_types:
+            if not self.debug_atom_dir:
+                self.debug_atom_dir = os.path.join(os.getcwd(), "atom_type_debug")
+            os.makedirs(self.debug_atom_dir, exist_ok=True)
+            os.environ["DEBUG_ATOM_TYPES"] = "1"
+            os.environ["DEBUG_ATOM_TYPES_DIR"] = self.debug_atom_dir
+            self._write_atom_debug_line(
+                "atom_type_session.jsonl",
+                {
+                    "event": "session_start",
+                    "model": self.__class__.__name__,
+                    "num_classes": int(self.num_classes),
+                    "atom_type_pred": bool(self.atom_type_pred),
+                    "debug_atom_dir": self.debug_atom_dir,
+                    # This implementation predicts atom logits from geometry and does not
+                    # maintain an explicit categorical reverse state during sampling.
+                    "categorical_sampling_mode": "pred_logits_only",
+                },
+            )
+            self._log_atom_decoder_info()
+            print(f"Atom-type debug enabled. Outputs will be written to {self.debug_atom_dir}")
+
         print(f"{self.__class__.__name__} initialized.")
         
     
     def save_intermediate_grad(self, grad):
         self.saved_grad = grad
+
+    def _write_atom_debug_line(self, filename, payload):
+        if not self.debug_atom_types or not self.debug_atom_dir:
+            return
+        os.makedirs(self.debug_atom_dir, exist_ok=True)
+        payload = dict(payload)
+        payload.setdefault("pid", os.getpid())
+        with open(os.path.join(self.debug_atom_dir, filename), "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+    def _tensor_stats(self, tensor):
+        tensor = tensor.detach()
+        finite_mask = torch.isfinite(tensor)
+        finite_values = tensor[finite_mask]
+        if finite_values.numel() == 0:
+            return {
+                "shape": list(tensor.shape),
+                "min": None,
+                "max": None,
+                "mean": None,
+                "std": None,
+                "nan_count": int(torch.isnan(tensor).sum().item()),
+                "inf_count": int(torch.isinf(tensor).sum().item()),
+            }
+        return {
+            "shape": list(tensor.shape),
+            "min": float(finite_values.min().item()),
+            "max": float(finite_values.max().item()),
+            "mean": float(finite_values.mean().item()),
+            "std": float(finite_values.std(unbiased=False).item()),
+            "nan_count": int(torch.isnan(tensor).sum().item()),
+            "inf_count": int(torch.isinf(tensor).sum().item()),
+        }
+
+    def _class_index_to_symbol(self, index):
+        if self.atom_decoder is None:
+            return f"class_{int(index)}"
+        return class_index_to_symbol(self.atom_decoder, int(index))
+
+    def _log_atom_decoder_info(self):
+        if self._atom_debug_decoder_written:
+            return
+        self._atom_debug_decoder_written = True
+        decoder_index0 = None
+        if self.atom_decoder:
+            decoder_index0 = self.atom_decoder[0]
+        self._write_atom_debug_line(
+            "atom_type_session.jsonl",
+            {
+                "event": "atom_decoder_info",
+                "atom_decoder": self.atom_decoder,
+                "atom_decoder_index0": decoder_index0,
+                "atom_decoder_index0_is_H": decoder_index0 == "H",
+                "unknown_atom_type_idx": int(self.unknown_atom_type_idx),
+                "class_index0_symbol": self._class_index_to_symbol(0),
+                "class_index1_symbol": self._class_index_to_symbol(1),
+                "known_atom_class_ids": self.known_atom_class_ids,
+            },
+        )
+
+    def _finalize_atom_type_logits(
+        self,
+        logits,
+        node_mask,
+        round_index=0,
+        source_tag="sample",
+        rl=None,
+        ra=None,
+        apply_repair=True,
+    ):
+        assert logits.dim() == 3, f"atom logits must be [B, N, C], got {tuple(logits.shape)}"
+        assert node_mask.dim() == 3 and node_mask.size(-1) == 1, \
+            f"node_mask must be [B, N, 1], got {tuple(node_mask.shape)}"
+        B, N, C = logits.shape
+        assert node_mask.shape[0] == B and node_mask.shape[1] == N, \
+            f"logits/node_mask shape mismatch: logits={tuple(logits.shape)} node_mask={tuple(node_mask.shape)}"
+        assert C == self.num_classes, \
+            f"atom logits last dim must equal num_classes={self.num_classes}, got {C}"
+
+        softmax_dim = ATOM_TYPE_SOFTMAX_DIM
+        probs = torch.softmax(logits, dim=softmax_dim)
+        assert probs.shape == logits.shape, \
+            f"probs shape mismatch: logits={tuple(logits.shape)} probs={tuple(probs.shape)}"
+        assert torch.isfinite(probs).all(), "Atom probabilities contain NaN/Inf after softmax."
+
+        valid_mask = node_mask.squeeze(-1).bool()
+        probs_sum = probs.sum(dim=-1)
+        if valid_mask.any():
+            valid_probs_sum = probs_sum[valid_mask]
+            assert torch.allclose(
+                valid_probs_sum,
+                torch.ones_like(valid_probs_sum),
+                atol=1e-4,
+                rtol=1e-4,
+            ), "Atom probabilities on valid nodes do not sum to 1."
+            valid_class_std = logits[valid_mask].std(dim=-1, unbiased=False)
+            all_class_constant = bool(torch.all(valid_class_std <= 1e-8).item())
+        else:
+            valid_class_std = None
+            all_class_constant = False
+
+        argmax_before = torch.argmax(logits, dim=-1)
+        assert argmax_before.shape == (B, N), \
+            f"argmax(logits) must be [B, N], got {tuple(argmax_before.shape)}"
+
+        masked_logits = logits.clone()
+        masked_logits[:, :, 0] = -1e9
+        argmax_after_mask = torch.argmax(masked_logits, dim=-1)
+
+        if apply_repair:
+            elem_idx, repaired_flags = repair_composition_batch(
+                masked_logits,
+                node_mask,
+                smact_validity_fn=smact_validity,
+                topk=4,
+                max_replace_atoms=2,
+            )
+        else:
+            elem_idx = argmax_after_mask
+            repaired_flags = [False for _ in range(B)]
+
+        assert elem_idx.shape == (B, N), \
+            f"decoded atom type must be [B, N], got {tuple(elem_idx.shape)}"
+        class0_on_valid = None
+        if valid_mask.any():
+            class0_on_valid = elem_idx[valid_mask].eq(self.unknown_atom_type_idx)
+
+        batch_summary = {
+            "event": "atom_type_batch_summary",
+            "source_tag": source_tag,
+            "round_index": int(round_index),
+            "softmax_dim": softmax_dim,
+            "logits": self._tensor_stats(logits),
+            "probs": self._tensor_stats(probs),
+            "argmax_before_shape": list(argmax_before.shape),
+            "argmax_after_mask_shape": list(argmax_after_mask.shape),
+            "decoded_shape": list(elem_idx.shape),
+            "probs_sum_valid_min": float(probs_sum[valid_mask].min().item()) if valid_mask.any() else None,
+            "probs_sum_valid_max": float(probs_sum[valid_mask].max().item()) if valid_mask.any() else None,
+            "valid_class_std_min": float(valid_class_std.min().item()) if valid_class_std is not None and valid_class_std.numel() > 0 else None,
+            "valid_class_std_max": float(valid_class_std.max().item()) if valid_class_std is not None and valid_class_std.numel() > 0 else None,
+            "all_valid_nodes_class_constant_logits": all_class_constant,
+            "padding_argmax_before_unique": sorted({int(v) for v in argmax_before[~valid_mask].detach().cpu().tolist()}),
+            "padding_argmax_after_mask_unique": sorted({int(v) for v in argmax_after_mask[~valid_mask].detach().cpu().tolist()}),
+            "samples": [],
+            "prepare_inputs_debug": dict(self._last_prepare_inputs_debug),
+            "dynamics_debug": dict(self._last_dynamics_atom_debug_info),
+        }
+        if rl is not None:
+            batch_summary["rl_shape"] = list(rl.shape)
+        if ra is not None:
+            batch_summary["ra_shape"] = list(ra.shape)
+
+        all_h_global_indices = []
+        for b in range(B):
+            mask = valid_mask[b]
+            n_real = int(mask.sum().item())
+            valid_logits = logits[b, mask]
+            valid_probs = probs[b, mask]
+            raw_idx = argmax_before[b, mask]
+            masked_idx = argmax_after_mask[b, mask]
+            final_idx = elem_idx[b, mask]
+            all_from_default_before_mask = bool(n_real > 0 and raw_idx.eq(0).all().item())
+            all_h = bool(n_real > 0 and final_idx.eq(1).all().item())
+            sample_global_index = int(round_index * B + b)
+            final_counts = Counter(int(v) for v in final_idx.detach().cpu().tolist())
+            species_counts = {
+                self._class_index_to_symbol(idx): int(count)
+                for idx, count in sorted(final_counts.items())
+            }
+            identical_logits_across_nodes = False
+            zero_logits_across_nodes = False
+            if n_real > 0:
+                identical_logits_across_nodes = bool(
+                    torch.allclose(
+                        valid_logits,
+                        valid_logits[:1].expand_as(valid_logits),
+                        atol=1e-8,
+                        rtol=0.0,
+                    )
+                )
+                zero_logits_across_nodes = bool(
+                    torch.allclose(
+                        valid_logits,
+                        torch.zeros_like(valid_logits),
+                        atol=1e-8,
+                        rtol=0.0,
+                    )
+                )
+            sample_summary = {
+                "event": "atom_type_sample_summary",
+                "source_tag": source_tag,
+                "round_index": int(round_index),
+                "sample_local_index": int(b),
+                "sample_global_index": sample_global_index,
+                "real_atom_count": n_real,
+                "unique_species_count": len(final_counts),
+                "species_counts": species_counts,
+                "all_H": all_h,
+                "all_from_default_index_before_mask": all_from_default_before_mask,
+                "identical_logits_across_nodes": identical_logits_across_nodes,
+                "zero_logits_across_nodes": zero_logits_across_nodes,
+                "repaired": bool(repaired_flags[b]),
+                "raw_argmax_unique": sorted({int(v) for v in raw_idx.detach().cpu().tolist()}),
+                "masked_argmax_unique": sorted({int(v) for v in masked_idx.detach().cpu().tolist()}),
+                "decoded_unique": sorted({int(v) for v in final_idx.detach().cpu().tolist()}),
+                "decoded_class_ids": [int(v) for v in final_idx.detach().cpu().tolist()],
+                "decoded_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
+                "class0_on_valid_nodes": int(final_idx.eq(self.unknown_atom_type_idx).sum().item()),
+                "dummy_atom_type_idx": self._last_prepare_inputs_debug.get("dummy_atom_type_idx"),
+                "dummy_atom_type_symbol": self._last_prepare_inputs_debug.get("dummy_atom_type_symbol"),
+                "dummy_atom_type_is_H": self._last_prepare_inputs_debug.get("dummy_atom_type_is_H"),
+                "empty_graph_fallback": self._last_dynamics_atom_debug_info.get("empty_graph", False),
+                "empty_graph_fallback_source": self._last_dynamics_atom_debug_info.get("fallback_source"),
+                "all_valid_nodes_class_constant_logits": all_class_constant,
+            }
+            if n_real > 0:
+                sample_summary["valid_logit_stats"] = self._tensor_stats(valid_logits)
+                sample_summary["valid_prob_stats"] = self._tensor_stats(valid_probs)
+                if self.debug_atom_types or all_h:
+                    topk = min(5, valid_probs.size(-1))
+                    top_probs, top_idx = torch.topk(valid_probs, k=topk, dim=-1)
+                    sample_summary["top5_per_node"] = [
+                        {
+                            "node_index": int(node_idx),
+                            "class_ids": [int(v) for v in top_idx[node_idx].detach().cpu().tolist()],
+                            "species": [self._class_index_to_symbol(v) for v in top_idx[node_idx].detach().cpu().tolist()],
+                            "probs": [float(v) for v in top_probs[node_idx].detach().cpu().tolist()],
+                        }
+                        for node_idx in range(valid_probs.size(0))
+                    ]
+            if rl is not None:
+                sample_summary["rl"] = [float(v) for v in rl[b].detach().cpu().tolist()]
+            if ra is not None:
+                sample_summary["ra"] = [float(v) for v in ra[b].detach().cpu().tolist()]
+            batch_summary["samples"].append(sample_summary)
+
+            if self.debug_atom_types or all_h or all_from_default_before_mask or zero_logits_across_nodes or all_class_constant:
+                self._write_atom_debug_line("atom_type_batches.jsonl", sample_summary)
+
+            if sample_summary["class0_on_valid_nodes"] > 0:
+                warning_payload = {
+                    "event": "class0_on_valid_nodes",
+                    "source_tag": source_tag,
+                    "round_index": int(round_index),
+                    "sample_local_index": int(b),
+                    "sample_global_index": sample_global_index,
+                    "class0_count": int(sample_summary["class0_on_valid_nodes"]),
+                    "decoded_class_ids": [int(v) for v in final_idx.detach().cpu().tolist()],
+                    "decoded_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
+                }
+                self._write_atom_debug_line("atom_type_warnings.jsonl", warning_payload)
+                print(
+                    f"[AtomTypeDebug] warning: class 0 reached valid nodes at global sample index "
+                    f"{sample_global_index} ({source_tag}, round={round_index}, batch={b})"
+                )
+
+            if all_h:
+                all_h_global_indices.append(sample_global_index)
+                print(
+                    f"[AtomTypeDebug] all-H sample detected at global sample index "
+                    f"{sample_global_index} ({source_tag}, round={round_index}, batch={b})"
+                )
+                if self.debug_atom_types and self.debug_atom_dir:
+                    torch.save(
+                        {
+                            "source_tag": source_tag,
+                            "round_index": int(round_index),
+                            "sample_local_index": int(b),
+                            "sample_global_index": sample_global_index,
+                            "logits_valid": valid_logits.detach().cpu(),
+                            "probs_valid": valid_probs.detach().cpu(),
+                            "raw_argmax_valid": raw_idx.detach().cpu(),
+                            "masked_argmax_valid": masked_idx.detach().cpu(),
+                            "decoded_valid": final_idx.detach().cpu(),
+                            "node_mask": node_mask[b].detach().cpu(),
+                            "rl": rl[b].detach().cpu() if rl is not None else None,
+                            "ra": ra[b].detach().cpu() if ra is not None else None,
+                        },
+                        os.path.join(
+                            self.debug_atom_dir,
+                            f"all_h_sample_round_{int(round_index)}_batch_{int(b)}.pt",
+                        ),
+                    )
+
+        if self.debug_atom_types:
+            self._write_atom_debug_line("atom_type_batches.jsonl", batch_summary)
+        if all_class_constant:
+            self._write_atom_debug_line(
+                "atom_type_warnings.jsonl",
+                {
+                    "event": "all_valid_nodes_class_constant_logits",
+                    "source_tag": source_tag,
+                    "round_index": int(round_index),
+                    "logits": self._tensor_stats(logits),
+                },
+            )
+        if all_h_global_indices:
+            self._write_atom_debug_line(
+                "all_h_samples.jsonl",
+                {
+                    "event": "all_h_batch",
+                    "source_tag": source_tag,
+                    "round_index": int(round_index),
+                    "all_h_sample_indices": all_h_global_indices,
+                },
+            )
+
+        h_cat = F.one_hot(elem_idx, self.num_classes) * node_mask
+        assert h_cat.shape == logits.shape, \
+            f"decoded one-hot shape mismatch: expected {tuple(logits.shape)}, got {tuple(h_cat.shape)}"
+        return h_cat
 
     def get_k_params(self, bins):
         """
@@ -851,17 +1199,18 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             )
 
 
-    def phi(self, zxh, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None, adjust_type=False):
+    def phi(self, zxh, t, node_mask, edge_mask, context, t2=None, mask_y=None, rl=None, ra=None,
+            adjust_type=False, atom_type_state=None):
         """score funtion predict network"""   
         
         # prepare inputs
         zx = zxh[:, :, :self.n_dims]  # [B, N, 3]
-        B, N= zx.size(0), zx.size(1)
+        B, N = zx.size(0), zx.size(1)
+        input_atom_logits = atom_type_state
         if adjust_type:
-            h_cat_pred = zxh[:, :, self.n_dims:self.n_dims+self.num_classes] # [B, N, num_classes]
-            h_cat_pred[:, :, 0] = 0.0  # ensure padding type prob = 0 before argmax
-            # h_int = zxh[:, :, self.n_dims+self.num_classes:self.n_dims+self.num_classes+self.include_charges] \
-            #     if self.include_charges else torch.zeros(0).to(z.device) # [B, N, 1]
+            h_cat_pred = zxh[:, :, self.n_dims:self.n_dims+self.num_classes].clone()  # [B, N, num_classes]
+            h_cat_pred[:, :, self.unknown_atom_type_idx] = -1e9
+            input_atom_logits = h_cat_pred
 
         # for example, x: R -> [0,1]
         if rl is not None and ra is not None:
@@ -869,18 +1218,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         else:
             print("No valid lengths and angles provided for unnormalization in phi.")
             raise ValueError
-        # atom_types 默认全是 1 ，作为dynamics的输入
-        zx, atom_types, natoms, rl, ra, batch = \
-            self.prepare_inputs_for_equiformer(t, zx, rl, ra, node_mask)
-        if adjust_type:
-            atom_types = torch.argmax(h_cat_pred, dim=-1)        # [B, N]
-            atom_types = atom_types[node_mask.squeeze(-1).bool()]  # [N_total]
-            atom_types = atom_types.long() # Embedding 接口的类型门槛
-            # print("input atom_types: ", atom_types.tolist())
+        zx, atom_types, natoms, rl, ra, batch, previous_atom_logits_flat = self.prepare_inputs_for_equiformer(
+            t, zx, rl, ra, node_mask, atom_type_state=input_atom_logits
+        )
 
         # forward for x, h
         net_outs = self.dynamics(t, zx, atom_types, natoms, \
-                lengths=rl, angles=ra, batch=batch)
+                lengths=rl, angles=ra, batch=batch, previous_atom_logits=previous_atom_logits_flat)
+        self._last_dynamics_atom_debug_info = dict(getattr(self.dynamics, "last_atom_debug_info", {}))
         
         # outputs reshape
         net_eps_x, net_pred_h = self.reshape_outputs(
@@ -1660,7 +2005,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # unnormalize x,h
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
         # post-process h
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        h_cat = self._finalize_atom_type_logits(
+            h_cat,
+            node_mask,
+            round_index=0,
+            source_tag="sample_score_legacy",
+            rl=rl,
+            ra=ra,
+            apply_repair=False,
+        )
         h_int = torch.round(h_int).long() * node_mask
         h = {'integer': h_int, 'categorical': h_cat}
 
@@ -1753,7 +2106,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 x, h = self.sample_score_sde_Lattice(
                     rl, ra, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
-                    annel_l, pesudo_context, n_corrector_steps, lambda_sym=lambda_sym
+                    annel_l, pesudo_context, n_corrector_steps,
+                    round_index=i, lambda_sym=lambda_sym
                 )
             else:
                 # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
@@ -1762,7 +2116,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
                     annel_l, pesudo_context,
-                    n_corrector_steps, lambda_sym=lambda_sym
+                    n_corrector_steps, round_index=i, lambda_sym=lambda_sym
                 )
 
             results.append((x, h, rl, ra, node_mask.clone()))
@@ -1788,7 +2142,16 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         return info
     
 
-    def prepare_inputs_for_equiformer(self, t, x, lengths, angles, node_mask, edge_mask=None):
+    def prepare_inputs_for_equiformer(
+        self,
+        t,
+        x,
+        lengths,
+        angles,
+        node_mask,
+        edge_mask=None,
+        atom_type_state=None,
+    ):
         """
         t:         [B, 1]  时间步 (如果需要可以传给 decoder)
         x:         [B, N, 3]  原子坐标 (分数坐标)
@@ -1808,10 +2171,65 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # x[mask]  ≡  x.view(-1)[mask.view(-1)]
         # 3) batch 索引 [N_total]
         batch = torch.arange(B, device=device).repeat_interleave(natoms)
-        # 4) 原子种类 [N_total] (这里用dummy，实际应替换成数据里的 atom_types)
-        atom_types = torch.ones_like(batch)     # [N_total]  全部设为1，表示 dummy 原子类型
+        valid_mask = node_mask.squeeze(-1).bool()
+        previous_atom_logits_flat = None
+        used_atom_type_state = atom_type_state is not None
 
-        return pos, atom_types, natoms, lengths, angles, batch
+        if atom_type_state is not None:
+            assert atom_type_state.shape == (B, N, self.num_classes), \
+                f"atom_type_state must be [B, N, C], got {tuple(atom_type_state.shape)}"
+            assert torch.isfinite(atom_type_state).all(), "atom_type_state contains NaN/Inf."
+            masked_atom_type_state = atom_type_state.detach().clone()
+            masked_atom_type_state[:, :, self.unknown_atom_type_idx] = -1e9
+            atom_types_full = torch.argmax(masked_atom_type_state, dim=-1).long()
+            atom_types = atom_types_full[valid_mask]
+            previous_atom_logits_flat = masked_atom_type_state[valid_mask]
+            if atom_types.numel() > 0 and atom_types.eq(self.unknown_atom_type_idx).any():
+                self._write_atom_debug_line(
+                    "atom_type_warnings.jsonl",
+                    {
+                        "event": "prepare_inputs_argmax_reached_unknown",
+                        "unknown_atom_type_idx": int(self.unknown_atom_type_idx),
+                        "atom_type_state_shape": list(atom_type_state.shape),
+                    },
+                )
+        else:
+            # Class 0 is the canonical unknown/pad token for sampling-time inputs.
+            atom_types = torch.full_like(batch, fill_value=self.unknown_atom_type_idx)
+        assert atom_types.shape == batch.shape, \
+            f"flattened atom_types must match flattened batch, got {tuple(atom_types.shape)} vs {tuple(batch.shape)}"
+
+        dummy_atom_type_idx = int(self.unknown_atom_type_idx)
+        dummy_atom_type_symbol = self._class_index_to_symbol(dummy_atom_type_idx)
+        dummy_atom_type_is_h = dummy_atom_type_symbol == "H"
+        self._last_prepare_inputs_debug = {
+            "used_atom_type_state": bool(used_atom_type_state),
+            "atom_type_state_shape": list(atom_type_state.shape) if atom_type_state is not None else None,
+            "dummy_atom_type_idx": dummy_atom_type_idx,
+            "dummy_atom_type_symbol": dummy_atom_type_symbol,
+            "dummy_atom_type_is_H": dummy_atom_type_is_h,
+            "real_atom_count_total": int(valid_mask.sum().item()),
+        }
+        if atom_type_state is not None:
+            self._last_prepare_inputs_debug["input_atom_type_unique"] = sorted(
+                {int(v) for v in atom_types.detach().cpu().tolist()}
+            )
+        if self.debug_atom_types and (not self._input_atom_type_debug_written or dummy_atom_type_is_h):
+            self._input_atom_type_debug_written = True
+            payload = {
+                "event": "prepare_inputs_for_equiformer",
+                "used_atom_type_state": bool(used_atom_type_state),
+                "dummy_atom_type_idx": dummy_atom_type_idx,
+                "dummy_atom_type_symbol": dummy_atom_type_symbol,
+                "dummy_atom_type_is_H": dummy_atom_type_is_h,
+                "previous_atom_logits_available": previous_atom_logits_flat is not None,
+            }
+            if dummy_atom_type_is_h:
+                payload["warning"] = "dummy atom type maps to H unexpectedly"
+                print("[AtomTypeDebug] warning: prepare_inputs_for_equiformer dummy atom type still maps to H.")
+            self._write_atom_debug_line("atom_type_session.jsonl", payload)
+
+        return pos, atom_types, natoms, lengths, angles, batch, previous_atom_logits_flat
 
 
     
@@ -1974,6 +2392,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         edge_mask,
         context,
         len_scale=None,
+        atom_type_state=None,
     ):  
         B, N, D = x.shape
         device = x.device
@@ -1983,7 +2402,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         # 2) model forward (must output score)
         net_out = self.phi(
-            x, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra
+            x, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra,
+            atom_type_state=atom_type_state,
         )
 
         # 若模型预测的是乘以sigma_t的score，故转换为score需要除以sigma_t
@@ -2106,6 +2526,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         edge_mask,
         context,
         len_scale=None,
+        atom_type_state=None,
     ):
         B, N, D = x.shape
         device = x.device
@@ -2114,7 +2535,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # sigma(t) for unscaling network output
         sigma_t = self.sigma_ve(t_tensor, x)  # [B,1,1]
 
-        net_out = self.phi(x, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+        net_out = self.phi(
+            x, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra,
+            atom_type_state=atom_type_state,
+        )
         pred_scaled_score = net_out[:, :, :3]                # ≈ sigma * score
         score = pred_scaled_score / torch.clamp(sigma_t, 1e-12)
 
@@ -2139,7 +2563,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde(
         self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01, lambda_sym=0.1
+        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.1
     ):  
         # =======================================================
         # Sampling cell length/angles
@@ -2208,6 +2632,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Corrector steps:', n_corrector_steps)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
+        atom_type_state = None
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
         # --- begin of for T steps
@@ -2220,6 +2645,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             # 只取前 3 维坐标
             zx = z[:, :, :3]
+            if z.size(-1) >= self.n_dims + self.num_classes:
+                atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
             t_tensor = torch.full((B,1), fill_value=t, device=device)
             t_next_tensor = torch.full((B,1), fill_value=t_next, device=device)
 
@@ -2229,7 +2656,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             if self.sde_type == 've': # VE-SDE
                 for _ in range(n_corrector_steps):
-                    net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                    net_out = self.phi(
+                        zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra,
+                        atom_type_state=atom_type_state,
+                    )
+                    atom_type_state = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
                     sigma_t = self.sigma_ve(t_tensor, zx).view(B, 1, 1)  # [B,1,1]
                     score = net_out[:, :, :3] / torch.clamp(sigma_t, min=1e-12)
                     score = score / len_scale
@@ -2245,7 +2676,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             else: # VP-SDE
                 for _ in range(n_corrector_steps):
                     # 网络前向 -> 得分
-                    net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                    net_out = self.phi(
+                        zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra,
+                        atom_type_state=atom_type_state,
+                    )
+                    atom_type_state = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
                     gamma_t = self.gamma(t_tensor)
                     sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
                     score = net_out[:, :, :3] / sigma_t
@@ -2277,6 +2712,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     edge_mask=edge_mask,
                     context=context,
                     len_scale=len_scale,
+                    atom_type_state=atom_type_state,
                 )
             else: # vp
                 z = self.reverse_sde_step(
@@ -2288,7 +2724,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     edge_mask=edge_mask,
                     context=context,
                     len_scale=len_scale,
+                    atom_type_state=atom_type_state,
                 )
+            if z.size(-1) >= self.n_dims + self.num_classes:
+                atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
 
             # =======================================================
             # Symmetry guidance
@@ -2364,27 +2803,16 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # post-process one-hot / integer
         # h_cat[:, :, 0] = 0.0  # ensure padding type prob = 0 before argmax
         # h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        logits = h_cat.clone() # [B,N,C]
-        elem_idx_before = torch.argmax(logits, dim=2)   # [B, N]
-        logits[:, :, 0] = -1e9
-        elem_idx, repaired_flags = repair_composition_batch(
+        logits = h_cat.clone()  # [B,N,C]
+        h_cat = self._finalize_atom_type_logits(
             logits,
             node_mask,
-            smact_validity_fn=smact_validity,
-            topk=4,
-            max_replace_atoms=2
+            round_index=round_index,
+            source_tag="sample_score_sde",
+            rl=rl,
+            ra=ra,
+            apply_repair=True,
         )
-        h_cat = F.one_hot(elem_idx, self.num_classes) * node_mask
-        # print repair info
-        for b, repaired in enumerate(repaired_flags):
-            if not repaired:
-                continue
-            mask = node_mask[b].squeeze(-1).bool()
-            before = elem_idx_before[b][mask].tolist()
-            after  = elem_idx[b][mask].tolist()
-            print(f"\n[Sample {b}]")
-            print("  before:", before)
-            print("  after :", after)
 
         h_int = torch.round(h_int).long() * node_mask
 
@@ -2397,7 +2825,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde_Lattice(
         self, rl, ra, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01, lambda_sym=0.1
+        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.1
     ):
         print('Sampling cell given real length/angles ...')
         rl = rl.to(node_mask.device)
@@ -2423,6 +2851,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Corrector steps:', n_corrector_steps)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
+        atom_type_state = None
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             t      = float(t_grid[i].item())
@@ -2431,6 +2860,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             # 只取前 3 维坐标
             zx = z[:, :, :3]
+            if z.size(-1) >= self.n_dims + self.num_classes:
+                atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
             t_tensor = torch.full((B,1), fill_value=t, device=device)
 
             # =======================================================
@@ -2439,7 +2870,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             
             for _ in range(n_corrector_steps):
                 # 网络前向 -> 得分
-                net_out = self.phi(zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra)
+                net_out = self.phi(
+                    zx, t_tensor, node_mask, edge_mask, context, rl=rl, ra=ra,
+                    atom_type_state=atom_type_state,
+                )
+                atom_type_state = net_out[:, :, self.n_dims:self.n_dims+self.num_classes]
                 gamma_t = self.gamma(t_tensor)
                 sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
                 score = net_out[:, :, :3] / sigma_t
@@ -2473,7 +2908,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 edge_mask=edge_mask,
                 context=context,
                 len_scale=len_scale,
+                atom_type_state=atom_type_state,
             )
+            if z.size(-1) >= self.n_dims + self.num_classes:
+                atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
 
             # =======================================================
             # Repulsion correction
@@ -2500,8 +2938,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         x, h_cat, h_int = self.unnormalize(x, h_cat, h_int, node_mask)
 
         # post-process one-hot / integer
-        # Insert this BEFORE line 2118
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        h_cat = self._finalize_atom_type_logits(
+            h_cat,
+            node_mask,
+            round_index=round_index,
+            source_tag="sample_score_sde_Lattice",
+            rl=rl,
+            ra=ra,
+            apply_repair=False,
+        )
         h_int = torch.round(h_int).long() * node_mask
 
         h = {'integer': h_int, 'categorical': h_cat}

@@ -79,7 +79,8 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         self,
         atomic_numbers,
         edge_distance,
-        edge_index
+        edge_index,
+        unknown_mask=None,
     ):    
         
         if self.use_atom_edge_embedding:
@@ -87,6 +88,12 @@ class EdgeDegreeEmbedding(torch.nn.Module):
             target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
             source_embedding = self.source_embedding(source_element)
             target_embedding = self.target_embedding(target_element)
+            if unknown_mask is not None and unknown_mask.any():
+                unknown_edge_mask = unknown_mask[edge_index[0]] | unknown_mask[edge_index[1]]
+                source_embedding = source_embedding.clone()
+                target_embedding = target_embedding.clone()
+                source_embedding[unknown_edge_mask] = 0.0
+                target_embedding[unknown_edge_mask] = 0.0
             x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)
         else:
             x_edge = edge_distance
@@ -121,5 +128,4 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         x_edge_embedding.embedding = x_edge_embedding.embedding / self.rescale_factor
 
         return x_edge_embedding
-
 

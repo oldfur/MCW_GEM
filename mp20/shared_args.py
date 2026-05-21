@@ -237,5 +237,9 @@ def setup_shared_args(parser):
                         help='Visualize the generated structures. (default: False)')
     parser.add_argument('--save_dir', type=str, default='mp20/analyze_test/',
                         help='Directory to save the generated structures during analysis. (default: mp20/analyze)')
+    parser.add_argument('--debug-atom-types', action=BoolArg, default=False,
+                        help='Enable detailed atom-type sampling diagnostics.')
+    parser.add_argument('--debug-atom-dir', type=str, default='',
+                        help='Optional directory for atom-type debug outputs. Defaults to <save_dir>/atom_type_debug.')
 
     return parser

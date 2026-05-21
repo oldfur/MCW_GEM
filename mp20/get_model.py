@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.distributions.categorical import Categorical
 
@@ -19,6 +20,7 @@ from equivariant_diffusion.diffusion_L import VariationalDiffusion_L
 from equivariant_diffusion.diffusion_L_another import VariationalDiffusion_L_another
 from equivariant_diffusion.en_diffusion_LF import EquiTransVariationalDiffusion_LF
 from equivariant_diffusion.en_diffusion_LF_wrap import EquiTransVariationalDiffusion_LF_wrap
+from mp20.atom_type_mapping import canonicalize_dataset_info
 from mp20.utils import extract_attribute_safe, extract_property_safe
 
 
@@ -105,6 +107,7 @@ def get_Lattice_model(args, device, dataset_info, uni_diffusion=False, pretrain=
 
 def get_model(args, device, dataset_info, dataloader_train, 
               uni_diffusion=False, use_basis=False, decoupling=False, pretrain=False, finetune=False):
+    canonicalize_dataset_info(dataset_info)
     histogram = dataset_info['n_nodes']
     in_node_nf = max(dataset_info['atom_encoder'].values()) + int(args.include_charges)
     num_classes = max(dataset_info['atom_encoder'].values())
@@ -224,6 +227,13 @@ def get_model(args, device, dataset_info, dataloader_train,
             lmax_list=[4],mmax_list=[2],
             use_pbc=True, # use pbc
             otf_graph=True, # on-the-fly graph
+            )
+
+        if hasattr(net_dynamics, "configure_atom_type_mapping"):
+            net_dynamics.configure_atom_type_mapping(
+                atom_decoder=dataset_info.get("atom_decoder"),
+                known_atom_class_ids=dataset_info.get("known_atom_class_ids"),
+                unknown_atom_type_idx=dataset_info.get("atom_unknown_idx", 0),
             )
                                              
     elif args.probabilistic_model == 'diffusion_L' or \
@@ -695,6 +705,10 @@ def get_model(args, device, dataset_info, dataloader_train,
         return vdm, nodes_dist, prop_dist
     
     elif args.probabilistic_model == 'diffusion_LF_wrap':
+        debug_atom_dir = getattr(args, 'debug_atom_dir', '') or os.path.join(
+            getattr(args, 'save_dir', 'mp20/analyze_test/'),
+            'atom_type_debug',
+        )
         vdm = EquiTransVariationalDiffusion_LF_wrap(
             n_dims=3, device=device,
             dynamics=net_dynamics,
@@ -730,7 +744,12 @@ def get_model(args, device, dataset_info, dataloader_train,
             temp_index=args.temp_index if "temp_index" in args else 0,
             lambda_l=args.lambda_l, lambda_a=args.lambda_a, lambda_type=args.lambda_type,
             adjust_atom_type=args.adjust_atom_type, lambda_type_adjust=args.lambda_type_adjust,
-            lambda_rep=args.lambda_rep, sde_type=args.sde_type
+            lambda_rep=args.lambda_rep, sde_type=args.sde_type,
+            debug_atom_types=getattr(args, 'debug_atom_types', False),
+            debug_atom_dir=debug_atom_dir,
+            atom_decoder=dataset_info.get('atom_decoder'),
+            known_atom_class_ids=dataset_info.get('known_atom_class_ids'),
+            unknown_atom_type_idx=dataset_info.get('atom_unknown_idx', 0),
         )
         total_params = sum(p.numel() for p in vdm.parameters())
         trainable_params = sum(p.numel() for p in vdm.parameters() if p.requires_grad)

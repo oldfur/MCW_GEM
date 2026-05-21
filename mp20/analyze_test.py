@@ -4,7 +4,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message="Issues encountered while parsing CIF")
 
 from mp20.sample_epoch import sample, sample_pure_x, sample_L, sample_withL, sample_F
-from mp20.crystal import lattice_matrix, cart_to_frac, frac_to_cart, array_dict_to_crystal
+from mp20.crystal import lattice_matrix, cart_to_frac, frac_to_cart, array_dict_to_crystal, chemical_symbols
 from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_loss_and_nll,\
     assert_correctly_masked, remove_mean_with_mask, assert_mean_zero_with_mask, check_mask_correct,\
     compute_loss_and_nll_pure_x, compute_loss_and_nll_L
@@ -16,6 +16,7 @@ from pymatgen.core.structure import Structure
 from typing import Dict
 from functools import partial   # 固定某个函数的一部分参数，返回一个新的函数
 
+import json
 import torch
 import wandb
 import numpy as np
@@ -37,6 +38,39 @@ ase_view = AseView(
     atom_show_label=True,
     canvas_background_opacity=0.0,
 )
+
+
+def _atom_type_debug_enabled(args):
+    return bool(getattr(args, "debug_atom_types", False)) or os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
+
+
+def _atom_type_debug_dir(args):
+    debug_dir = getattr(args, "debug_atom_dir", "") or os.environ.get("DEBUG_ATOM_TYPES_DIR", "")
+    if not debug_dir:
+        debug_dir = os.path.join(getattr(args, "save_dir", "mp20/analyze_test/"), "atom_type_debug")
+    return debug_dir
+
+
+def _write_atom_type_debug_line(args, filename, payload):
+    if not _atom_type_debug_enabled(args):
+        return
+    debug_dir = _atom_type_debug_dir(args)
+    os.makedirs(debug_dir, exist_ok=True)
+    payload = dict(payload)
+    payload.setdefault("pid", os.getpid())
+    with open(os.path.join(debug_dir, filename), "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+
+def _atom_type_symbols(atom_types):
+    symbols = []
+    for atom_type in atom_types:
+        atom_type = int(atom_type)
+        if 0 <= atom_type < len(chemical_symbols):
+            symbols.append(chemical_symbols[atom_type])
+        else:
+            symbols.append(f"Z{atom_type}")
+    return symbols
 
 
 def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info, 
@@ -202,6 +236,19 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
     batch_size = args.sample_batch_size
     device = args.device
     dtype = args.dtype
+    if _atom_type_debug_enabled(args):
+        _write_atom_type_debug_line(
+            args,
+            "analyze_test_samples.jsonl",
+            {
+                "event": "analyze_and_save_F_start",
+                "epoch": int(epoch),
+                "batch_size": int(batch_size),
+                "num_rounds": int(args.num_rounds),
+                "atom_decoder": dataset_info.get("atom_decoder"),
+                "atom_decoder_index0_is_H": bool(dataset_info.get("atom_decoder", [None])[0] == "H"),
+            },
+        )
     mp20_evaluator = CrystalGenerationEvaluator(
             dataset_cif_list=pd.read_csv(
                 os.path.join(args.dataset_folder_path, f"all.csv")
@@ -235,10 +282,39 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
                                     angle[i, 0], angle[i, 1], angle[i, 2])
         # 实际上是一般文献的Lattice的转置
         mask = node_mask[i].squeeze(-1).bool()
+        real_atom_count = int(mask.sum().item())
         frac_pos_valid = frac_pos[i][mask].detach().cpu().numpy()
         cart_pos_valid = frac_to_cart(frac_pos_valid, lattice)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
+        assert one_hot_valid.ndim == 2, f"decoded one_hot must be [N, C], got {one_hot_valid.shape}"
         atom_types = np.argmax(one_hot_valid, axis=-1)
+        species_symbols = _atom_type_symbols(atom_types.tolist())
+        unique_atom_types, counts = np.unique(atom_types, return_counts=True) if atom_types.size > 0 else (np.array([]), np.array([]))
+        species_counts = {
+            chemical_symbols[int(atom_type)] if 0 <= int(atom_type) < len(chemical_symbols) else f"Z{int(atom_type)}": int(count)
+            for atom_type, count in zip(unique_atom_types.tolist(), counts.tolist())
+        }
+        all_h = bool(atom_types.size > 0 and np.all(atom_types == 1))
+        if all_h:
+            print(f"[AtomTypeDebug] analyze_and_save_F observed all-H sample at global sample index {i}")
+        _write_atom_type_debug_line(
+            args,
+            "analyze_test_samples.jsonl",
+            {
+                "event": "sample_pre_cif_save",
+                "epoch": int(epoch),
+                "sample_global_index": int(i),
+                "real_atom_count": real_atom_count,
+                "atom_types": [int(v) for v in atom_types.tolist()],
+                "species_symbols": species_symbols,
+                "species_counts": species_counts,
+                "unique_species_count": int(len(unique_atom_types)),
+                "all_H": all_h,
+                "lengths": [float(v) for v in length[i].tolist()],
+                "angles": [float(v) for v in angle[i].tolist()],
+                "padding_exists": bool(mask.numel() > real_atom_count),
+            },
+        )
         # charges = charges[i][mask].detach().cpu().numpy()
         
         if i <= 5:

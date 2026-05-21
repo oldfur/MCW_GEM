@@ -1,9 +1,11 @@
 import logging
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import radius_graph
 import logging
+import os
 import time
 import math
 import numpy as np
@@ -51,6 +53,7 @@ from crystalgrw.transformer_block import (
     TransBlockV2, 
 )
 from crystalgrw.input_block import EdgeDegreeEmbedding
+from mp20.atom_type_mapping import build_safe_fallback_atom_logits
 from mp20.utils import save_nan_debug_info
 
 # constants
@@ -58,6 +61,23 @@ MAX_ATOMIC_NUM = 89  # MP20 dataset 1-89, initial 100
 # Statistics of IS2RE 100K 
 _AVG_NUM_NODES  = 77.81317
 _AVG_DEGREE     = 23.395238876342773    # IS2RE: 100k, max_radius = 5, max_neighbors = 100
+
+
+def _atom_debug_enabled():
+    return os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
+
+
+def _write_atom_debug_line(filename, payload):
+    if not _atom_debug_enabled():
+        return
+    debug_dir = os.environ.get("DEBUG_ATOM_TYPES_DIR")
+    if not debug_dir:
+        return
+    os.makedirs(debug_dir, exist_ok=True)
+    payload = dict(payload)
+    payload.setdefault("pid", os.getpid())
+    with open(os.path.join(debug_dir, filename), "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 
 class StableTimeMLP(nn.Module):
@@ -377,6 +397,11 @@ class EquiformerV2(BaseModel):
         self.use_gate_act = use_gate_act
         self.use_grid_mlp = use_grid_mlp
         self.use_sep_s2_act = use_sep_s2_act
+        self._empty_graph_debug_events = 0
+        self.atom_decoder = None
+        self.known_atom_class_ids = None
+        self.unknown_atom_type_idx = 0
+        self.last_debug_info = {}
         
         self.alpha_drop = alpha_drop
         self.drop_path_rate = drop_path_rate
@@ -689,11 +714,23 @@ class EquiformerV2(BaseModel):
         self.apply(self._init_weights)
         self.apply(self._uniform_init_rad_func_linear_weights)
 
+    def configure_atom_type_mapping(
+        self,
+        atom_decoder=None,
+        known_atom_class_ids=None,
+        unknown_atom_type_idx=0,
+    ):
+        self.atom_decoder = list(atom_decoder) if atom_decoder is not None else None
+        self.known_atom_class_ids = list(known_atom_class_ids) if known_atom_class_ids is not None else None
+        self.unknown_atom_type_idx = int(unknown_atom_type_idx)
+        self.last_debug_info = {}
+
 
     @conditional_grad(torch.enable_grad())
     def forward(self, pos, atomic_numbers, natoms,
                 lengths, angles, edge_index, to_jimages, nbonds,
-                node_feats=None, z=None, lat_mat=None, batch=None):
+                node_feats=None, z=None, lat_mat=None, batch=None,
+                previous_atom_logits=None, unknown_mask=None):
         # now use cart pos
         self.batch_size = len(natoms)
         self.dtype = pos.dtype
@@ -707,6 +744,16 @@ class EquiformerV2(BaseModel):
             lat_mat = lattice_params_to_matrix_torch(lengths, angles)
 
         num_atoms = len(atomic_numbers) # atomic_numbers = atom_types - 1, start from zero
+        if unknown_mask is None:
+            unknown_mask = torch.zeros(num_atoms, dtype=torch.bool, device=pos.device)
+        else:
+            unknown_mask = unknown_mask.to(device=pos.device, dtype=torch.bool)
+        self.last_debug_info = {
+            "empty_graph": False,
+            "fallback_source": None,
+            "unknown_node_count": int(unknown_mask.sum().item()),
+            "num_atoms_total": int(num_atoms),
+        }
 
         (
             edge_index,
@@ -732,10 +779,45 @@ class EquiformerV2(BaseModel):
         # print("edge_distance_vec:", edge_distance_vec.to(device='cpu').numpy())
         
         if edge_distance_vec.numel() == 0:
+            fallback_logits, fallback_meta = build_safe_fallback_atom_logits(
+                num_nodes=num_atoms,
+                num_classes=MAX_ATOMIC_NUM,
+                device=pos.device,
+                dtype=pos.dtype,
+                previous_atom_logits=previous_atom_logits,
+                known_atom_class_ids=self.known_atom_class_ids,
+            )
+            self._empty_graph_debug_events += 1
+            self.last_debug_info = {
+                "empty_graph": True,
+                "fallback_source": fallback_meta["source"],
+                "unknown_node_count": int(unknown_mask.sum().item()),
+                "num_atoms_total": int(num_atoms),
+            }
+            if _atom_debug_enabled() and self._empty_graph_debug_events <= 100:
+                _write_atom_debug_line(
+                    "equiformer_empty_graph.jsonl",
+                    {
+                        "event": "empty_graph_early_return",
+                        "event_index": int(self._empty_graph_debug_events),
+                        "num_atoms_total": int(num_atoms),
+                        "natoms": [int(v) for v in natoms.detach().cpu().tolist()],
+                        "lengths": lengths.detach().cpu().tolist() if lengths is not None else None,
+                        "angles": angles.detach().cpu().tolist() if angles is not None else None,
+                        "max_radius": float(self.max_radius),
+                        "max_neighbors": int(self.max_neighbors),
+                        "fallback_source": fallback_meta["source"],
+                        "used_previous_logits": bool(fallback_meta["used_previous_logits"]),
+                        "unknown_node_count": int(unknown_mask.sum().item()),
+                        "atom_logits_returned_are_all_zero": bool(
+                            torch.allclose(fallback_logits, torch.zeros_like(fallback_logits), atol=1e-8, rtol=0.0)
+                        ),
+                    },
+                )
             outs = {}
             if self.regress_energy:
                 outs["energy"] = torch.zeros(self.batch_size, device=pos.device, dtype=pos.dtype)
-            outs["atoms"] = torch.zeros(num_atoms, MAX_ATOMIC_NUM, device=pos.device, dtype=pos.dtype)
+            outs["atoms"] = fallback_logits
             outs["forces"] = torch.zeros(num_atoms, 3, device=pos.device, dtype=pos.dtype)
             outs["lattices"] = torch.zeros(self.batch_size, 9, device=pos.device, dtype=pos.dtype)
             outs["lengths"] = torch.zeros(self.batch_size, 3, device=pos.device, dtype=pos.dtype)
@@ -771,6 +853,10 @@ class EquiformerV2(BaseModel):
         
         # Embedding block
         h = self.sphere_embedding(atomic_numbers)
+        if unknown_mask.any():
+            # Class 0 is an unknown/pad token at sampling time; do not inject an H embedding.
+            h = h.clone()
+            h[unknown_mask] = 0.0
         # Merge z, time embedding, and atom embedding
         if node_feats:
             h = torch.cat([h, *node_feats], dim=1)
@@ -798,13 +884,23 @@ class EquiformerV2(BaseModel):
             target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
             source_embedding = self.source_embedding(source_element)
             target_embedding = self.target_embedding(target_element)
+            if unknown_mask.any():
+                unknown_edge_mask = unknown_mask[edge_index[0]] | unknown_mask[edge_index[1]]
+                source_embedding = source_embedding.clone()
+                target_embedding = target_embedding.clone()
+                source_embedding[unknown_edge_mask] = 0.0
+                target_embedding[unknown_edge_mask] = 0.0
             edge_distance = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)
 
         # Edge-degree embedding
         edge_degree = self.edge_degree_embedding(
             atomic_numbers,
             edge_distance,
-            edge_index)
+            edge_index,
+            unknown_mask=unknown_mask)
+        if unknown_mask.any():
+            edge_degree.embedding = edge_degree.embedding.clone()
+            edge_degree.embedding[unknown_mask] = 0.0
         x.embedding = x.embedding + edge_degree.embedding
 
         ###############################################################
@@ -817,7 +913,8 @@ class EquiformerV2(BaseModel):
                 atomic_numbers,
                 edge_distance,
                 edge_index,
-                batch=batch    # for GraphDropPath
+                batch=batch,   # for GraphDropPath
+                unknown_mask=unknown_mask,
             )
 
         # Final layer norm
@@ -1354,11 +1451,32 @@ class EquiformerV2DynamicsF(BaseDynamics):
 
         if use_pbc:
             print("Use pbc in Equiformer.")
+        self.atom_decoder = None
+        self.known_atom_class_ids = None
+        self.unknown_atom_type_idx = 0
+        self.last_atom_debug_info = {}
+
+    def configure_atom_type_mapping(
+        self,
+        atom_decoder=None,
+        known_atom_class_ids=None,
+        unknown_atom_type_idx=0,
+    ):
+        self.atom_decoder = list(atom_decoder) if atom_decoder is not None else None
+        self.known_atom_class_ids = list(known_atom_class_ids) if known_atom_class_ids is not None else None
+        self.unknown_atom_type_idx = int(unknown_atom_type_idx)
+        self.last_atom_debug_info = {}
+        if hasattr(self.gnn, "configure_atom_type_mapping"):
+            self.gnn.configure_atom_type_mapping(
+                atom_decoder=self.atom_decoder,
+                known_atom_class_ids=self.known_atom_class_ids,
+                unknown_atom_type_idx=self.unknown_atom_type_idx,
+            )
 
     def forward(self, t, pos, atom_types, natoms, 
                 lattices=None, noisy_atom_types=None, 
                 lengths=None, angles=None, z=None, 
-                cond_feat=None, batch=None):
+                cond_feat=None, batch=None, previous_atom_logits=None):
         # t: [B,1]
         t = t.squeeze(-1) # [B]
         
@@ -1379,10 +1497,16 @@ class EquiformerV2DynamicsF(BaseDynamics):
             assert lattices.shape[-1] == 3
             lengths, angles = lattice_params_from_matrix(lattices)
 
+        unknown_mask = atom_types <= self.unknown_atom_type_idx
+        safe_atom_types = atom_types.clone()
+        if unknown_mask.any():
+            # Use index 1 only as a bounds-safe placeholder; the actual embedding is zeroed in the GNN.
+            safe_atom_types[unknown_mask] = 1
+
         outs = self.gnn(
             node_feats=node_feats,
             pos=pos,
-            atomic_numbers=atom_types - 1,  # set an atom index to start from zero.
+            atomic_numbers=safe_atom_types - 1,  # set an atom index to start from zero.
             natoms=natoms,
             lengths=lengths,
             angles=angles,
@@ -1390,7 +1514,11 @@ class EquiformerV2DynamicsF(BaseDynamics):
             to_jimages=None,
             nbonds=None,
             batch=batch,
+            previous_atom_logits=previous_atom_logits,
+            unknown_mask=unknown_mask,
         )
+        self.last_atom_debug_info = dict(getattr(self.gnn, "last_debug_info", {}))
+        self.last_atom_debug_info["unknown_atom_type_input_count"] = int(unknown_mask.sum().item())
 
         outs = self.key_map(outs)
 
@@ -1400,5 +1528,3 @@ class EquiformerV2DynamicsF(BaseDynamics):
         #     outs["atom_types"] = torch.softmax(outs["atom_types"], dim=1)
         
         return outs
-
-

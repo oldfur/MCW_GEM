@@ -234,7 +234,8 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         x,
         atomic_numbers,
         edge_distance,
-        edge_index
+        edge_index,
+        unknown_mask=None,
     ):
         
         # Compute edge scalar features (invariant to rotations)
@@ -244,6 +245,12 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
             target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
             source_embedding = self.source_embedding(source_element)
             target_embedding = self.target_embedding(target_element)
+            if unknown_mask is not None and unknown_mask.any():
+                unknown_edge_mask = unknown_mask[edge_index[0]] | unknown_mask[edge_index[1]]
+                source_embedding = source_embedding.clone()
+                target_embedding = target_embedding.clone()
+                source_embedding[unknown_edge_mask] = 0.0
+                target_embedding[unknown_edge_mask] = 0.0
             x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)
         else:
             x_edge = edge_distance  
@@ -587,7 +594,8 @@ class TransBlockV2(torch.nn.Module):
         atomic_numbers,
         edge_distance,
         edge_index,
-        batch           # for GraphDropPath
+        batch,          # for GraphDropPath
+        unknown_mask=None,
     ):
 
         output_embedding = x
@@ -597,7 +605,8 @@ class TransBlockV2(torch.nn.Module):
         output_embedding = self.ga(output_embedding, 
             atomic_numbers,
             edge_distance,
-            edge_index)
+            edge_index,
+            unknown_mask=unknown_mask)
         
         if self.drop_path is not None:
             output_embedding.embedding = self.drop_path(output_embedding.embedding, batch)

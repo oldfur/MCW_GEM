@@ -2,6 +2,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
+import json
 import numpy as np
 import os
 import smact
@@ -16,6 +17,27 @@ from smact.screening import pauling_test
 
 CrystalNNFP = CrystalNNFingerprint.from_preset("ops")
 CompFP = ElementProperty.from_preset("magpie")
+
+
+def _atom_debug_enabled():
+    return os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
+
+
+def _atom_debug_dir(default_dir=""):
+    return os.environ.get("DEBUG_ATOM_TYPES_DIR", "") or default_dir
+
+
+def _write_atom_debug_line(filename, payload, default_dir=""):
+    if not _atom_debug_enabled():
+        return
+    debug_dir = _atom_debug_dir(default_dir)
+    if not debug_dir:
+        return
+    os.makedirs(debug_dir, exist_ok=True)
+    payload = dict(payload)
+    payload.setdefault("pid", os.getpid())
+    with open(os.path.join(debug_dir, filename), "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 class Crystal:
     """Crystal object that holds information about a crystal structure and its validity, including
@@ -207,29 +229,56 @@ def array_dict_to_crystal(
     # Check if the lattice angles are in a valid range
     if np.all(50 <= x["angles"]) and np.all(x["angles"] <= 130):
         crys = Crystal(x)   # 这一行创建crystal对象，包含有效性
+        saved_path = None
         # Check if the crystal is valid
         if save:    # 如果需要保存
             if crys.valid:
                 os.makedirs(save_dir_name, exist_ok=True)
-                crys.structure.to(os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif"))
+                saved_path = os.path.join(save_dir_name, f"crystal_{x['sample_idx']}.cif")
+                crys.structure.to(saved_path)
                 print(f"valid crystal, save to {save_dir_name}!!")
             else:
                 if hasattr(crys, 'invalid_reason'):
                     if crys.invalid_reason == 'constructed but structure invalid':
                         subdir = os.path.join(save_dir_name, "struct_invalid")
                         os.makedirs(subdir, exist_ok=True)
-                        crys.structure.to(os.path.join(subdir, f"struct_invalid_crystal_{x['sample_idx']}.cif"))
+                        saved_path = os.path.join(subdir, f"struct_invalid_crystal_{x['sample_idx']}.cif")
+                        crys.structure.to(saved_path)
                         print(f"Crystal is not valid because: {crys.invalid_reason}, save to {subdir}!!")
                     elif crys.invalid_reason == 'structure valid but comp invalid':
                         subdir = os.path.join(save_dir_name, "comp_invalid")
                         os.makedirs(subdir, exist_ok=True)
-                        crys.structure.to(os.path.join(subdir, f"comp_invalid_crystal_{x['sample_idx']}.cif"))
+                        saved_path = os.path.join(subdir, f"comp_invalid_crystal_{x['sample_idx']}.cif")
+                        crys.structure.to(saved_path)
                         print(f"Crystal is not valid because: {crys.invalid_reason}, save to {subdir}!!")
                     else:
                         print(f"Crystal is not valid, not saving: {crys.invalid_reason}")
 
                 else:
                     print("Crystal is not valid")
+        if saved_path is not None and _atom_debug_enabled():
+            roundtrip = {
+                "event": "cif_roundtrip",
+                "sample_idx": x["sample_idx"],
+                "saved_path": saved_path,
+                "source_atom_types": [int(v) for v in np.array(x["atom_types"]).tolist()],
+                "source_species_symbols": [chemical_symbols[int(v)] if 0 <= int(v) < len(chemical_symbols) else f"Z{int(v)}" for v in np.array(x["atom_types"]).tolist()],
+                "constructed": bool(getattr(crys, "constructed", False)),
+                "valid": bool(getattr(crys, "valid", False)),
+            }
+            try:
+                reloaded = Structure.from_file(saved_path)
+                reloaded_atom_types = [int(v) for v in reloaded.atomic_numbers]
+                roundtrip["reloaded_atom_types"] = reloaded_atom_types
+                roundtrip["reloaded_species_symbols"] = [str(s) for s in reloaded.species]
+                roundtrip["roundtrip_match"] = reloaded_atom_types == roundtrip["source_atom_types"]
+            except Exception as exc:
+                roundtrip["roundtrip_error"] = str(exc)
+            _write_atom_debug_line(
+                "cif_roundtrip.jsonl",
+                roundtrip,
+                default_dir=os.path.join(save_dir_name, "atom_type_debug"),
+            )
     else:
         # returns an absurd crystal
         crys = Crystal(
