@@ -735,6 +735,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self._input_atom_type_debug_written = False
         self._last_prepare_inputs_debug = {}
         self._last_dynamics_atom_debug_info = {}
+        self._atom_prediction_step_tensor_dir = None
 
         print("use lambda_type: ", lambda_type)
         print("use lambda_rep: ", lambda_rep)
@@ -746,6 +747,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             if not self.debug_atom_dir:
                 self.debug_atom_dir = os.path.join(os.getcwd(), "atom_type_debug")
             os.makedirs(self.debug_atom_dir, exist_ok=True)
+            self._atom_prediction_step_tensor_dir = os.path.join(
+                self.debug_atom_dir,
+                "atom_type_step_tensors",
+            )
+            os.makedirs(self._atom_prediction_step_tensor_dir, exist_ok=True)
             os.environ["DEBUG_ATOM_TYPES"] = "1"
             os.environ["DEBUG_ATOM_TYPES_DIR"] = self.debug_atom_dir
             self._write_atom_debug_line(
@@ -828,6 +834,226 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 "known_atom_class_ids": self.known_atom_class_ids,
             },
         )
+
+    def _prediction_window_start_step_index(self):
+        return max(1, int(self.T) - int(self.prediction_threshold_t) + 1)
+
+    def _is_prediction_window_step(self, step_index):
+        return int(step_index) >= self._prediction_window_start_step_index()
+
+    def _mask_unknown_atom_class(self, logits):
+        masked_logits = logits.detach().clone()
+        masked_logits[:, :, self.unknown_atom_type_idx] = -1e9
+        return masked_logits
+
+    def _mean_pairwise_cosine_similarity(self, values):
+        if values.dim() != 2 or values.size(0) < 2:
+            return None
+        values = values.float()
+        if self.unknown_atom_type_idx == 0 and values.size(-1) > 1:
+            values = values[:, 1:]
+        if values.size(-1) == 0:
+            return None
+        normalized = F.normalize(values, p=2, dim=-1, eps=1e-12)
+        cosine_matrix = normalized @ normalized.transpose(0, 1)
+        pair_mask = ~torch.eye(cosine_matrix.size(0), dtype=torch.bool, device=cosine_matrix.device)
+        if not pair_mask.any():
+            return None
+        return float(cosine_matrix[pair_mask].mean().item())
+
+    def _record_atom_type_state_flow(
+        self,
+        source_tag,
+        round_index,
+        step_index,
+        atom_type_state_input_available,
+        input_state_updated_step_index,
+        atom_type_state_output,
+    ):
+        if not self.debug_atom_types:
+            return
+        payload = {
+            "event": "atom_type_state_flow",
+            "source_tag": source_tag,
+            "round_index": int(round_index),
+            "step_index": int(step_index),
+            "prediction_window_start_step_index": int(self._prediction_window_start_step_index()),
+            "prediction_window_step": bool(self._is_prediction_window_step(step_index)),
+            "atom_type_state_input_available": bool(atom_type_state_input_available),
+            "input_state_updated_step_index": int(input_state_updated_step_index)
+            if input_state_updated_step_index is not None else None,
+            "state_output_available": bool(atom_type_state_output is not None),
+            "state_overwritten_with_current_logits": bool(atom_type_state_output is not None),
+            "prepare_inputs_used_atom_type_state": bool(self._last_prepare_inputs_debug.get("used_atom_type_state", False)),
+            "empty_graph_fallback": bool(self._last_dynamics_atom_debug_info.get("empty_graph", False)),
+            "fallback_source": self._last_dynamics_atom_debug_info.get("fallback_source"),
+            "used_previous_atom_logits_fallback": bool(
+                self._last_dynamics_atom_debug_info.get("fallback_source") == "previous_atom_logits"
+            ),
+        }
+        if atom_type_state_output is not None:
+            payload["state_output_shape"] = list(atom_type_state_output.shape)
+            payload["state_output_stats"] = self._tensor_stats(atom_type_state_output)
+        self._write_atom_debug_line("atom_type_state_flow.jsonl", payload)
+
+    def _record_atom_prediction_window_step(
+        self,
+        logits,
+        node_mask,
+        round_index,
+        step_index,
+        source_tag,
+        atom_type_state_input_available,
+        input_state_updated_step_index,
+    ):
+        if not self.debug_atom_types:
+            return
+        assert logits.dim() == 3, f"prediction-window logits must be [B, N, C], got {tuple(logits.shape)}"
+        assert node_mask.dim() == 3 and node_mask.size(-1) == 1, \
+            f"prediction-window node_mask must be [B, N, 1], got {tuple(node_mask.shape)}"
+
+        B, N, C = logits.shape
+        valid_mask = node_mask.squeeze(-1).bool()
+        raw_probs = torch.softmax(logits, dim=ATOM_TYPE_SOFTMAX_DIM)
+        masked_logits = self._mask_unknown_atom_class(logits)
+        decode_probs = torch.softmax(masked_logits, dim=ATOM_TYPE_SOFTMAX_DIM)
+        decoded_idx = torch.argmax(masked_logits, dim=-1)
+
+        batch_payload = {
+            "event": "atom_type_prediction_step_batch",
+            "source_tag": source_tag,
+            "round_index": int(round_index),
+            "step_index": int(step_index),
+            "prediction_window_start_step_index": int(self._prediction_window_start_step_index()),
+            "logits_shape": list(logits.shape),
+            "probs_shape": list(decode_probs.shape),
+            "atom_type_state_input_available": bool(atom_type_state_input_available),
+            "input_state_updated_step_index": int(input_state_updated_step_index)
+            if input_state_updated_step_index is not None else None,
+            "empty_graph_fallback": bool(self._last_dynamics_atom_debug_info.get("empty_graph", False)),
+            "fallback_source": self._last_dynamics_atom_debug_info.get("fallback_source"),
+            "used_previous_atom_logits_fallback": bool(
+                self._last_dynamics_atom_debug_info.get("fallback_source") == "previous_atom_logits"
+            ),
+            "logits_stats": self._tensor_stats(logits),
+            "decode_probs_stats": self._tensor_stats(decode_probs),
+        }
+        self._write_atom_debug_line("atom_type_prediction_step_batches.jsonl", batch_payload)
+
+        if self._atom_prediction_step_tensor_dir:
+            tensor_payload = {
+                "event": "atom_type_prediction_step_tensors",
+                "source_tag": source_tag,
+                "round_index": int(round_index),
+                "step_index": int(step_index),
+                "prediction_window_start_step_index": int(self._prediction_window_start_step_index()),
+                "sample_global_indices": [int(round_index * B + b) for b in range(B)],
+                "sample_local_indices": [int(b) for b in range(B)],
+                "atom_type_state_input_available": bool(atom_type_state_input_available),
+                "input_state_updated_step_index": int(input_state_updated_step_index)
+                if input_state_updated_step_index is not None else None,
+                "empty_graph_fallback": bool(self._last_dynamics_atom_debug_info.get("empty_graph", False)),
+                "fallback_source": self._last_dynamics_atom_debug_info.get("fallback_source"),
+                "used_previous_atom_logits_fallback": bool(
+                    self._last_dynamics_atom_debug_info.get("fallback_source") == "previous_atom_logits"
+                ),
+                "logits": logits.detach().cpu(),
+                "raw_probs": raw_probs.detach().cpu(),
+                "decode_probs": decode_probs.detach().cpu(),
+                "decoded_idx": decoded_idx.detach().cpu(),
+                "node_mask": node_mask.detach().cpu(),
+            }
+            torch.save(
+                tensor_payload,
+                os.path.join(
+                    self._atom_prediction_step_tensor_dir,
+                    f"round_{int(round_index):04d}_step_{int(step_index):04d}.pt",
+                ),
+            )
+
+        for b in range(B):
+            mask = valid_mask[b]
+            n_real = int(mask.sum().item())
+            sample_global_index = int(round_index * B + b)
+            valid_logits = logits[b, mask]
+            valid_raw_probs = raw_probs[b, mask]
+            valid_decode_probs = decode_probs[b, mask]
+            valid_decoded_idx = decoded_idx[b, mask]
+            topk = min(5, C)
+
+            if n_real > 0:
+                top_probs, top_idx = torch.topk(valid_decode_probs, k=topk, dim=-1)
+                top1_probs = top_probs[:, 0]
+                top2_probs = top_probs[:, 1] if topk > 1 else torch.zeros_like(top1_probs)
+                margin = top1_probs - top2_probs
+                h_prob = valid_decode_probs[:, 1] if C > 1 else torch.zeros_like(top1_probs)
+                node_logits_std = valid_logits.std(dim=-1, unbiased=False)
+                logits_excluding_unknown = valid_logits[:, 1:] if C > 1 else valid_logits
+                probs_excluding_unknown = valid_decode_probs[:, 1:] if C > 1 else valid_decode_probs
+                cross_node_logits_std_mean = float(
+                    logits_excluding_unknown.std(dim=0, unbiased=False).mean().item()
+                ) if n_real > 1 and logits_excluding_unknown.numel() > 0 else 0.0
+                cross_node_probs_std_mean = float(
+                    probs_excluding_unknown.std(dim=0, unbiased=False).mean().item()
+                ) if n_real > 1 and probs_excluding_unknown.numel() > 0 else 0.0
+                mean_cosine_similarity = self._mean_pairwise_cosine_similarity(logits_excluding_unknown)
+                raw_class0_prob = valid_raw_probs[:, self.unknown_atom_type_idx]
+                top5_per_node = [
+                    {
+                        "node_index": int(node_idx),
+                        "class_ids": [int(v) for v in top_idx[node_idx].detach().cpu().tolist()],
+                        "species": [self._class_index_to_symbol(v) for v in top_idx[node_idx].detach().cpu().tolist()],
+                        "probs": [float(v) for v in top_probs[node_idx].detach().cpu().tolist()],
+                    }
+                    for node_idx in range(valid_decode_probs.size(0))
+                ]
+            else:
+                margin = torch.zeros(0, device=logits.device)
+                h_prob = torch.zeros(0, device=logits.device)
+                node_logits_std = torch.zeros(0, device=logits.device)
+                cross_node_logits_std_mean = None
+                cross_node_probs_std_mean = None
+                mean_cosine_similarity = None
+                raw_class0_prob = torch.zeros(0, device=logits.device)
+                top5_per_node = []
+
+            sample_payload = {
+                "event": "atom_type_prediction_step",
+                "source_tag": source_tag,
+                "round_index": int(round_index),
+                "step_index": int(step_index),
+                "prediction_window_start_step_index": int(self._prediction_window_start_step_index()),
+                "sample_local_index": int(b),
+                "sample_global_index": sample_global_index,
+                "real_atom_count": n_real,
+                "logits_shape": [n_real, C],
+                "probs_shape": [n_real, C],
+                "atom_type_state_input_available": bool(atom_type_state_input_available),
+                "input_state_updated_step_index": int(input_state_updated_step_index)
+                if input_state_updated_step_index is not None else None,
+                "empty_graph_fallback": bool(self._last_dynamics_atom_debug_info.get("empty_graph", False)),
+                "fallback_source": self._last_dynamics_atom_debug_info.get("fallback_source"),
+                "used_previous_atom_logits_fallback": bool(
+                    self._last_dynamics_atom_debug_info.get("fallback_source") == "previous_atom_logits"
+                ),
+                "decoded_argmax_class_ids": [int(v) for v in valid_decoded_idx.detach().cpu().tolist()],
+                "decoded_argmax_species": [self._class_index_to_symbol(v) for v in valid_decoded_idx.detach().cpu().tolist()],
+                "all_nodes_top1_H": bool(n_real > 0 and valid_decoded_idx.eq(1).all().item()),
+                "top5_per_node": top5_per_node,
+                "h_probability_per_node": [float(v) for v in h_prob.detach().cpu().tolist()],
+                "h_probability_stats": self._tensor_stats(h_prob),
+                "raw_class0_probability_stats": self._tensor_stats(raw_class0_prob),
+                "top1_top2_margin_per_node": [float(v) for v in margin.detach().cpu().tolist()],
+                "top1_top2_margin_stats": self._tensor_stats(margin),
+                "node_logits_std_per_node": [float(v) for v in node_logits_std.detach().cpu().tolist()],
+                "node_logits_std_stats": self._tensor_stats(node_logits_std),
+                "logits_diversity_across_nodes_mean": cross_node_logits_std_mean,
+                "probs_diversity_across_nodes_mean": cross_node_probs_std_mean,
+                "mean_cosine_similarity_between_node_logits": mean_cosine_similarity,
+                "logit_stats": self._tensor_stats(valid_logits) if n_real > 0 else self._tensor_stats(valid_logits),
+                "prob_stats": self._tensor_stats(valid_decode_probs) if n_real > 0 else self._tensor_stats(valid_decode_probs),
+            }
+            self._write_atom_debug_line("atom_type_prediction_step_trace.jsonl", sample_payload)
 
     def _finalize_atom_type_logits(
         self,
@@ -2633,6 +2859,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
         atom_type_state = None
+        last_atom_state_updated_step_index = None
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
         # --- begin of for T steps
@@ -2642,6 +2869,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             t      = float(t_grid[i].item())
             t_next = float(t_grid[i+1].item())
             dt     = t_next - t               # negative
+            step_index = i + 1
+            atom_type_state_input_available = atom_type_state is not None
+            input_state_updated_step_index = last_atom_state_updated_step_index
 
             # 只取前 3 维坐标
             zx = z[:, :, :3]
@@ -2728,6 +2958,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 )
             if z.size(-1) >= self.n_dims + self.num_classes:
                 atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
+                last_atom_state_updated_step_index = step_index
 
             # =======================================================
             # Symmetry guidance
@@ -2791,6 +3022,26 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 z[:, :, :3] = zx
         # --- end of for T steps
 
+            self._record_atom_type_state_flow(
+                source_tag="sample_score_sde",
+                round_index=round_index,
+                step_index=step_index,
+                atom_type_state_input_available=atom_type_state_input_available,
+                input_state_updated_step_index=input_state_updated_step_index,
+                atom_type_state_output=atom_type_state,
+            )
+            if self._is_prediction_window_step(step_index) and atom_type_state is not None:
+                atom_type_logits = self.phi_unnormalize_h_cat(atom_type_state.clone(), node_mask)
+                self._record_atom_prediction_window_step(
+                    logits=atom_type_logits,
+                    node_mask=node_mask,
+                    round_index=round_index,
+                    step_index=step_index,
+                    source_tag="sample_score_sde",
+                    atom_type_state_input_available=atom_type_state_input_available,
+                    input_state_updated_step_index=input_state_updated_step_index,
+                )
+
         print('Sampling finished.')
 
         x = z[:, :, :self.n_dims]
@@ -2852,11 +3103,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
         atom_type_state = None
+        last_atom_state_updated_step_index = None
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             t      = float(t_grid[i].item())
             t_next = float(t_grid[i+1].item())
             dt     = t_next - t               # negative
+            step_index = i + 1
+            atom_type_state_input_available = atom_type_state is not None
+            input_state_updated_step_index = last_atom_state_updated_step_index
 
             # 只取前 3 维坐标
             zx = z[:, :, :3]
@@ -2912,6 +3167,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             )
             if z.size(-1) >= self.n_dims + self.num_classes:
                 atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
+                last_atom_state_updated_step_index = step_index
 
             # =======================================================
             # Repulsion correction
@@ -2927,6 +3183,26 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     r_cut=0.5,   
                 )
                 z[:, :, :3] = zx
+
+            self._record_atom_type_state_flow(
+                source_tag="sample_score_sde_Lattice",
+                round_index=round_index,
+                step_index=step_index,
+                atom_type_state_input_available=atom_type_state_input_available,
+                input_state_updated_step_index=input_state_updated_step_index,
+                atom_type_state_output=atom_type_state,
+            )
+            if self._is_prediction_window_step(step_index) and atom_type_state is not None:
+                atom_type_logits = self.phi_unnormalize_h_cat(atom_type_state.clone(), node_mask)
+                self._record_atom_prediction_window_step(
+                    logits=atom_type_logits,
+                    node_mask=node_mask,
+                    round_index=round_index,
+                    step_index=step_index,
+                    source_tag="sample_score_sde_Lattice",
+                    atom_type_state_input_available=atom_type_state_input_available,
+                    input_state_updated_step_index=input_state_updated_step_index,
+                )
 
         print('Sampling finished.')
 
