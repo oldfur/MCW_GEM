@@ -42,6 +42,29 @@ def infer_sample_index(path):
     return int(match.group(1))
 
 
+def infer_default_debug_dir(sample_dir):
+    direct_debug_dir = sample_dir / "atom_type_debug"
+    if direct_debug_dir.exists():
+        return direct_debug_dir
+
+    if sample_dir.name.startswith("epoch_"):
+        sibling_debug_dir = sample_dir.parent / "atom_type_debug"
+        if sibling_debug_dir.exists():
+            return sibling_debug_dir
+
+    return direct_debug_dir
+
+
+def find_worker_dirs(sample_dir):
+    if not sample_dir.exists():
+        return []
+    return sorted(
+        path
+        for path in sample_dir.iterdir()
+        if path.is_dir() and path.name.startswith("worker_")
+    )
+
+
 def summarize_cifs(sample_dir):
     cif_paths = sorted(sample_dir.rglob("*.cif"))
     rows = []
@@ -135,6 +158,69 @@ def summarize_debug_dir(debug_dir):
     return data
 
 
+def summarize_single_run(sample_dir, debug_dir):
+    cif_summary = summarize_cifs(sample_dir)
+    debug_summary = summarize_debug_dir(debug_dir)
+    joined = join_debug_to_cifs(cif_summary, debug_summary)
+    total_samples = len(cif_summary["rows"])
+    all_h_count = sum(1 for row in cif_summary["rows"] if row["all_h"])
+    single_element_count = sum(1 for row in cif_summary["rows"] if row["single_element"])
+    return {
+        "sample_dir": str(sample_dir),
+        "debug_dir": str(debug_dir),
+        "cif_summary": cif_summary,
+        "debug_summary": debug_summary,
+        "joined": joined,
+        "total_samples": total_samples,
+        "all_h_count": all_h_count,
+        "single_element_count": single_element_count,
+    }
+
+
+def summarize_multi_worker(sample_dir, worker_dirs):
+    element_frequency = Counter()
+    worker_reports = []
+    total_samples = 0
+    total_all_h = 0
+    total_single_element = 0
+    total_failures = 0
+    total_debug_all_h_rows = 0
+    all_h_files = []
+
+    for worker_dir in worker_dirs:
+        worker_sample_dir = worker_dir / "epoch_0"
+        worker_debug_dir = infer_default_debug_dir(worker_dir)
+        worker_report = summarize_single_run(worker_sample_dir, worker_debug_dir)
+        worker_reports.append(
+            {
+                "worker": worker_dir.name,
+                **worker_report,
+            }
+        )
+
+        total_samples += worker_report["total_samples"]
+        total_all_h += worker_report["all_h_count"]
+        total_single_element += worker_report["single_element_count"]
+        total_failures += len(worker_report["cif_summary"]["failures"])
+        total_debug_all_h_rows += len(worker_report["debug_summary"]["all_h_rows"])
+        element_frequency.update(worker_report["cif_summary"]["element_frequency"])
+        all_h_files.extend(worker_report["cif_summary"]["all_h_files"])
+
+    return {
+        "sample_dir": str(sample_dir),
+        "worker_reports": worker_reports,
+        "aggregate": {
+            "total_samples": total_samples,
+            "all_h_count": total_all_h,
+            "single_element_count": total_single_element,
+            "cif_parse_failures": total_failures,
+            "debug_all_h_rows": total_debug_all_h_rows,
+            "element_frequency": dict(sorted(element_frequency.items())),
+            "all_h_files": all_h_files,
+        },
+    }
+
+
 def join_debug_to_cifs(cif_summary, debug_summary):
     by_index = defaultdict(dict)
     for row in cif_summary["rows"]:
@@ -208,14 +294,45 @@ def print_report(sample_dir, debug_dir, cif_summary, debug_summary, joined):
                 )
 
 
+def print_multi_worker_report(sample_dir, multi_report):
+    aggregate = multi_report["aggregate"]
+
+    print(f"Multi-worker sample dir: {sample_dir}")
+    print(f"Detected workers: {len(multi_report['worker_reports'])}")
+    print(f"Total CIF samples: {aggregate['total_samples']}")
+    print(f"All-H CIF samples: {aggregate['all_h_count']}")
+    print(f"Single-element CIF samples: {aggregate['single_element_count']}")
+    print(f"CIF parse failures: {aggregate['cif_parse_failures']}")
+    print(f"Debug all-H rows: {aggregate['debug_all_h_rows']}")
+    print(f"Element frequency: {aggregate['element_frequency']}")
+
+    if aggregate["all_h_files"]:
+        print("All-H CIF files:")
+        for path in aggregate["all_h_files"]:
+            print(f"  - {path}")
+
+    print("Per-worker summary:")
+    for worker_report in multi_report["worker_reports"]:
+        debug_summary = worker_report["debug_summary"]
+        print(
+            f"  - {worker_report['worker']}: samples={worker_report['total_samples']} "
+            f"all_H={worker_report['all_h_count']} single_element={worker_report['single_element_count']} "
+            f"debug_all_H={len(debug_summary['all_h_rows'])} sample_dir={worker_report['sample_dir']}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Inspect sampling outputs for all-H crystal bugs.")
-    parser.add_argument("sample_dir", type=Path, help="Sampling output directory containing CIF files.")
+    parser.add_argument(
+        "sample_dir",
+        type=Path,
+        help="Sampling output directory. Accepts a single-run CIF dir, a worker dir, or a multi-worker base save dir.",
+    )
     parser.add_argument(
         "--debug-dir",
         type=Path,
         default=None,
-        help="Optional atom-type debug directory. Defaults to <sample_dir>/atom_type_debug.",
+        help="Optional atom-type debug directory for single-run mode. In multi-worker mode, per-worker debug dirs are auto-detected.",
     )
     parser.add_argument(
         "--output-json",
@@ -226,21 +343,49 @@ def main():
     args = parser.parse_args()
 
     sample_dir = args.sample_dir.resolve()
-    debug_dir = (args.debug_dir or (sample_dir / "atom_type_debug")).resolve()
+    worker_dirs = find_worker_dirs(sample_dir)
 
-    cif_summary = summarize_cifs(sample_dir)
-    debug_summary = summarize_debug_dir(debug_dir)
-    joined = join_debug_to_cifs(cif_summary, debug_summary)
+    if worker_dirs:
+        multi_report = summarize_multi_worker(sample_dir, worker_dirs)
+        print_multi_worker_report(sample_dir, multi_report)
 
-    print_report(sample_dir, debug_dir, cif_summary, debug_summary, joined)
+        if args.output_json is not None:
+            output_report = {
+                "mode": "multi_worker",
+                "sample_dir": str(sample_dir),
+                "worker_reports": [
+                    {
+                        **worker_report,
+                        "joined": {str(k): v for k, v in worker_report["joined"].items()},
+                    }
+                    for worker_report in multi_report["worker_reports"]
+                ],
+                "aggregate": multi_report["aggregate"],
+            }
+            args.output_json.parent.mkdir(parents=True, exist_ok=True)
+            with args.output_json.open("w", encoding="utf-8") as f:
+                json.dump(output_report, f, ensure_ascii=True, indent=2)
+        return
+
+    debug_dir = (args.debug_dir or infer_default_debug_dir(sample_dir)).resolve()
+
+    single_report = summarize_single_run(sample_dir, debug_dir)
+    print_report(
+        sample_dir,
+        debug_dir,
+        single_report["cif_summary"],
+        single_report["debug_summary"],
+        single_report["joined"],
+    )
 
     if args.output_json is not None:
         report = {
+            "mode": "single_run",
             "sample_dir": str(sample_dir),
             "debug_dir": str(debug_dir),
-            "cif_summary": cif_summary,
-            "debug_summary": debug_summary,
-            "joined": {str(k): v for k, v in joined.items()},
+            "cif_summary": single_report["cif_summary"],
+            "debug_summary": single_report["debug_summary"],
+            "joined": {str(k): v for k, v in single_report["joined"].items()},
         }
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         with args.output_json.open("w", encoding="utf-8") as f:

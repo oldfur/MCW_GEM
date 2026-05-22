@@ -234,6 +234,58 @@ CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u main_LF_train.py --device cuda --dp
 python main_LF_train.py --device cpu --no-cuda --exp_name debug_LF_mp20 --n_epochs 2 --batch_size 2  --sample_batch_size 2 --test_epochs 1 --visulaize_epoch 1 --num_rounds 2 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --include_charges False --visualize_every_batch 20000 --num_train 20  --num_val 20 --num_test 20 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 1 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy
 ```
 
+### 服务器目录布局（代码与 outputs 分开）
+
+- 代码目录：`~/mcw/MCW_GEM`
+- 数据目录：`~/mcw/MCW_GEM/mp20`
+- 输出目录：`~/data1/mcw/MCW_GEM/outputs`
+- 说明：`main_LF_train.py` / `main_LF_sample.py` 内部会把 checkpoint 保存到相对路径 `outputs/...`，所以服务器上应先 `cd ~/data1/mcw/MCW_GEM`，再用绝对路径调用代码目录下的脚本。
+- 注意：`~` 已经表示 home 目录，不要把路径写成 `~/mcw/data1/...`。
+
+### 服务器训练 diffusion_LF_wrap（empty-graph / atom-type 修复版）
+```
+mkdir -p ~/data1/mcw/MCW_GEM/outputs ~/data1/mcw/MCW_GEM/mp20/analyze_test && cd ~/data1/mcw/MCW_GEM && CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u ~/mcw/MCW_GEM/main_LF_train.py --device cuda --dp True --exp_name train_LF_mp20_emptygraph_atomtypefix_20260521 --wandb_usr maochenwei-ustc --model DGAP --atom_type_pred 1 --include_charges False --lr 1e-4 --n_epochs 1000 --batch_size 128 --test_epochs 10 --visulaize_epoch 10 --save_epoch 50 --n_report_steps 16 --visualize_every_batch 20000 --n_samples 20 --sample_batch_size 32 --diffusion_steps 1000 --lambda_l 1 --lambda_a 1 --lambda_type 0.1 --n_corrector_steps 1 --online 0 --num_workers 0 --compute_novelty 1 --compute_novelty_epoch 150 --probabilistic_model diffusion_LF_wrap --datadir ~/mcw/MCW_GEM/mp20 --dataset_folder_path ~/mcw/MCW_GEM/mp20/raw --pretrained_Lattice_model ~/data1/mcw/MCW_GEM/outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --save_dir ~/data1/mcw/MCW_GEM/mp20/analyze_test/train_LF_mp20_emptygraph_atomtypefix_20260521 > ~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521.log 2>&1 &
+```
+
+### 服务器前台采样 diffusion_LF_wrap（实时看 tqdm 进度条）
+```
+mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100 && cd ~/data1/mcw/MCW_GEM && CUDA_VISIBLE_DEVICES=2 python -u ~/mcw/MCW_GEM/main_LF_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 1 --sample_seed 2026 --num_rounds 16 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --sde_type ve --datadir ~/mcw/MCW_GEM/mp20 --dataset_folder_path ~/mcw/MCW_GEM/mp20/raw --pretrained_Lattice_model ~/data1/mcw/MCW_GEM/outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy --save_dir ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100 --debug-atom-types True --debug-atom-dir ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100/atom_type_debug
+```
+
+### 服务器多卡采样 diffusion_LF_wrap（按 num_rounds 分片，不改采样逻辑）
+
+- 原则：每张卡启动一个独立 `main_LF_sample.py` 进程，自动分配 `num_rounds`，每个 worker 写到 `save_dir/worker_XX`。
+- launcher 参数里用 `--num-rounds` 和 `--sample-seed`；转发给 `main_LF_sample.py` 的参数放在 `--` 之后。
+- worker 结束后会自动生成：
+  - `save_dir/multi_gpu_manifest.json`
+  - `save_dir/multi_gpu_summary.json`
+
+```
+cd ~/data1/mcw/MCW_GEM && python -u ~/mcw/MCW_GEM/scripts/sample_multi_gpu.py --gpus 0,1,2,3 --num-rounds 16 --sample-seed 2026 --save-dir ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100_multi_gpu -- --device cuda --dp True --num_workers 0 --exp_name sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100_multi_gpu --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 1 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --sde_type ve --datadir ~/mcw/MCW_GEM/mp20 --dataset_folder_path ~/mcw/MCW_GEM/mp20/raw --pretrained_Lattice_model ~/data1/mcw/MCW_GEM/outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy --debug-atom-types True
+```
+
+说明：
+- 这条命令总共仍然采 `sample_batch_size * num_rounds = 32 * 16 = 512` 个样本。
+- launcher 会自动把 16 轮均分到 4 张卡，并给每个 worker 加不同的 `sample_seed` 偏移，避免重复样本。
+- 不要在 `--` 后面再手动传 `--num_rounds`、`--sample_seed`、`--save_dir`、`--debug-atom-dir`；这些会由 launcher 自动覆盖成每个 worker 的专属值。
+
+### 采样后统计 all-H 样本
+单卡或单 worker 输出目录：
+```
+cd ~/mcw/MCW_GEM && python scripts/debug_all_h_samples.py ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100/epoch_0 --debug-dir ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100/atom_type_debug
+```
+
+多卡 launcher 输出目录：
+```
+cd ~/mcw/MCW_GEM && python scripts/debug_all_h_samples.py ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100_multi_gpu
+```
+
+说明：
+- 多卡版本会自动识别 `worker_XX` 子目录，并汇总所有 worker 的 `epoch_0` 和 `atom_type_debug`。
+- `scripts/sample_multi_gpu.py` 结束后也会自动生成 `save_dir/multi_gpu_summary.json`，可直接查看总样本数、all-H 数和每个 worker 的统计。
+
+若你的 lattice checkpoint 文件名是 `generative_model.npy` 而不是 `generative_model_ema.npy`，把上面命令中的对应路径替换掉即可。
+
 ```
 CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u main_LF_train.py --device cuda --dp True --exp_name train_LF_mp20  --wandb_usr maochenwei-ustc --model DGAP --atom_type_pred 1 --include_charges False --lr 1e-4 --n_epochs 1000 --batch_size 128 --test_epochs 10 --visulaize_epoch 10 --save_epoch 50 --n_report_steps 16 --visualize_every_batch 20000 --n_samples 20 --sample_batch_size 32 --diffusion_steps 1000 --lambda_l 1 --lambda_a 1 --lambda_type 0.1 --n_corrector_steps 1 --online 0 --num_workers 0 --compute_novelty 1 --compute_novelty_epoch 150 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model.npy  > train.log 2>&1 &
 ```
@@ -246,6 +298,8 @@ CUDA_VISIBLE_DEVICES=0 nohup python -u main_LF_sample.py --device cuda --dp True
 CUDA_VISIBLE_DEVICES=2 python -u main_LF_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.001 --n_corrector_steps 1 --sample_seed 2000 --num_rounds 4 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ./outputs/train_LF_mp20/diffusion_LF_wrap/generative_model_ema_epoch120.npy --save_dir ./outputs/1203_sample_128_2
 ```
 若使用真实lattice,加上：--sample_realistic_LA 1 --batch_size 32
+
+
 
 
 ### 指定 SDE 为 VE-SDE
