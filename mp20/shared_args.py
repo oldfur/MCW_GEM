@@ -241,5 +241,11 @@ def setup_shared_args(parser):
                         help='Enable detailed atom-type sampling diagnostics.')
     parser.add_argument('--debug-atom-dir', type=str, default='',
                         help='Optional directory for atom-type debug outputs. Defaults to <save_dir>/atom_type_debug.')
+    parser.add_argument('--disable-all-h-guard', action=BoolArg, default=False,
+                        help='Disable the final decode-time all-H guard for atom types.')
+    parser.add_argument('--all-h-guard-topk', type=int, default=4,
+                        help='Top-k candidate width for the final all-H rescue search. Defaults to the existing atom-type repair top-k.')
+    parser.add_argument('--all-h-guard-min-non-h', type=int, default=1,
+                        help='Minimum number of non-H atoms enforced only when the raw final decode is all-H.')
 
     return parser

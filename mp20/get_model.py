@@ -750,6 +750,9 @@ def get_model(args, device, dataset_info, dataloader_train,
             atom_decoder=dataset_info.get('atom_decoder'),
             known_atom_class_ids=dataset_info.get('known_atom_class_ids'),
             unknown_atom_type_idx=dataset_info.get('atom_unknown_idx', 0),
+            disable_all_h_guard=getattr(args, 'disable_all_h_guard', False),
+            all_h_guard_topk=getattr(args, 'all_h_guard_topk', 4),
+            all_h_guard_min_non_h=getattr(args, 'all_h_guard_min_non_h', 1),
         )
         total_params = sum(p.numel() for p in vdm.parameters())
         trainable_params = sum(p.numel() for p in vdm.parameters() if p.requires_grad)
