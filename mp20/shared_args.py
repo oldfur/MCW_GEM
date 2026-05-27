@@ -17,7 +17,7 @@ def _arg_to_bool(arg):
         elif arg in ['false', 'f', '0']:
             return False
         else:
-            return ValueError('Could not parse a True/False boolean')
+            raise ValueError('Could not parse a True/False boolean')
     else:
         raise ValueError('Input must be boolean or string! {}'.format(type(arg)))
 

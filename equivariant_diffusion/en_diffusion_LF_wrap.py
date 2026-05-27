@@ -742,7 +742,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     break
         self.debug_atom_types = bool(debug_atom_types) or os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
         self.debug_atom_dir = debug_atom_dir or os.environ.get("DEBUG_ATOM_TYPES_DIR")
-        self.all_h_guard_enabled = not bool(disable_all_h_guard)
+        self.disable_all_h_guard_arg = bool(disable_all_h_guard)
+        self.all_h_guard_enabled = not self.disable_all_h_guard_arg
         self.atom_type_repair_topk = int(DEFAULT_ATOM_TYPE_REPAIR_TOPK)
         self.all_h_guard_topk = max(1, int(all_h_guard_topk))
         self.all_h_guard_min_non_h = max(1, int(all_h_guard_min_non_h))
@@ -759,9 +760,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("cutoff for repulsion loss: ", cutoff)
         print("use lambda_type_adjust: ", lambda_type_adjust)
         print("adjust atom type during diffusion: ", adjust_atom_type)
+        print("disable_all_h_guard arg: ", self.disable_all_h_guard_arg)
         print("all-H guard enabled: ", self.all_h_guard_enabled)
         print("all-H guard top-k: ", self.all_h_guard_topk)
         print("all-H guard min non-H: ", self.all_h_guard_min_non_h)
+        os.environ["MCW_ALL_H_GUARD_ENABLED"] = "1" if self.all_h_guard_enabled else "0"
+        os.environ["MCW_ALL_H_GUARD_DISABLED_ARG"] = "1" if self.disable_all_h_guard_arg else "0"
 
         if self.debug_atom_types:
             if not self.debug_atom_dir:
@@ -782,9 +786,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     "num_classes": int(self.num_classes),
                     "atom_type_pred": bool(self.atom_type_pred),
                     "debug_atom_dir": self.debug_atom_dir,
+                    "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
                     "all_h_guard_enabled": bool(self.all_h_guard_enabled),
                     "all_h_guard_topk": int(self.all_h_guard_topk),
                     "all_h_guard_min_non_h": int(self.all_h_guard_min_non_h),
+                    "all_h_guard_fail_fast_enabled": bool(self._all_h_guard_fail_fast_enabled()),
                     # This implementation predicts atom logits from geometry and does not
                     # maintain an explicit categorical reverse state during sampling.
                     "categorical_sampling_mode": "pred_logits_only",
@@ -860,6 +866,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
     def _reset_atom_type_all_h_guard_summary(self):
         self._atom_type_all_h_guard_summary = {
+            "guard_decode_call_count": 0,
+            "guard_trigger_count": 0,
+            "guard_repair_success_count": 0,
             "total_samples": 0,
             "raw_all_H_count": 0,
             "final_all_H_count": 0,
@@ -896,6 +905,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             }
 
         payload = {
+            "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
+            "all_h_guard_enabled": bool(self.all_h_guard_enabled),
+            "all_h_guard_fail_fast_enabled": bool(self._all_h_guard_fail_fast_enabled()),
+            "guard_decode_call_count": int(summary["guard_decode_call_count"]),
+            "guard_trigger_count": int(summary["guard_trigger_count"]),
+            "guard_repair_success_count": int(summary["guard_repair_success_count"]),
             "total_samples": int(summary["total_samples"]),
             "raw_all_H_count": int(summary["raw_all_H_count"]),
             "final_all_H_count": int(summary["final_all_H_count"]),
@@ -916,6 +931,28 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             encoding="utf-8",
         ) as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
+
+    def _all_h_guard_fail_fast_enabled(self):
+        return bool(self.all_h_guard_enabled or self.debug_atom_types)
+
+    def _raise_all_h_guard_violation(self, stage, payload):
+        failure_payload = dict(payload)
+        failure_payload.setdefault("event", "all_h_guard_violation")
+        failure_payload.setdefault("stage", stage)
+        failure_payload.setdefault("all_h_guard_enabled", bool(self.all_h_guard_enabled))
+        failure_payload.setdefault("disable_all_h_guard_arg", bool(self.disable_all_h_guard_arg))
+        failure_payload.setdefault("debug_atom_types", bool(self.debug_atom_types))
+        self._write_atom_debug_line("atom_type_guard_failures.jsonl", failure_payload)
+        sample_global_index = failure_payload.get("sample_global_index")
+        sample_suffix = (
+            f" at global sample index {int(sample_global_index)}"
+            if sample_global_index is not None else ""
+        )
+        decoded_species = failure_payload.get("decoded_species")
+        decoded_species_suffix = f", decoded_species={decoded_species}" if decoded_species is not None else ""
+        raise RuntimeError(
+            f"[AllHGuard] {stage} observed all-H output{sample_suffix}{decoded_species_suffix}"
+        )
 
     def _compute_assignment_log_score(self, probs, class_idx):
         if probs.numel() == 0 or class_idx.numel() == 0:
@@ -1063,7 +1100,34 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             result["logprob_new"] = None
             result["site_entropy"] = None
             result["topk_candidates_at_repaired_site"] = []
+        result["final_all_H"] = bool(
+            working_idx.numel() > 0 and working_idx.eq(self.h_class_idx).all().item()
+        )
         return working_idx, result
+
+    def _assert_no_all_h_in_one_hot_batch(self, one_hot, node_mask, source_tag, round_index, stage):
+        if not self._all_h_guard_fail_fast_enabled():
+            return
+        assert one_hot.dim() == 3, f"one_hot must be [B, N, C], got {tuple(one_hot.shape)}"
+        elem_idx = torch.argmax(one_hot, dim=-1)
+        valid_mask = node_mask.squeeze(-1).bool()
+        batch_size = one_hot.size(0)
+        for batch_idx in range(batch_size):
+            valid_idx = elem_idx[batch_idx, valid_mask[batch_idx]]
+            if valid_idx.numel() == 0:
+                continue
+            if bool(valid_idx.eq(self.h_class_idx).all().item()):
+                self._raise_all_h_guard_violation(
+                    stage,
+                    {
+                        "source_tag": source_tag,
+                        "round_index": int(round_index),
+                        "sample_local_index": int(batch_idx),
+                        "sample_global_index": int(round_index * batch_size + batch_idx),
+                        "decoded_class_ids": [int(v) for v in valid_idx.detach().cpu().tolist()],
+                        "decoded_species": [self._class_index_to_symbol(v) for v in valid_idx.detach().cpu().tolist()],
+                    },
+                )
 
     def _prediction_window_start_step_index(self):
         return max(1, int(self.T) - int(self.prediction_threshold_t) + 1)
@@ -1408,6 +1472,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             raw_idx = argmax_before[b, mask]
             masked_idx = argmax_after_mask[b, mask]
             raw_decoded_idx = raw_elem_idx[b, mask]
+            sample_global_index = int(round_index * B + b)
             final_idx, guard_info = self._repair_all_h_assignment(
                 valid_logits=valid_logits,
                 valid_probs=valid_masked_probs,
@@ -1417,7 +1482,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             all_from_default_before_mask = bool(n_real > 0 and raw_idx.eq(0).all().item())
             raw_all_h = bool(guard_info["raw_all_H"])
             all_h = bool(n_real > 0 and final_idx.eq(self.h_class_idx).all().item())
-            sample_global_index = int(round_index * B + b)
             raw_counts = Counter(int(v) for v in raw_decoded_idx.detach().cpu().tolist())
             final_counts = Counter(int(v) for v in final_idx.detach().cpu().tolist())
             raw_species_counts = {
@@ -1433,6 +1497,32 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             num_all_h_rescued += int(raw_all_h and (not all_h))
             single_element_count_before_guard += int(len(raw_counts) == 1 and n_real > 0)
             single_element_count_after_guard += int(len(final_counts) == 1 and n_real > 0)
+            if raw_all_h and not all_h:
+                replacement = guard_info["replacements"][0] if guard_info["replacements"] else None
+                replacement_desc = (
+                    f"site={replacement['site_index']} {replacement['old_symbol']}->{replacement['new_symbol']}"
+                    if replacement is not None else "no-replacement-metadata"
+                )
+                print(
+                    f"[AllHGuard] repaired raw all-H sample at global sample index "
+                    f"{sample_global_index} ({source_tag}, round={round_index}, batch={b}): {replacement_desc}"
+                )
+            if self._all_h_guard_fail_fast_enabled() and all_h:
+                self._raise_all_h_guard_violation(
+                    "finalize_atom_type_logits",
+                    {
+                        "source_tag": source_tag,
+                        "round_index": int(round_index),
+                        "sample_local_index": int(b),
+                        "sample_global_index": sample_global_index,
+                        "raw_all_H": bool(raw_all_h),
+                        "raw_decoded_class_ids": [int(v) for v in raw_decoded_idx.detach().cpu().tolist()],
+                        "decoded_class_ids": [int(v) for v in final_idx.detach().cpu().tolist()],
+                        "decoded_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
+                        "repaired": bool(guard_info["repaired"]),
+                        "replacements": guard_info["replacements"],
+                    },
+                )
             identical_logits_across_nodes = False
             zero_logits_across_nodes = False
             if n_real > 0:
@@ -1635,6 +1725,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         batch_summary["single_element_count_after_guard"] = int(single_element_count_after_guard)
 
         summary = self._atom_type_all_h_guard_summary
+        summary["guard_decode_call_count"] += int(B)
+        summary["guard_trigger_count"] += int(raw_all_h_count)
+        summary["guard_repair_success_count"] += int(num_all_h_rescued)
         summary["total_samples"] += int(B)
         summary["raw_all_H_count"] += int(raw_all_h_count)
         summary["final_all_H_count"] += int(final_all_h_count)
@@ -1652,6 +1745,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         h_cat = F.one_hot(elem_idx, self.num_classes) * node_mask
         assert h_cat.shape == logits.shape, \
             f"decoded one-hot shape mismatch: expected {tuple(logits.shape)}, got {tuple(h_cat.shape)}"
+        self._assert_no_all_h_in_one_hot_batch(
+            h_cat,
+            node_mask,
+            source_tag=source_tag,
+            round_index=round_index,
+            stage="finalize_atom_type_logits_return",
+        )
         return h_cat
 
     def get_k_params(self, bins):
@@ -3420,6 +3520,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             final_window_ensemble_logits=final_window_ensemble_logits,
             final_window_step_indices=final_window_step_indices,
         )
+        self._assert_no_all_h_in_one_hot_batch(
+            h_cat,
+            node_mask,
+            source_tag="sample_score_sde",
+            round_index=round_index,
+            stage="sample_score_sde_output_one_hot",
+        )
 
         h_int = torch.round(h_int).long() * node_mask
 
@@ -3587,6 +3694,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             apply_repair=False,
             final_window_ensemble_logits=final_window_ensemble_logits,
             final_window_step_indices=final_window_step_indices,
+        )
+        self._assert_no_all_h_in_one_hot_batch(
+            h_cat,
+            node_mask,
+            source_tag="sample_score_sde_Lattice",
+            round_index=round_index,
+            stage="sample_score_sde_Lattice_output_one_hot",
         )
         h_int = torch.round(h_int).long() * node_mask
 

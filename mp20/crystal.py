@@ -23,6 +23,18 @@ def _atom_debug_enabled():
     return os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
 
 
+def _all_h_guard_enabled_env():
+    return os.environ.get("MCW_ALL_H_GUARD_ENABLED", "0") == "1"
+
+
+def _all_h_guard_disabled_arg_env():
+    return os.environ.get("MCW_ALL_H_GUARD_DISABLED_ARG", "0") == "1"
+
+
+def _all_h_guard_fail_fast_env():
+    return bool(_all_h_guard_enabled_env() or _atom_debug_enabled())
+
+
 def _atom_debug_dir(default_dir=""):
     return os.environ.get("DEBUG_ATOM_TYPES_DIR", "") or default_dir
 
@@ -38,6 +50,42 @@ def _write_atom_debug_line(filename, payload, default_dir=""):
     payload.setdefault("pid", os.getpid())
     with open(os.path.join(debug_dir, filename), "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+
+def _all_h_guard_species_or_raise(crys_array_dict, crystal, save_dir_name):
+    atom_types = np.array(crys_array_dict["atom_types"], dtype=int)
+    source_is_all_h = bool(atom_types.size > 0 and np.all(atom_types == 1))
+    structure_atom_types = None
+    structure_is_all_h = False
+    if getattr(crystal, "constructed", False) and hasattr(crystal, "structure"):
+        structure_atom_types = [int(v) for v in crystal.structure.atomic_numbers]
+        structure_is_all_h = bool(len(structure_atom_types) > 0 and all(v == 1 for v in structure_atom_types))
+    if (source_is_all_h or structure_is_all_h) and _all_h_guard_fail_fast_env():
+        payload = {
+            "event": "all_h_guard_violation",
+            "stage": "array_dict_to_crystal_pre_write",
+            "sample_idx": crys_array_dict.get("sample_idx"),
+            "all_h_guard_enabled": bool(_all_h_guard_enabled_env()),
+            "disable_all_h_guard_arg": bool(_all_h_guard_disabled_arg_env()),
+            "source_atom_types": [int(v) for v in atom_types.tolist()],
+            "source_species_symbols": [
+                chemical_symbols[int(v)] if 0 <= int(v) < len(chemical_symbols) else f"Z{int(v)}"
+                for v in atom_types.tolist()
+            ],
+            "structure_atom_types": structure_atom_types,
+            "structure_species_symbols": [str(s) for s in crystal.structure.species]
+            if getattr(crystal, "constructed", False) and hasattr(crystal, "structure") else None,
+            "invalid_reason": getattr(crystal, "invalid_reason", None),
+        }
+        _write_atom_debug_line(
+            "atom_type_guard_failures.jsonl",
+            payload,
+            default_dir=os.path.join(save_dir_name, "atom_type_debug"),
+        )
+        raise RuntimeError(
+            f"[AllHGuard] array_dict_to_crystal_pre_write observed all-H species for sample "
+            f"{crys_array_dict.get('sample_idx')}"
+        )
 
 class Crystal:
     """Crystal object that holds information about a crystal structure and its validity, including
@@ -230,6 +278,8 @@ def array_dict_to_crystal(
     if np.all(50 <= x["angles"]) and np.all(x["angles"] <= 130):
         crys = Crystal(x)   # 这一行创建crystal对象，包含有效性
         saved_path = None
+        if save:
+            _all_h_guard_species_or_raise(x, crys, save_dir_name)
         # Check if the crystal is valid
         if save:    # 如果需要保存
             if crys.valid:

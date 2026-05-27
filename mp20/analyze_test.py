@@ -44,6 +44,37 @@ def _atom_type_debug_enabled(args):
     return bool(getattr(args, "debug_atom_types", False)) or os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
 
 
+def _all_h_guard_enabled(args):
+    if hasattr(args, "disable_all_h_guard"):
+        return not bool(getattr(args, "disable_all_h_guard", False))
+    env_value = os.environ.get("MCW_ALL_H_GUARD_ENABLED")
+    return env_value == "1"
+
+
+def _all_h_guard_fail_fast(args):
+    return bool(_all_h_guard_enabled(args) or _atom_type_debug_enabled(args))
+
+
+def _set_all_h_guard_env(args):
+    enabled = _all_h_guard_enabled(args)
+    disable_arg = bool(getattr(args, "disable_all_h_guard", False))
+    os.environ["MCW_ALL_H_GUARD_ENABLED"] = "1" if enabled else "0"
+    os.environ["MCW_ALL_H_GUARD_DISABLED_ARG"] = "1" if disable_arg else "0"
+    print("analyze_test disable_all_h_guard arg:", disable_arg)
+    print("analyze_test all_h_guard_enabled:", enabled)
+    _write_atom_type_debug_line(
+        args,
+        "atom_type_session.jsonl",
+        {
+            "event": "analyze_test_guard_config",
+            "disable_all_h_guard_arg": disable_arg,
+            "all_h_guard_enabled": enabled,
+            "all_h_guard_fail_fast_enabled": bool(_all_h_guard_fail_fast(args)),
+        },
+    )
+    return enabled
+
+
 def _atom_type_debug_dir(args):
     debug_dir = getattr(args, "debug_atom_dir", "") or os.environ.get("DEBUG_ATOM_TYPES_DIR", "")
     if not debug_dir:
@@ -73,9 +104,31 @@ def _atom_type_symbols(atom_types):
     return symbols
 
 
+def _guard_atom_types_or_raise(args, atom_types, species_symbols, sample_global_index, stage):
+    atom_types = np.array(atom_types, dtype=int)
+    is_all_h = bool(atom_types.size > 0 and np.all(atom_types == 1))
+    if is_all_h and _all_h_guard_fail_fast(args):
+        payload = {
+            "event": "all_h_guard_violation",
+            "stage": stage,
+            "sample_global_index": int(sample_global_index),
+            "atom_types": [int(v) for v in atom_types.tolist()],
+            "species_symbols": list(species_symbols),
+            "all_h_guard_enabled": bool(_all_h_guard_enabled(args)),
+            "disable_all_h_guard_arg": bool(getattr(args, "disable_all_h_guard", False)),
+        }
+        _write_atom_type_debug_line(args, "atom_type_guard_failures.jsonl", payload)
+        raise RuntimeError(
+            f"[AllHGuard] {stage} observed all-H sample at global sample index "
+            f"{int(sample_global_index)} with species {list(species_symbols)}"
+        )
+    return is_all_h
+
+
 def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info, 
                      prop_dist, evaluate_condition_generation):
     print(f'Analyzing crystal validity at epoch {epoch}...')
+    _set_all_h_guard_env(args)
     batch_size = args.sample_batch_size
     device = args.device
     mp20_evaluator = CrystalGenerationEvaluator(
@@ -120,6 +173,14 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
 
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
+        species_symbols = _atom_type_symbols(atom_types.tolist())
+        _guard_atom_types_or_raise(
+            args,
+            atom_types,
+            species_symbols,
+            sample_global_index=i,
+            stage="analyze_and_save_pre_append",
+        )
         # charges = charges[i][mask].detach().cpu().numpy()
 
         if i <= 3:
@@ -165,6 +226,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
 def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dist, dataset_info, 
                      prop_dist, evaluate_condition_generation):
     print(f'Analyzing crystal validity at epoch {epoch}...')
+    _set_all_h_guard_env(args)
     batch_size = args.sample_batch_size
     device = args.device
     mp20_evaluator = CrystalGenerationEvaluator(
@@ -192,6 +254,14 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
         frac_coords_valid = cart_to_frac(x_valid, lattice) % 1.0  # within [0, 1)
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)
+        species_symbols = _atom_type_symbols(atom_types.tolist())
+        _guard_atom_types_or_raise(
+            args,
+            atom_types,
+            species_symbols,
+            sample_global_index=i,
+            stage="analyze_and_save_withL_pre_append",
+        )
         # charges = charges[i][mask].detach().cpu().numpy()
         
         if i <= 5:
@@ -233,6 +303,7 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
 def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, dataset_info, 
                      prop_dist, evaluate_condition_generation, dataloader=None):
     print(f'Analyzing crystal validity at epoch {epoch}...')
+    _set_all_h_guard_env(args)
     batch_size = args.sample_batch_size
     device = args.device
     dtype = args.dtype
@@ -245,6 +316,8 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
                 "epoch": int(epoch),
                 "batch_size": int(batch_size),
                 "num_rounds": int(args.num_rounds),
+                "disable_all_h_guard_arg": bool(getattr(args, "disable_all_h_guard", False)),
+                "all_h_guard_enabled": bool(_all_h_guard_enabled(args)),
                 "atom_decoder": dataset_info.get("atom_decoder"),
                 "atom_decoder_index0_is_H": bool(dataset_info.get("atom_decoder", [None])[0] == "H"),
             },
@@ -295,6 +368,13 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
             for atom_type, count in zip(unique_atom_types.tolist(), counts.tolist())
         }
         all_h = bool(atom_types.size > 0 and np.all(atom_types == 1))
+        _guard_atom_types_or_raise(
+            args,
+            atom_types,
+            species_symbols,
+            sample_global_index=i,
+            stage="analyze_and_save_F_pre_append",
+        )
         if all_h:
             print(f"[AtomTypeDebug] analyze_and_save_F observed all-H sample at global sample index {i}")
         _write_atom_type_debug_line(
@@ -360,6 +440,7 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
 def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info, 
                      prop_dist, evaluate_condition_generation, lattice_pred_model):
     print(f'Analyzing crystal validity at epoch {epoch}...')
+    _set_all_h_guard_env(args)
     batch_size = args.sample_batch_size
     device = args.device
     mp20_evaluator = CrystalGenerationEvaluator(
@@ -412,6 +493,14 @@ def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info,
 
         one_hot_valid = one_hot[i][mask].detach().cpu().numpy()
         atom_types = np.argmax(one_hot_valid, axis=-1)  # convert one-hot to atom types
+        species_symbols = _atom_type_symbols(atom_types.tolist())
+        _guard_atom_types_or_raise(
+            args,
+            atom_types,
+            species_symbols,
+            sample_global_index=i,
+            stage="analyze_and_save_pure_x_pre_append",
+        )
         # charges = charges[i][mask].detach().cpu().numpy()
 
         if i <=2:
