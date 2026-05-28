@@ -47,7 +47,7 @@ def main():
         node_mask,
         round_index=0,
         source_tag="all_h_guard_smoke_test",
-        apply_repair=False,
+        apply_repair=True,
     )
 
     one_hot_valid = one_hot[0][node_mask[0].squeeze(-1).bool()].detach().cpu().numpy()

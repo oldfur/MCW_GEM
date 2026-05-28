@@ -58,21 +58,68 @@ def select_candidate_atoms(logits, node_mask, max_atoms=6):
     return idx.tolist()
 
 
+def assignment_is_all_h(elem_idx, node_mask, h_class_idx=1):
+    mask = node_mask.squeeze(-1).bool()
+    valid_idx = elem_idx[mask]
+    return bool(valid_idx.numel() > 0 and valid_idx.eq(int(h_class_idx)).all().item())
+
+
+def assignment_is_single_element(elem_idx, node_mask):
+    mask = node_mask.squeeze(-1).bool()
+    valid_idx = elem_idx[mask]
+    if valid_idx.numel() == 0:
+        return False
+    return len(set(int(v) for v in valid_idx.detach().cpu().tolist())) == 1
+
+
+def assignment_log_score_from_logits(logits, elem_idx, node_mask):
+    mask = node_mask.squeeze(-1).bool()
+    valid_idx = elem_idx[mask]
+    if valid_idx.numel() == 0:
+        return 0.0
+    valid_log_probs = torch.log_softmax(logits[mask], dim=-1)
+    gathered = valid_log_probs.gather(dim=-1, index=valid_idx.unsqueeze(-1)).squeeze(-1)
+    return float(gathered.sum().item())
+
+
+def _make_assignment_payload(elem_idx, logits, node_mask, h_class_idx, composition_valid):
+    return {
+        "elem_idx": elem_idx.clone(),
+        "score": assignment_log_score_from_logits(logits, elem_idx, node_mask),
+        "all_h": assignment_is_all_h(elem_idx, node_mask, h_class_idx=h_class_idx),
+        "composition_valid": bool(composition_valid),
+        "single_element": assignment_is_single_element(elem_idx, node_mask),
+    }
+
+
+def _dedupe_search_levels(levels):
+    deduped = []
+    seen = set()
+    for topk, num_sites in levels:
+        key = (int(topk), int(num_sites))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
+
+
 def repair_composition_single(
     logits,             # [N,C]
     node_mask,          # [N,1]
     smact_validity_fn,
     topk=4,
-    max_replace_atoms=2
+    max_replace_atoms=2,
+    h_class_idx=1,
+    expanded_topk=None,
 ):
     """
     返回:
         elem_idx: [N]
-        repaired: bool
+        metadata: dict
     """
 
     N, C = logits.shape
-    device = logits.device
 
     # padding 不可选
     logits = logits.clone()
@@ -80,40 +127,187 @@ def repair_composition_single(
 
     # 原始 argmax
     elem_idx = torch.argmax(logits, dim=-1) # [N]
-
-    comp, count = composition_from_elem_idx(elem_idx, node_mask)
-    if smact_validity_fn(comp, count):
-        return elem_idx, False   # 不需要 repair
-
-    # Top-k 候选
-    topk_vals, topk_idx = torch.topk(logits, topk, dim=-1)  # [N, K]
-
-    # 选择可替换原子
-    candidate_atoms = select_candidate_atoms(
-        logits, node_mask, max_atoms=6
+    raw_comp, raw_count = composition_from_elem_idx(elem_idx, node_mask)
+    raw_comp_valid = bool(smact_validity_fn(raw_comp, raw_count))
+    raw_argmax_all_h = assignment_is_all_h(elem_idx, node_mask, h_class_idx=h_class_idx)
+    n_real = int(node_mask.squeeze(-1).bool().sum().item())
+    original_topk = min(max(1, int(topk)), C)
+    expanded_topk = min(
+        max(original_topk, int(expanded_topk) if expanded_topk is not None else original_topk * 2),
+        C,
+    )
+    base_entropy_sites = min(6, n_real)
+    expanded_entropy_sites = min(max(base_entropy_sites * 2, 8), n_real) if n_real > 0 else 0
+    search_levels = _dedupe_search_levels(
+        [
+            (original_topk, base_entropy_sites),
+            (expanded_topk, base_entropy_sites),
+            (expanded_topk, expanded_entropy_sites),
+        ]
     )
 
-    best_solution = None
+    metadata = {
+        "raw_argmax_all_H": bool(raw_argmax_all_h),
+        "raw_argmax_score": assignment_log_score_from_logits(logits, elem_idx, node_mask),
+        "best_valid_candidate_all_H": False,
+        "rejected_all_H_leaf_count": 0,
+        "accepted_after_all_H_rejection": False,
+        "fallback_level": 0,
+        "original_K": int(original_topk),
+        "final_K": int(original_topk),
+        "num_entropy_sites_searched": int(base_entropy_sites),
+        "final_score": assignment_log_score_from_logits(logits, elem_idx, node_mask),
+        "rejected_all_H_score": None,
+        "score_gap_to_rejected_all_H": None,
+        "final_composition_valid": bool(raw_comp_valid and (not raw_argmax_all_h)),
+        "composition_valid_before_all_h_guard": bool(raw_comp_valid),
+        "search_failed": False,
+        "emergency_one_site_repair_used": False,
+        "single_element_final": assignment_is_single_element(elem_idx, node_mask),
+        "final_all_H": bool(raw_argmax_all_h),
+        "raw_comp_valid": bool(raw_comp_valid),
+        "rejected_all_H_assignment": [int(v) for v in elem_idx[node_mask.squeeze(-1).bool()].detach().cpu().tolist()]
+        if raw_comp_valid and raw_argmax_all_h else [],
+        "rejected_all_H_species": [],
+    }
 
-    for r in range(1, max_replace_atoms + 1):
-        for atom_subset in itertools.combinations(candidate_atoms, r):
-            # 每个 atom 有 topk 个候选
-            choices = [topk_idx[a].tolist() for a in atom_subset]
+    if raw_comp_valid and not raw_argmax_all_h:
+        metadata["final_assignment"] = [int(v) for v in elem_idx[node_mask.squeeze(-1).bool()].detach().cpu().tolist()]
+        return elem_idx, metadata
 
-            for replacement in itertools.product(*choices):
-                trial_elem_idx = elem_idx.clone()
-                for a, e in zip(atom_subset, replacement):
-                    trial_elem_idx[a] = e
+    best_valid_non_all_h = None
+    best_valid_all_h = None
+    best_non_all_h_any = None
 
-                comp, count = composition_from_elem_idx(
-                    trial_elem_idx, node_mask
+    if raw_comp_valid and raw_argmax_all_h:
+        best_valid_all_h = _make_assignment_payload(
+            elem_idx, logits, node_mask, h_class_idx=h_class_idx, composition_valid=True
+        )
+        metadata["best_valid_candidate_all_H"] = True
+        metadata["rejected_all_H_leaf_count"] = 1
+        metadata["rejected_all_H_score"] = float(best_valid_all_h["score"])
+        metadata["rejected_all_H_assignment"] = [
+            int(v) for v in elem_idx[node_mask.squeeze(-1).bool()].detach().cpu().tolist()
+        ]
+
+    if not raw_argmax_all_h:
+        best_non_all_h_any = _make_assignment_payload(
+            elem_idx, logits, node_mask, h_class_idx=h_class_idx, composition_valid=raw_comp_valid
+        )
+
+    seen_assignments = set()
+    for fallback_level, (level_topk, num_entropy_sites) in enumerate(search_levels):
+        topk_idx = torch.topk(logits, level_topk, dim=-1).indices  # [N, K]
+        candidate_atoms = select_candidate_atoms(logits, node_mask, max_atoms=num_entropy_sites)
+
+        for r in range(1, max_replace_atoms + 1):
+            if len(candidate_atoms) < r:
+                continue
+            for atom_subset in itertools.combinations(candidate_atoms, r):
+                choices = [topk_idx[a].tolist() for a in atom_subset]
+
+                for replacement in itertools.product(*choices):
+                    trial_elem_idx = elem_idx.clone()
+                    for a, e in zip(atom_subset, replacement):
+                        trial_elem_idx[a] = e
+
+                    valid_signature = tuple(
+                        int(v)
+                        for v in trial_elem_idx[node_mask.squeeze(-1).bool()].detach().cpu().tolist()
+                    )
+                    if valid_signature in seen_assignments:
+                        continue
+                    seen_assignments.add(valid_signature)
+
+                    trial_all_h = assignment_is_all_h(
+                        trial_elem_idx, node_mask, h_class_idx=h_class_idx
+                    )
+                    if not trial_all_h:
+                        trial_any_payload = _make_assignment_payload(
+                            trial_elem_idx,
+                            logits,
+                            node_mask,
+                            h_class_idx=h_class_idx,
+                            composition_valid=False,
+                        )
+                        if best_non_all_h_any is None or trial_any_payload["score"] > best_non_all_h_any["score"]:
+                            best_non_all_h_any = trial_any_payload
+
+                    comp, count = composition_from_elem_idx(trial_elem_idx, node_mask)
+                    composition_valid = bool(smact_validity_fn(comp, count))
+                    if not composition_valid:
+                        continue
+
+                    metadata["composition_valid_before_all_h_guard"] = True
+                    payload = _make_assignment_payload(
+                        trial_elem_idx,
+                        logits,
+                        node_mask,
+                        h_class_idx=h_class_idx,
+                        composition_valid=True,
+                    )
+
+                    if payload["all_h"]:
+                        metadata["rejected_all_H_leaf_count"] += 1
+                        metadata["best_valid_candidate_all_H"] = True
+                        if best_valid_all_h is None or payload["score"] > best_valid_all_h["score"]:
+                            best_valid_all_h = payload
+                        continue
+
+                    if best_valid_non_all_h is None or payload["score"] > best_valid_non_all_h["score"]:
+                        best_valid_non_all_h = payload
+
+        if best_valid_non_all_h is not None:
+            metadata["accepted_after_all_H_rejection"] = bool(metadata["best_valid_candidate_all_H"])
+            metadata["fallback_level"] = int(fallback_level)
+            metadata["final_K"] = int(level_topk)
+            metadata["num_entropy_sites_searched"] = int(num_entropy_sites)
+            metadata["final_score"] = float(best_valid_non_all_h["score"])
+            metadata["final_composition_valid"] = True
+            metadata["single_element_final"] = bool(best_valid_non_all_h["single_element"])
+            metadata["final_all_H"] = False
+            metadata["final_assignment"] = [
+                int(v)
+                for v in best_valid_non_all_h["elem_idx"][node_mask.squeeze(-1).bool()].detach().cpu().tolist()
+            ]
+            if best_valid_all_h is not None:
+                metadata["rejected_all_H_score"] = float(best_valid_all_h["score"])
+                metadata["rejected_all_H_assignment"] = [
+                    int(v)
+                    for v in best_valid_all_h["elem_idx"][node_mask.squeeze(-1).bool()].detach().cpu().tolist()
+                ]
+                metadata["score_gap_to_rejected_all_H"] = float(
+                    best_valid_all_h["score"] - best_valid_non_all_h["score"]
                 )
+            return best_valid_non_all_h["elem_idx"], metadata
 
-                if smact_validity_fn(comp, count):
-                    return trial_elem_idx, True
-
-    # repair 失败，返回原始结果
-    return elem_idx, False
+    metadata["search_failed"] = True
+    fallback_payload = best_non_all_h_any
+    if fallback_payload is None:
+        fallback_payload = _make_assignment_payload(
+            elem_idx, logits, node_mask, h_class_idx=h_class_idx, composition_valid=raw_comp_valid
+        )
+    metadata["fallback_level"] = len(search_levels)
+    metadata["final_K"] = int(search_levels[-1][0]) if search_levels else int(original_topk)
+    metadata["num_entropy_sites_searched"] = int(search_levels[-1][1]) if search_levels else int(base_entropy_sites)
+    metadata["final_score"] = float(fallback_payload["score"])
+    metadata["final_composition_valid"] = bool(fallback_payload["composition_valid"])
+    metadata["single_element_final"] = bool(fallback_payload["single_element"])
+    metadata["final_all_H"] = bool(fallback_payload["all_h"])
+    metadata["final_assignment"] = [
+        int(v)
+        for v in fallback_payload["elem_idx"][node_mask.squeeze(-1).bool()].detach().cpu().tolist()
+    ]
+    if best_valid_all_h is not None:
+        metadata["rejected_all_H_score"] = float(best_valid_all_h["score"])
+        metadata["rejected_all_H_assignment"] = [
+            int(v)
+            for v in best_valid_all_h["elem_idx"][node_mask.squeeze(-1).bool()].detach().cpu().tolist()
+        ]
+        metadata["score_gap_to_rejected_all_H"] = float(
+            best_valid_all_h["score"] - fallback_payload["score"]
+        )
+    return fallback_payload["elem_idx"], metadata
 
 
 def repair_composition_batch(
@@ -121,25 +315,29 @@ def repair_composition_batch(
     node_mask,       # [B, N, 1]
     smact_validity_fn,
     topk=4,
-    max_replace_atoms=2
+    max_replace_atoms=2,
+    h_class_idx=1,
+    expanded_topk=None,
 ):
     B, N, C = logits.shape
     final_elem_idx = []
-    repaired_flags = []
+    metadata_list = []
 
     for b in range(B):
-        elem_idx, repaired = repair_composition_single(
+        elem_idx, metadata = repair_composition_single(
             logits[b],
             node_mask[b],
             smact_validity_fn,
             topk=topk,
-            max_replace_atoms=max_replace_atoms
+            max_replace_atoms=max_replace_atoms,
+            h_class_idx=h_class_idx,
+            expanded_topk=expanded_topk,
         )
         final_elem_idx.append(elem_idx)
-        repaired_flags.append(repaired)
+        metadata_list.append(metadata)
 
     final_elem_idx = torch.stack(final_elem_idx, dim=0)
-    return final_elem_idx, repaired_flags
+    return final_elem_idx, metadata_list
 
 
 def is_valid_cell_params(rl, ra, eps=1e-6):
@@ -747,6 +945,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.atom_type_repair_topk = int(DEFAULT_ATOM_TYPE_REPAIR_TOPK)
         self.all_h_guard_topk = max(1, int(all_h_guard_topk))
         self.all_h_guard_min_non_h = max(1, int(all_h_guard_min_non_h))
+        self.enable_emergency_all_h_one_site_repair = os.environ.get(
+            "MCW_ENABLE_EMERGENCY_ALL_H_REPAIR", "0"
+        ) == "1"
         self._atom_debug_decoder_written = False
         self._input_atom_type_debug_written = False
         self._last_prepare_inputs_debug = {}
@@ -764,6 +965,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("all-H guard enabled: ", self.all_h_guard_enabled)
         print("all-H guard top-k: ", self.all_h_guard_topk)
         print("all-H guard min non-H: ", self.all_h_guard_min_non_h)
+        print("emergency one-site all-H repair enabled: ", self.enable_emergency_all_h_one_site_repair)
         os.environ["MCW_ALL_H_GUARD_ENABLED"] = "1" if self.all_h_guard_enabled else "0"
         os.environ["MCW_ALL_H_GUARD_DISABLED_ARG"] = "1" if self.disable_all_h_guard_arg else "0"
 
@@ -790,6 +992,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     "all_h_guard_enabled": bool(self.all_h_guard_enabled),
                     "all_h_guard_topk": int(self.all_h_guard_topk),
                     "all_h_guard_min_non_h": int(self.all_h_guard_min_non_h),
+                    "all_h_guard_mode": "search_tree_rejection",
+                    "emergency_one_site_all_h_repair_enabled": bool(self.enable_emergency_all_h_one_site_repair),
                     "all_h_guard_fail_fast_enabled": bool(self._all_h_guard_fail_fast_enabled()),
                     # This implementation predicts atom logits from geometry and does not
                     # maintain an explicit categorical reverse state during sampling.
@@ -867,6 +1071,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def _reset_atom_type_all_h_guard_summary(self):
         self._atom_type_all_h_guard_summary = {
             "guard_decode_call_count": 0,
+            "search_guard_call_count": 0,
+            "valence_valid_all_H_rejected_count": 0,
+            "final_composition_valid_count": 0,
+            "comp_validity_before_all_h_guard": 0,
+            "comp_validity_after_search_guard": 0,
+            "search_failed_count": 0,
+            "emergency_fallback_count": 0,
             "guard_trigger_count": 0,
             "guard_repair_success_count": 0,
             "total_samples": 0,
@@ -877,6 +1088,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             "rescued_new_element_distribution": Counter(),
             "single_element_count_before_guard": 0,
             "single_element_count_after_guard": 0,
+            "single_element_count": 0,
         }
 
     def _write_atom_type_all_h_guard_summary(self):
@@ -907,8 +1119,17 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         payload = {
             "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
             "all_h_guard_enabled": bool(self.all_h_guard_enabled),
+            "all_h_guard_mode": "search_tree_rejection",
+            "emergency_one_site_all_h_repair_enabled": bool(self.enable_emergency_all_h_one_site_repair),
             "all_h_guard_fail_fast_enabled": bool(self._all_h_guard_fail_fast_enabled()),
             "guard_decode_call_count": int(summary["guard_decode_call_count"]),
+            "search_guard_call_count": int(summary["search_guard_call_count"]),
+            "valence_valid_all_H_rejected_count": int(summary["valence_valid_all_H_rejected_count"]),
+            "final_composition_valid_count": int(summary["final_composition_valid_count"]),
+            "comp_validity_before_all_h_guard": int(summary["comp_validity_before_all_h_guard"]),
+            "comp_validity_after_search_guard": int(summary["comp_validity_after_search_guard"]),
+            "search_failed_count": int(summary["search_failed_count"]),
+            "emergency_fallback_count": int(summary["emergency_fallback_count"]),
             "guard_trigger_count": int(summary["guard_trigger_count"]),
             "guard_repair_success_count": int(summary["guard_repair_success_count"]),
             "total_samples": int(summary["total_samples"]),
@@ -917,6 +1138,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             "num_all_H_rescued": int(summary["num_all_H_rescued"]),
             "single_element_count_before_guard": int(summary["single_element_count_before_guard"]),
             "single_element_count_after_guard": int(summary["single_element_count_after_guard"]),
+            "single_element_count": int(summary["single_element_count"]),
             "rescue_logprob_penalty_stats": penalty_stats,
             "rescued_new_element_distribution": dict(
                 sorted(
@@ -927,6 +1149,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         }
         with open(
             os.path.join(self.debug_atom_dir, "atom_type_all_h_guard_summary.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+        with open(
+            os.path.join(self.debug_atom_dir, "atom_type_all_h_search_guard_summary.json"),
             "w",
             encoding="utf-8",
         ) as f:
@@ -1410,18 +1638,53 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         argmax_after_mask = torch.argmax(masked_logits, dim=-1)
 
         if apply_repair:
-            raw_elem_idx, repaired_flags = repair_composition_batch(
+            final_elem_idx_batch, search_infos = repair_composition_batch(
                 masked_logits,
                 node_mask,
                 smact_validity_fn=smact_validity,
                 topk=self.atom_type_repair_topk,
                 max_replace_atoms=2,
+                h_class_idx=self.h_class_idx,
+                expanded_topk=self.all_h_guard_topk,
             )
         else:
-            raw_elem_idx = argmax_after_mask
-            repaired_flags = [False for _ in range(B)]
+            final_elem_idx_batch = argmax_after_mask
+            search_infos = []
+            for b in range(B):
+                mask = valid_mask[b]
+                local_idx = final_elem_idx_batch[b, mask]
+                comp_valid = False
+                if local_idx.numel() > 0:
+                    comp, count = composition_from_elem_idx(final_elem_idx_batch[b], node_mask[b])
+                    comp_valid = bool(smact_validity(comp, count))
+                search_infos.append(
+                    {
+                        "raw_argmax_all_H": bool(local_idx.numel() > 0 and local_idx.eq(self.h_class_idx).all().item()),
+                        "raw_argmax_score": self._compute_assignment_log_score(masked_probs[b, mask], local_idx),
+                        "best_valid_candidate_all_H": False,
+                        "rejected_all_H_leaf_count": 0,
+                        "accepted_after_all_H_rejection": False,
+                        "fallback_level": 0,
+                        "original_K": int(self.atom_type_repair_topk),
+                        "final_K": int(self.atom_type_repair_topk),
+                        "num_entropy_sites_searched": 0,
+                        "final_assignment": [int(v) for v in local_idx.detach().cpu().tolist()],
+                        "final_score": self._compute_assignment_log_score(masked_probs[b, mask], local_idx),
+                        "rejected_all_H_score": None,
+                        "score_gap_to_rejected_all_H": None,
+                        "final_composition_valid": bool(comp_valid),
+                        "composition_valid_before_all_h_guard": bool(comp_valid),
+                        "search_failed": False,
+                        "emergency_one_site_repair_used": False,
+                        "single_element_final": bool(len(set(int(v) for v in local_idx.detach().cpu().tolist())) == 1) if local_idx.numel() > 0 else False,
+                        "final_all_H": bool(local_idx.numel() > 0 and local_idx.eq(self.h_class_idx).all().item()),
+                        "raw_comp_valid": bool(comp_valid),
+                        "rejected_all_H_assignment": [],
+                        "rejected_all_H_species": [],
+                    }
+                )
 
-        elem_idx = raw_elem_idx.clone()
+        elem_idx = final_elem_idx_batch.clone()
         assert elem_idx.shape == (B, N), \
             f"decoded atom type must be [B, N], got {tuple(elem_idx.shape)}"
         class0_on_valid = None
@@ -1461,6 +1724,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         raw_all_h_count = 0
         final_all_h_count = 0
         num_all_h_rescued = 0
+        valence_valid_all_h_rejected_count = 0
+        final_composition_valid_count = 0
+        comp_validity_before_all_h_guard_count = 0
+        comp_validity_after_search_guard_count = 0
+        search_failed_count = 0
+        emergency_fallback_count = 0
         single_element_count_before_guard = 0
         single_element_count_after_guard = 0
         for b in range(B):
@@ -1471,13 +1740,44 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             valid_masked_probs = masked_probs[b, mask]
             raw_idx = argmax_before[b, mask]
             masked_idx = argmax_after_mask[b, mask]
-            raw_decoded_idx = raw_elem_idx[b, mask]
+            raw_decoded_idx = masked_idx
             sample_global_index = int(round_index * B + b)
-            final_idx, guard_info = self._repair_all_h_assignment(
-                valid_logits=valid_logits,
-                valid_probs=valid_masked_probs,
-                raw_idx=raw_decoded_idx,
-            )
+            search_info = dict(search_infos[b])
+            if search_info.get("rejected_all_H_assignment"):
+                search_info["rejected_all_H_species"] = [
+                    self._class_index_to_symbol(v)
+                    for v in search_info["rejected_all_H_assignment"]
+                ]
+            final_idx = final_elem_idx_batch[b, mask].clone()
+            guard_info = {
+                "raw_all_H": bool(search_info.get("raw_argmax_all_H", False)),
+                "raw_score": float(search_info.get("raw_argmax_score", self._compute_assignment_log_score(valid_masked_probs, raw_idx))),
+                "raw_decoded_class_ids": [int(v) for v in raw_decoded_idx.detach().cpu().tolist()],
+                "raw_decoded_species": [self._class_index_to_symbol(v) for v in raw_decoded_idx.detach().cpu().tolist()],
+                "repaired": False,
+                "rescue_logprob_penalty": 0.0,
+                "raw_unique_species_count": len(set(int(v) for v in raw_decoded_idx.detach().cpu().tolist())),
+                "final_unique_species_count": len(set(int(v) for v in final_idx.detach().cpu().tolist())),
+                "replacements": [],
+                "final_score": float(search_info.get("final_score", self._compute_assignment_log_score(valid_masked_probs, final_idx))),
+                "final_all_H": bool(search_info.get("final_all_H", False)),
+                "final_composition_valid": bool(search_info.get("final_composition_valid", False)),
+                "best_valid_candidate_all_H": bool(search_info.get("best_valid_candidate_all_H", False)),
+                "rejected_all_H_leaf_count": int(search_info.get("rejected_all_H_leaf_count", 0)),
+                "accepted_after_all_H_rejection": bool(search_info.get("accepted_after_all_H_rejection", False)),
+                "fallback_level": int(search_info.get("fallback_level", 0)),
+                "original_K": int(search_info.get("original_K", self.atom_type_repair_topk)),
+                "final_K": int(search_info.get("final_K", self.atom_type_repair_topk)),
+                "num_entropy_sites_searched": int(search_info.get("num_entropy_sites_searched", 0)),
+                "rejected_all_H_score": search_info.get("rejected_all_H_score"),
+                "score_gap_to_rejected_all_H": search_info.get("score_gap_to_rejected_all_H"),
+                "composition_valid_before_all_h_guard": bool(search_info.get("composition_valid_before_all_h_guard", False)),
+                "search_failed": bool(search_info.get("search_failed", False)),
+                "emergency_one_site_repair_used": bool(search_info.get("emergency_one_site_repair_used", False)),
+                "single_element_final": bool(search_info.get("single_element_final", False)),
+                "rejected_all_H_assignment": list(search_info.get("rejected_all_H_assignment", [])),
+                "rejected_all_H_species": list(search_info.get("rejected_all_H_species", [])),
+            }
             elem_idx[b, mask] = final_idx
             all_from_default_before_mask = bool(n_real > 0 and raw_idx.eq(0).all().item())
             raw_all_h = bool(guard_info["raw_all_H"])
@@ -1494,18 +1794,19 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             }
             raw_all_h_count += int(raw_all_h)
             final_all_h_count += int(all_h)
-            num_all_h_rescued += int(raw_all_h and (not all_h))
+            num_all_h_rescued += int(guard_info["accepted_after_all_H_rejection"])
+            valence_valid_all_h_rejected_count += int(guard_info["best_valid_candidate_all_H"])
+            final_composition_valid_count += int(guard_info["final_composition_valid"])
+            comp_validity_before_all_h_guard_count += int(guard_info["composition_valid_before_all_h_guard"])
+            comp_validity_after_search_guard_count += int(guard_info["final_composition_valid"])
+            search_failed_count += int(guard_info["search_failed"])
+            emergency_fallback_count += int(guard_info["emergency_one_site_repair_used"])
             single_element_count_before_guard += int(len(raw_counts) == 1 and n_real > 0)
-            single_element_count_after_guard += int(len(final_counts) == 1 and n_real > 0)
-            if raw_all_h and not all_h:
-                replacement = guard_info["replacements"][0] if guard_info["replacements"] else None
-                replacement_desc = (
-                    f"site={replacement['site_index']} {replacement['old_symbol']}->{replacement['new_symbol']}"
-                    if replacement is not None else "no-replacement-metadata"
-                )
+            single_element_count_after_guard += int(guard_info["single_element_final"])
+            if guard_info["accepted_after_all_H_rejection"]:
                 print(
-                    f"[AllHGuard] repaired raw all-H sample at global sample index "
-                    f"{sample_global_index} ({source_tag}, round={round_index}, batch={b}): {replacement_desc}"
+                    f"[AllHSearchGuard] accepted non-all-H candidate after rejecting all-H leaf "
+                    f"at global sample index {sample_global_index} ({source_tag}, round={round_index}, batch={b})"
                 )
             if self._all_h_guard_fail_fast_enabled() and all_h:
                 self._raise_all_h_guard_violation(
@@ -1519,8 +1820,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                         "raw_decoded_class_ids": [int(v) for v in raw_decoded_idx.detach().cpu().tolist()],
                         "decoded_class_ids": [int(v) for v in final_idx.detach().cpu().tolist()],
                         "decoded_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
-                        "repaired": bool(guard_info["repaired"]),
-                        "replacements": guard_info["replacements"],
+                        "search_failed": bool(guard_info["search_failed"]),
+                        "best_valid_candidate_all_H": bool(guard_info["best_valid_candidate_all_H"]),
+                        "rejected_all_H_leaf_count": int(guard_info["rejected_all_H_leaf_count"]),
                     },
                 )
             identical_logits_across_nodes = False
@@ -1558,7 +1860,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 "all_from_default_index_before_mask": all_from_default_before_mask,
                 "identical_logits_across_nodes": identical_logits_across_nodes,
                 "zero_logits_across_nodes": zero_logits_across_nodes,
-                "repaired": bool(repaired_flags[b]),
+                "repaired": False,
                 "raw_argmax_unique": sorted({int(v) for v in raw_idx.detach().cpu().tolist()}),
                 "masked_argmax_unique": sorted({int(v) for v in masked_idx.detach().cpu().tolist()}),
                 "raw_decoded_unique": sorted({int(v) for v in raw_decoded_idx.detach().cpu().tolist()}),
@@ -1570,20 +1872,37 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 "raw_score": float(guard_info["raw_score"]),
                 "final_score": float(guard_info["final_score"]),
                 "all_h_guard_enabled": bool(self.all_h_guard_enabled),
-                "all_h_guard_repaired": bool(guard_info["repaired"]),
+                "all_h_guard_repaired": False,
                 "all_h_guard_min_non_h": int(self.all_h_guard_min_non_h),
                 "all_h_guard_topk": int(self.all_h_guard_topk),
-                "all_h_guard_replacements": guard_info["replacements"],
-                "all_h_guard_rescue_logprob_penalty": float(guard_info["rescue_logprob_penalty"]),
-                "all_h_guard_replaced_site_index": guard_info.get("replaced_site_index"),
-                "all_h_guard_old_class": guard_info.get("old_class"),
-                "all_h_guard_old_symbol": guard_info.get("old_symbol"),
-                "all_h_guard_new_class": guard_info.get("new_class"),
-                "all_h_guard_new_symbol": guard_info.get("new_symbol"),
-                "all_h_guard_logprob_H": guard_info.get("logprob_H"),
-                "all_h_guard_logprob_new": guard_info.get("logprob_new"),
-                "all_h_guard_site_entropy": guard_info.get("site_entropy"),
-                "all_h_guard_topk_candidates_at_repaired_site": guard_info.get("topk_candidates_at_repaired_site", []),
+                "all_h_guard_replacements": [],
+                "all_h_guard_rescue_logprob_penalty": 0.0,
+                "all_h_guard_replaced_site_index": None,
+                "all_h_guard_old_class": None,
+                "all_h_guard_old_symbol": None,
+                "all_h_guard_new_class": None,
+                "all_h_guard_new_symbol": None,
+                "all_h_guard_logprob_H": None,
+                "all_h_guard_logprob_new": None,
+                "all_h_guard_site_entropy": None,
+                "all_h_guard_topk_candidates_at_repaired_site": [],
+                "all_h_search_guard_raw_argmax_all_H": bool(guard_info["raw_all_H"]),
+                "all_h_search_guard_best_valid_candidate_all_H": bool(guard_info["best_valid_candidate_all_H"]),
+                "all_h_search_guard_rejected_all_H_leaf_count": int(guard_info["rejected_all_H_leaf_count"]),
+                "all_h_search_guard_accepted_after_all_H_rejection": bool(guard_info["accepted_after_all_H_rejection"]),
+                "all_h_search_guard_fallback_level": int(guard_info["fallback_level"]),
+                "all_h_search_guard_original_K": int(guard_info["original_K"]),
+                "all_h_search_guard_final_K": int(guard_info["final_K"]),
+                "all_h_search_guard_num_entropy_sites_searched": int(guard_info["num_entropy_sites_searched"]),
+                "all_h_search_guard_rejected_all_H_score": guard_info.get("rejected_all_H_score"),
+                "all_h_search_guard_score_gap_to_rejected_all_H": guard_info.get("score_gap_to_rejected_all_H"),
+                "all_h_search_guard_final_composition_valid": bool(guard_info["final_composition_valid"]),
+                "all_h_search_guard_comp_validity_before_all_h_guard": bool(guard_info["composition_valid_before_all_h_guard"]),
+                "all_h_search_guard_search_failed": bool(guard_info["search_failed"]),
+                "all_h_search_guard_emergency_one_site_repair_used": bool(guard_info["emergency_one_site_repair_used"]),
+                "all_h_search_guard_single_element_final": bool(guard_info["single_element_final"]),
+                "all_h_search_guard_rejected_all_H_assignment": guard_info.get("rejected_all_H_assignment", []),
+                "all_h_search_guard_rejected_all_H_species": guard_info.get("rejected_all_H_species", []),
                 "class0_on_valid_nodes": int(final_idx.eq(self.unknown_atom_type_idx).sum().item()),
                 "dummy_atom_type_idx": self._last_prepare_inputs_debug.get("dummy_atom_type_idx"),
                 "dummy_atom_type_symbol": self._last_prepare_inputs_debug.get("dummy_atom_type_symbol"),
@@ -1629,20 +1948,65 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                         "raw_all_H": bool(raw_all_h),
                         "raw_score": float(guard_info["raw_score"]),
                         "repaired": bool(guard_info["repaired"]),
-                        "replaced_site_index": guard_info.get("replaced_site_index"),
-                        "old_class": guard_info.get("old_class"),
-                        "old_symbol": guard_info.get("old_symbol"),
-                        "new_class": guard_info.get("new_class"),
-                        "new_symbol": guard_info.get("new_symbol"),
-                        "logprob_H": guard_info.get("logprob_H"),
-                        "logprob_new": guard_info.get("logprob_new"),
-                        "rescue_logprob_penalty": float(guard_info["rescue_logprob_penalty"]),
-                        "site_entropy": guard_info.get("site_entropy"),
-                        "topk_candidates_at_repaired_site": guard_info.get("topk_candidates_at_repaired_site", []),
+                        "replaced_site_index": None,
+                        "old_class": None,
+                        "old_symbol": None,
+                        "new_class": None,
+                        "new_symbol": None,
+                        "logprob_H": None,
+                        "logprob_new": None,
+                        "rescue_logprob_penalty": 0.0,
+                        "site_entropy": None,
+                        "topk_candidates_at_repaired_site": [],
                         "final_species": sample_summary["decoded_species"],
                         "final_score": float(guard_info["final_score"]),
                         "single_element_before_guard": bool(len(raw_counts) == 1 and n_real > 0),
                         "single_element_after_guard": bool(len(final_counts) == 1 and n_real > 0),
+                    },
+                )
+                self._write_atom_debug_line(
+                    "atom_type_all_h_search_guard.jsonl",
+                    {
+                        "event": "atom_type_all_h_search_guard",
+                        "source_tag": source_tag,
+                        "round_index": int(round_index),
+                        "sample_local_index": int(b),
+                        "sample_global_index": sample_global_index,
+                        "raw_argmax_all_H": bool(guard_info["raw_all_H"]),
+                        "best_valid_candidate_all_H": bool(guard_info["best_valid_candidate_all_H"]),
+                        "rejected_all_H_leaf_count": int(guard_info["rejected_all_H_leaf_count"]),
+                        "accepted_after_all_H_rejection": bool(guard_info["accepted_after_all_H_rejection"]),
+                        "fallback_level": int(guard_info["fallback_level"]),
+                        "original_K": int(guard_info["original_K"]),
+                        "final_K": int(guard_info["final_K"]),
+                        "num_entropy_sites_searched": int(guard_info["num_entropy_sites_searched"]),
+                        "final_assignment": [int(v) for v in final_idx.detach().cpu().tolist()],
+                        "final_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
+                        "final_score": float(guard_info["final_score"]),
+                        "rejected_all_H_score": guard_info.get("rejected_all_H_score"),
+                        "score_gap_to_rejected_all_H": guard_info.get("score_gap_to_rejected_all_H"),
+                        "final_composition_valid": bool(guard_info["final_composition_valid"]),
+                        "emergency_one_site_repair_used": bool(guard_info["emergency_one_site_repair_used"]),
+                        "single_element_final": bool(guard_info["single_element_final"]),
+                        "search_failed": bool(guard_info["search_failed"]),
+                        "rejected_all_H_assignment": guard_info.get("rejected_all_H_assignment", []),
+                        "rejected_all_H_species": guard_info.get("rejected_all_H_species", []),
+                    },
+                )
+
+            if self.debug_atom_types and (not guard_info["final_composition_valid"]):
+                self._write_atom_debug_line(
+                    "atom_type_warnings.jsonl",
+                    {
+                        "event": "all_h_search_guard_comp_invalid_final",
+                        "source_tag": source_tag,
+                        "round_index": int(round_index),
+                        "sample_local_index": int(b),
+                        "sample_global_index": sample_global_index,
+                        "search_failed": bool(guard_info["search_failed"]),
+                        "decoded_class_ids": [int(v) for v in final_idx.detach().cpu().tolist()],
+                        "decoded_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
+                        "rejected_all_H_leaf_count": int(guard_info["rejected_all_H_leaf_count"]),
                     },
                 )
 
@@ -1721,19 +2085,33 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         batch_summary["raw_all_H_count"] = int(raw_all_h_count)
         batch_summary["final_all_H_count"] = int(final_all_h_count)
         batch_summary["num_all_H_rescued"] = int(num_all_h_rescued)
+        batch_summary["valence_valid_all_H_rejected_count"] = int(valence_valid_all_h_rejected_count)
+        batch_summary["final_composition_valid_count"] = int(final_composition_valid_count)
+        batch_summary["comp_validity_before_all_h_guard"] = int(comp_validity_before_all_h_guard_count)
+        batch_summary["comp_validity_after_search_guard"] = int(comp_validity_after_search_guard_count)
+        batch_summary["search_failed_count"] = int(search_failed_count)
+        batch_summary["emergency_fallback_count"] = int(emergency_fallback_count)
         batch_summary["single_element_count_before_guard"] = int(single_element_count_before_guard)
         batch_summary["single_element_count_after_guard"] = int(single_element_count_after_guard)
 
         summary = self._atom_type_all_h_guard_summary
         summary["guard_decode_call_count"] += int(B)
+        summary["search_guard_call_count"] += int(B)
         summary["guard_trigger_count"] += int(raw_all_h_count)
-        summary["guard_repair_success_count"] += int(num_all_h_rescued)
+        summary["guard_repair_success_count"] += 0
+        summary["valence_valid_all_H_rejected_count"] += int(valence_valid_all_h_rejected_count)
+        summary["final_composition_valid_count"] += int(final_composition_valid_count)
+        summary["comp_validity_before_all_h_guard"] += int(comp_validity_before_all_h_guard_count)
+        summary["comp_validity_after_search_guard"] += int(comp_validity_after_search_guard_count)
+        summary["search_failed_count"] += int(search_failed_count)
+        summary["emergency_fallback_count"] += int(emergency_fallback_count)
         summary["total_samples"] += int(B)
         summary["raw_all_H_count"] += int(raw_all_h_count)
         summary["final_all_H_count"] += int(final_all_h_count)
         summary["num_all_H_rescued"] += int(num_all_h_rescued)
         summary["single_element_count_before_guard"] += int(single_element_count_before_guard)
         summary["single_element_count_after_guard"] += int(single_element_count_after_guard)
+        summary["single_element_count"] += int(single_element_count_after_guard)
         for sample_payload in batch_summary["samples"]:
             penalty = float(sample_payload["all_h_guard_rescue_logprob_penalty"])
             if sample_payload["all_h_guard_repaired"]:
