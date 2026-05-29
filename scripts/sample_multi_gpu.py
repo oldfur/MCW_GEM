@@ -79,6 +79,13 @@ def stream_output(pipe, prefix):
         pipe.close()
 
 
+def load_sampling_metrics(metrics_path):
+    if not metrics_path.exists():
+        return None
+    with metrics_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def summarize_workers(base_save_dir, worker_dirs, exit_codes):
     from debug_all_h_samples import summarize_cifs, summarize_debug_dir
 
@@ -90,12 +97,19 @@ def summarize_workers(base_save_dir, worker_dirs, exit_codes):
     element_frequency = Counter()
     all_h_files = []
     per_worker = []
+    total_metric_samples = 0
+    total_valid_count = 0
+    total_comp_valid_count = 0
+    total_struct_valid_count = 0
+    total_metrics_workers = 0
 
     for worker_dir, exit_code in zip(worker_dirs, exit_codes):
         sample_dir = worker_dir / "epoch_0"
         debug_dir = worker_dir / "atom_type_debug"
+        metrics_path = sample_dir / "sampling_metrics.json"
         cif_summary = summarize_cifs(sample_dir)
         debug_summary = summarize_debug_dir(debug_dir)
+        sampling_metrics = load_sampling_metrics(metrics_path)
         worker_total = len(cif_summary["rows"])
         worker_all_h = sum(1 for row in cif_summary["rows"] if row["all_h"])
         worker_single_element = sum(1 for row in cif_summary["rows"] if row["single_element"])
@@ -109,19 +123,50 @@ def summarize_workers(base_save_dir, worker_dirs, exit_codes):
         element_frequency.update(cif_summary["element_frequency"])
         all_h_files.extend(cif_summary["all_h_files"])
 
-        per_worker.append(
-            {
-                "worker_dir": str(worker_dir),
-                "exit_code": int(exit_code),
-                "sample_dir": str(sample_dir),
-                "debug_dir": str(debug_dir),
-                "total_samples": worker_total,
-                "all_h_samples": worker_all_h,
-                "single_element_samples": worker_single_element,
-                "cif_parse_failures": worker_failures,
-                "debug_all_h_rows": len(debug_summary["all_h_rows"]),
-            }
-        )
+        if sampling_metrics is not None:
+            total_metrics_workers += 1
+            total_metric_samples += int(sampling_metrics.get("total_samples", 0))
+            total_valid_count += int(sampling_metrics.get("valid_count", 0))
+            total_comp_valid_count += int(sampling_metrics.get("comp_valid_count", 0))
+            total_struct_valid_count += int(sampling_metrics.get("struct_valid_count", 0))
+
+        worker_payload = {
+            "worker_dir": str(worker_dir),
+            "exit_code": int(exit_code),
+            "sample_dir": str(sample_dir),
+            "debug_dir": str(debug_dir),
+            "metrics_path": str(metrics_path),
+            "total_samples": worker_total,
+            "all_h_samples": worker_all_h,
+            "single_element_samples": worker_single_element,
+            "cif_parse_failures": worker_failures,
+            "debug_all_h_rows": len(debug_summary["all_h_rows"]),
+        }
+        if sampling_metrics is not None:
+            worker_payload.update(
+                {
+                    "metric_total_samples": int(sampling_metrics.get("total_samples", 0)),
+                    "valid_samples": int(sampling_metrics.get("valid_count", 0)),
+                    "valid_rate": sampling_metrics.get("valid_rate_mean"),
+                    "comp_valid_samples": int(sampling_metrics.get("comp_valid_count", 0)),
+                    "comp_valid_rate": sampling_metrics.get("comp_valid_rate_mean"),
+                    "struct_valid_samples": int(sampling_metrics.get("struct_valid_count", 0)),
+                    "struct_valid_rate": sampling_metrics.get("struct_valid_rate_mean"),
+                    "unique_rate": sampling_metrics.get("unique_rate"),
+                    "novel_rate": sampling_metrics.get("novel_rate"),
+                }
+            )
+        per_worker.append(worker_payload)
+
+    aggregate_valid_rate = (
+        float(total_valid_count / total_metric_samples) if total_metric_samples > 0 else None
+    )
+    aggregate_comp_valid_rate = (
+        float(total_comp_valid_count / total_metric_samples) if total_metric_samples > 0 else None
+    )
+    aggregate_struct_valid_rate = (
+        float(total_struct_valid_count / total_metric_samples) if total_metric_samples > 0 else None
+    )
 
     summary = {
         "base_save_dir": str(base_save_dir),
@@ -132,6 +177,14 @@ def summarize_workers(base_save_dir, worker_dirs, exit_codes):
         "debug_all_h_rows": total_debug_all_h_rows,
         "element_frequency": dict(sorted(element_frequency.items())),
         "all_h_files": all_h_files,
+        "metric_total_samples": total_metric_samples,
+        "valid_samples": total_valid_count,
+        "valid_rate": aggregate_valid_rate,
+        "comp_valid_samples": total_comp_valid_count,
+        "comp_valid_rate": aggregate_comp_valid_rate,
+        "struct_valid_samples": total_struct_valid_count,
+        "struct_valid_rate": aggregate_struct_valid_rate,
+        "workers_with_sampling_metrics": total_metrics_workers,
         "workers": per_worker,
     }
 
@@ -142,12 +195,26 @@ def summarize_workers(base_save_dir, worker_dirs, exit_codes):
     print(f"Single-element CIF samples: {total_single_element}")
     print(f"CIF parse failures: {total_failures}")
     print(f"Debug all-H rows: {total_debug_all_h_rows}")
-    for worker in per_worker:
+    if total_metric_samples > 0:
         print(
+            "Validity summary: "
+            f"valid={total_valid_count}/{total_metric_samples} ({aggregate_valid_rate:.4f}), "
+            f"comp={total_comp_valid_count}/{total_metric_samples} ({aggregate_comp_valid_rate:.4f}), "
+            f"struct={total_struct_valid_count}/{total_metric_samples} ({aggregate_struct_valid_rate:.4f})"
+        )
+    for worker in per_worker:
+        worker_line = (
             f"  - {Path(worker['worker_dir']).name}: exit={worker['exit_code']} "
             f"samples={worker['total_samples']} all_H={worker['all_h_samples']} "
             f"single_element={worker['single_element_samples']}"
         )
+        if "valid_samples" in worker:
+            worker_line += (
+                f" valid={worker['valid_samples']}/{worker['metric_total_samples']}"
+                f" comp={worker['comp_valid_samples']}/{worker['metric_total_samples']}"
+                f" struct={worker['struct_valid_samples']}/{worker['metric_total_samples']}"
+            )
+        print(worker_line)
     return summary
 
 

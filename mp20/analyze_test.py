@@ -125,6 +125,72 @@ def _guard_atom_types_or_raise(args, atom_types, species_symbols, sample_global_
     return is_all_h
 
 
+def _to_float(value):
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return float(value.detach().cpu().item())
+        return [float(v) for v in value.detach().cpu().reshape(-1).tolist()]
+    if isinstance(value, np.ndarray):
+        if value.size == 1:
+            return float(value.reshape(-1)[0])
+        return [float(v) for v in value.reshape(-1).tolist()]
+    if isinstance(value, (np.floating, np.integer)):
+        return float(value)
+    return float(value)
+
+
+def _build_sampling_metrics_payload(epoch, metrics_dict):
+    payload = {
+        "epoch": int(epoch),
+    }
+    for key in ("valid_rate", "comp_valid_rate", "struct_valid_rate"):
+        metric = metrics_dict.get(key)
+        if metric is None:
+            continue
+        metric_cpu = metric.detach().cpu()
+        total = int(metric_cpu.numel())
+        count = int(metric_cpu.sum().item())
+        rate = float(metric_cpu.float().mean().item()) if total > 0 else None
+        payload[key] = {
+            "count": count,
+            "total": total,
+            "rate": rate,
+        }
+
+    payload["valid_count"] = payload.get("valid_rate", {}).get("count", 0)
+    payload["total_samples"] = payload.get("valid_rate", {}).get("total", 0)
+    payload["valid_rate_mean"] = payload.get("valid_rate", {}).get("rate")
+    payload["comp_valid_count"] = payload.get("comp_valid_rate", {}).get("count", 0)
+    payload["comp_valid_rate_mean"] = payload.get("comp_valid_rate", {}).get("rate")
+    payload["struct_valid_count"] = payload.get("struct_valid_rate", {}).get("count", 0)
+    payload["struct_valid_rate_mean"] = payload.get("struct_valid_rate", {}).get("rate")
+
+    for key in ("unique_rate", "novel_rate"):
+        if key in metrics_dict:
+            payload[key] = _to_float(metrics_dict[key])
+    return payload
+
+
+def _write_sampling_metrics(args, epoch, metrics_dict):
+    metrics_payload = _build_sampling_metrics_payload(epoch, metrics_dict)
+    epoch_dir = os.path.join(args.save_dir, f"epoch_{epoch}")
+    os.makedirs(epoch_dir, exist_ok=True)
+    metrics_path = os.path.join(epoch_dir, "sampling_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics_payload, f, ensure_ascii=True, indent=2)
+    _write_atom_type_debug_line(
+        args,
+        "sampling_metrics_written.jsonl",
+        {
+            "event": "sampling_metrics_written",
+            "epoch": int(epoch),
+            "metrics_path": metrics_path,
+            "metrics": metrics_payload,
+        },
+    )
+    return metrics_payload
+
+
 def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info, 
                      prop_dist, evaluate_condition_generation):
     print(f'Analyzing crystal validity at epoch {epoch}...')
@@ -219,6 +285,7 @@ def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info,
     print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
                'Uniqueness': metrics_dict["unique_rate"], 
                'Novelty': metrics_dict["novel_rate"]})
+    _write_sampling_metrics(args, epoch, metrics_dict)
 
     return metrics_dict
 
@@ -296,6 +363,7 @@ def analyze_and_save_withL(args, epoch, model_sample, LatticeGenModel, nodes_dis
     print({ 'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
             'Uniqueness': metrics_dict["unique_rate"], 
             'Novelty': metrics_dict["novel_rate"]})
+    _write_sampling_metrics(args, epoch, metrics_dict)
 
     return metrics_dict
 
@@ -433,6 +501,7 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
             'total_validity': metrics_dict["valid_rate"].sum()/num, 
             'Uniqueness': metrics_dict["unique_rate"], 
             'Novelty': metrics_dict["novel_rate"]})
+    _write_sampling_metrics(args, epoch, metrics_dict)
 
     return metrics_dict
 
@@ -537,6 +606,7 @@ def analyze_and_save_pure_x(args, epoch, model_sample, nodes_dist, dataset_info,
     print({'Validity': metrics_dict["valid_rate"].sum()/batch_size, 
                'Uniqueness': metrics_dict["unique_rate"], 
                'Novelty': metrics_dict["novel_rate"]})
+    _write_sampling_metrics(args, epoch, metrics_dict)
 
     return metrics_dict
 
