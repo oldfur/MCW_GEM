@@ -2882,6 +2882,24 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         L = torch.stack([v1, v2, v3], dim=2)  # [B,3,3]
         return L
 
+    def _frac_to_cart(self, frac, cell):
+        """Convert fractional row vectors to Cartesian using column-wise cell."""
+        if frac.dim() == 3:
+            return torch.einsum('bnm,bkm->bnk', frac, cell)
+        if frac.dim() == 4:
+            return torch.einsum('bnjm,bkm->bnjk', frac, cell)
+        if frac.dim() == 5:
+            return torch.einsum('bnjtm,bkm->bnjtk', frac, cell)
+        raise ValueError(f"Unsupported fractional tensor shape: {tuple(frac.shape)}")
+
+    def _cart_to_frac(self, cart, inv_cell):
+        """Convert Cartesian row vectors to fractional using inv(column-wise cell)."""
+        if cart.dim() == 3:
+            return torch.einsum('bnk,bmk->bnm', cart, inv_cell)
+        if cart.dim() == 4:
+            return torch.einsum('bnjk,bmk->bnjm', cart, inv_cell)
+        raise ValueError(f"Unsupported Cartesian tensor shape: {tuple(cart.shape)}")
+
 
     def compute_repulsion_loss_from_fractional(
         self,
@@ -2901,10 +2919,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         B, N, _ = x_hat.shape
         nm = node_mask.float()  # [B,N,1]
-        x_hat = x_hat.float()  # Mask out invalid nodes
+        x_hat = x_hat.to(dtype=L.dtype)  # Mask out invalid nodes
 
         # 1. Fractional -> Cartesian
-        X = torch.matmul(x_hat, L)  # [B,N,3]
+        X = self._frac_to_cart(x_hat, L)  # [B,N,3]
 
         # 2. Pairwise distances
         Xi = X.unsqueeze(2)  # [B,N,1,3]
@@ -2953,7 +2971,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # 1. 直接使用 argmax 类型作为真实原子序数 Z
         # ---------------------------------------------------------
         Z = h_pred.argmax(dim=-1).float()     # [B,N]
-        x_hat = x_hat.float()                 # [B,N,3]
+        x_hat = x_hat.to(dtype=L.dtype)       # [B,N,3]
         Z_i = Z.unsqueeze(2)                  # [B,N,1]
         Z_j = Z.unsqueeze(1)                  # [B,1,N]
 
@@ -2962,10 +2980,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # ---------------------------------------------------------
         # 2. 分数坐标差 + 最小镜像
         # ---------------------------------------------------------
-        dx = x_hat.unsqueeze(2) - x_hat.unsqueeze(1)  # [B,N,N,3]
-        dx = dx - torch.round(dx) # wrap in fractional
-        dx_flat = dx.reshape(B, N*N, 3)
-        rij = torch.matmul(dx_flat, L).reshape(B, N, N, 3) # [B,N,N,3] cartesian
+        inv_L = torch.linalg.pinv(L)
+        x_cart = self._frac_to_cart(torch.remainder(x_hat, 1.0), L)
+        dx_cart = x_cart.unsqueeze(2) - x_cart.unsqueeze(1)
+        rij = self.pbc_minimum_image(dx_cart, L, inv_L) # [B,N,N,3] cartesian
         dist = torch.norm(rij, dim=-1) + 1e-12       # [B,N,N]
 
         # ---------------------------------------------------------
@@ -3137,7 +3155,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1,
-               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False, lambda_sym=0.1):
+               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False, lambda_sym=0.0):
         """Samples from the model using score function."""    
         results = []
         self._reset_atom_type_all_h_guard_summary()
@@ -3614,7 +3632,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde(
         self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.1
+        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.0
     ):  
         # =======================================================
         # Sampling cell length/angles
@@ -3677,6 +3695,16 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             z = self.sample_combined_position_feature_noise(
                 n_samples, n_nodes, node_mask
             )
+        z[:, :, :self.n_dims] = torch.remainder(z[:, :, :self.n_dims], 1.0)
+        self._write_atom_debug_line(
+            "geometry_initial_z.jsonl",
+            {
+                "event": "initial_fractional_z",
+                "source_tag": "sample_score_sde",
+                "round_index": int(round_index),
+                "coord_stats": self._tensor_stats(z[:, :, :self.n_dims]),
+            },
+        )
 
         print(f"> Reverse SDE steps = {self.T}")
         print('SDE type:', self.sde_type)
@@ -3818,7 +3846,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 actual_lambda = (standard_step_norm / (sym_grad_norm + 1e-8)) * lambda_sym # 动态调整 lambda：确保对称引导比例适中
                 x_prev_guided = x_prev_standard - actual_lambda * sym_grad
                 # x_prev_guided = x_prev_standard - lambda_sym * sym_grad
-                z[:, :, :3] = x_prev_guided
+                z[:, :, :3] = torch.remainder(x_prev_guided, 1.0)
 
                 if i == 0:
                     print("Applied symmetry guidance success!")
@@ -3838,6 +3866,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 #     r_cut=0.5,   
                 # )
                 zx = z[:, :, :3]
+                zx_before_correction = zx.detach().clone()
                 zx = self.local_repulsion_correction(
                         zx,
                         cell,
@@ -3846,6 +3875,17 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                         margin=0.05,
                         alpha=0.5
                 )
+                if i >= self.T - 10:
+                    self._record_local_repulsion_correction(
+                        round_index=round_index,
+                        step_index=step_index,
+                        frac_before=zx_before_correction,
+                        frac_after=zx.detach(),
+                        cell=cell,
+                        node_mask=node_mask,
+                        cutoff=0.5,
+                        lambda_sym=lambda_sym,
+                    )
                 z[:, :, :3] = zx
         # --- end of for T steps
 
@@ -3917,7 +3957,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde_Lattice(
         self, rl, ra, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.1
+        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.0
     ):
         print('Sampling cell given real length/angles ...')
         rl = rl.to(node_mask.device)
@@ -3938,6 +3978,16 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             z = self.sample_combined_position_feature_noise(
                 n_samples, n_nodes, node_mask
             )
+        z[:, :, :self.n_dims] = torch.remainder(z[:, :, :self.n_dims], 1.0)
+        self._write_atom_debug_line(
+            "geometry_initial_z.jsonl",
+            {
+                "event": "initial_fractional_z",
+                "source_tag": "sample_score_sde_Lattice",
+                "round_index": int(round_index),
+                "coord_stats": self._tensor_stats(z[:, :, :self.n_dims]),
+            },
+        )
 
         print(f"> Reverse SDE steps = {self.T}")
         print('Corrector steps:', n_corrector_steps)
@@ -4097,7 +4147,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         h_cat = z[:,:,self.n_dims:self.n_dims+self.num_classes]
         cell = self.compute_lattice_matrix(rl, ra)  # [B,3,3]
         inv_cell = torch.linalg.pinv(cell) # [B,3,3]
-        x = torch.einsum('bnm,bmk->bnk', frac, cell)   # [B,N,3]
+        x = self._frac_to_cart(frac, cell)   # [B,N,3]
         
         # pairwise differences (cartesian)
         dx = x[:, :, None, :] - x[:, None, :, :]        # [B,N,N,3]
@@ -4134,14 +4184,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
             # convert cartesian force -> fractional-coord 'force'
             # small cart displacement dx corresponds to dfrac = dx @ inv_cell
-            F_frac = torch.einsum('bnk,bkl->bnl', F_cart, inv_cell)   # [B,N,3]
+            F_frac = self._cart_to_frac(F_cart, inv_cell)   # [B,N,3]
 
             # update fractional coords
             step = eps * F_frac * abs(float(dt))   # use abs(dt) to scale step size
             frac_new = frac + step
             
             ## debugging info
-            # step_cart = torch.einsum('bnk,bkl->bnl', step, cell)  # [B,N,3] Cartesian
+            # step_cart = self._frac_to_cart(step, cell)  # [B,N,3] Cartesian
             # step_cart_mag = torch.norm(step_cart, dim=-1)       # [B,N] Å
             # idx_b, idx_i, idx_j = torch.where(close_mask)
             # for b,i,j in zip(idx_b.tolist(), idx_i.tolist(), idx_j.tolist()):
@@ -4156,23 +4206,23 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     # def pbc_minimum_image(self, dx, cell, inv_cell):
     #     """
     #     dx: [B,N,N,3] raw cartesian difference vectors (xi - xj)
-    #     cell: [B,3,3] with rows = a,b,c
+    #     cell: [B,3,3] with columns = a,b,c
     #     inv_cell: [B,3,3] inverse matrices
     #     Returns dx mapped to minimum image under PBC, same shape as dx.
     #     """
     #     # dx (cart) -> fractional differences: d_frac = dx @ inv_cell^T
     #     # einsum notation: 'bnjk,bkl->bnjl' where last index maps to fractional components
-    #     d_frac = torch.einsum('bnjk,bkl->bnjl', dx, inv_cell)   # [B,N,N,3]
+    #     d_frac = self._cart_to_frac(dx, inv_cell)   # [B,N,N,3]
     #     d_frac = d_frac - torch.round(d_frac) # wrap to [-0.5,0.5]
-    #     dx_pbc = torch.einsum('bnjk,bkl->bnjl', d_frac, cell)   # back to cart
+    #     dx_pbc = self._frac_to_cart(d_frac, cell)   # back to cart
         
     #     return dx_pbc
     
     def pbc_minimum_image(self, dx, cell, inv_cell):
         """
         dx: [B,N,N,3] raw cartesian difference vectors (xi - xj)
-        cell: [B,3,3] with rows = a,b,c
-        inv_cell: [B,3,3] inverse matrices
+        cell: [B,3,3] with columns = a,b,c lattice vectors
+        inv_cell: [B,3,3] inverse matrices of the column-wise cell
 
         Returns:
             dx_pbc: [B,N,N,3] shortest cartesian vectors under PBC
@@ -4182,8 +4232,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         dtype = dx.dtype
         B, N, _, _ = dx.shape
 
-        # cart -> fractional differences
-        d_frac = torch.einsum('bnjk,bkl->bnjl', dx, inv_cell)  # [B,N,N,3]
+        # cart -> fractional differences for column-wise cell:
+        # cart_row = frac_row @ cell.T, so frac_row = cart_row @ inv_cell.T.
+        d_frac = self._cart_to_frac(dx, inv_cell)  # [B,N,N,3]
 
         # all integer shifts in {-1,0,1}^3
         shifts = torch.tensor(
@@ -4199,9 +4250,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         d_frac_all = d_frac.unsqueeze(-2) + shifts.view(1, 1, 1, 27, 3)
 
         # back to cartesian
-        dx_all = torch.einsum(
-            'bnjlk,bkm->bnjlm', d_frac_all, cell
-        )  # [B,N,N,27,3]
+        dx_all = self._frac_to_cart(d_frac_all, cell)  # [B,N,N,27,3]
 
         # choose shortest
         dist2 = (dx_all ** 2).sum(dim=-1)          # [B,N,N,27]
@@ -4213,6 +4262,95 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         ).squeeze(-2)                               # [B,N,N,3]
 
         return dx_pbc
+
+    def _pbc_pair_distance_stats(self, frac, cell, node_mask, cutoff=0.5):
+        inv_cell = torch.linalg.pinv(cell)
+        x = self._frac_to_cart(torch.remainder(frac.to(dtype=cell.dtype), 1.0), cell)
+        dx = x[:, :, None, :] - x[:, None, :, :]
+        dx = self.pbc_minimum_image(dx, cell, inv_cell)
+        dist = torch.norm(dx, dim=-1)
+
+        B, N, _ = frac.shape
+        mask = node_mask.squeeze(-1).bool()
+        pair_mask = mask[:, :, None] & mask[:, None, :]
+        upper = torch.triu(
+            torch.ones(N, N, device=frac.device, dtype=torch.bool),
+            diagonal=1,
+        ).unsqueeze(0)
+        pair_mask = pair_mask & upper
+        masked_dist = torch.where(pair_mask, dist, torch.full_like(dist, float("inf")))
+        min_dist = masked_dist.reshape(B, -1).min(dim=1).values
+        min_dist = torch.where(torch.isinf(min_dist), torch.full_like(min_dist, float("nan")), min_dist)
+        close_mask = (dist < cutoff) & pair_mask
+        close_count = close_mask.sum(dim=(1, 2))
+        return min_dist, close_count, close_mask, dist
+
+    def _record_local_repulsion_correction(
+        self,
+        round_index,
+        step_index,
+        frac_before,
+        frac_after,
+        cell,
+        node_mask,
+        cutoff=0.5,
+        lambda_sym=0.0,
+    ):
+        if not self.debug_atom_types:
+            return
+
+        before_min, before_count, _, _ = self._pbc_pair_distance_stats(
+            frac_before, cell, node_mask, cutoff=cutoff
+        )
+        after_min, after_count, after_close_mask, _ = self._pbc_pair_distance_stats(
+            frac_after, cell, node_mask, cutoff=cutoff
+        )
+        B = frac_before.size(0)
+        failures = []
+        for b in range(B):
+            failed = bool(after_count[b].item() > 0)
+            if failed:
+                pairs = torch.nonzero(after_close_mask[b], as_tuple=False)
+                failures.append(
+                    {
+                        "sample_local_index": int(b),
+                        "sample_global_index": int(round_index * B + b),
+                        "after_min_distance": float(after_min[b].item()),
+                        "after_close_pair_count": int(after_count[b].item()),
+                        "after_close_pairs": [
+                            [int(i), int(j)] for i, j in pairs.detach().cpu().tolist()
+                        ],
+                    }
+                )
+
+        payload = {
+            "event": "local_repulsion_correction_step",
+            "source_tag": "sample_score_sde",
+            "round_index": int(round_index),
+            "step_index": int(step_index),
+            "cutoff": float(cutoff),
+            "lambda_sym": float(lambda_sym),
+            "before_min_distance": [float(v) for v in before_min.detach().cpu().tolist()],
+            "after_min_distance": [float(v) for v in after_min.detach().cpu().tolist()],
+            "before_close_pair_count": [int(v) for v in before_count.detach().cpu().tolist()],
+            "after_close_pair_count": [int(v) for v in after_count.detach().cpu().tolist()],
+            "failure_count": int(len(failures)),
+            "failures": failures,
+        }
+        self._write_atom_debug_line("geometry_repulsion_correction.jsonl", payload)
+        if failures:
+            self._write_atom_debug_line(
+                "geometry_repulsion_failures.jsonl",
+                {
+                    "event": "local_repulsion_correction_failures",
+                    "source_tag": "sample_score_sde",
+                    "round_index": int(round_index),
+                    "step_index": int(step_index),
+                    "cutoff": float(cutoff),
+                    "lambda_sym": float(lambda_sym),
+                    "failures": failures,
+                },
+            )
 
     
     def debug_zbl_force_direction(self, dist, dx, F_pair, close_mask):
@@ -4261,7 +4399,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def local_repulsion_correction(
         self,
         frac,                # [B, N, 3] fractional coords
-        cell,                # [B, 3, 3] cell matrix (rows = a,b,c vectors)
+        cell,                # [B, 3, 3] cell matrix (columns = a,b,c vectors)
         node_mask,           # [B, N, 1] atom mask
         d_min=0.5,
         margin=0.05,         # push to d_min + margin
@@ -4281,7 +4419,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             print("NaN detected in cell or inv_cell!")
             inv_cell = torch.nan_to_num(inv_cell, nan=0.0, posinf=0.0, neginf=0.0)
             cell = torch.nan_to_num(cell, nan=0.0, posinf=0.0, neginf=0.0)
-        x = torch.einsum('bnm,bmk->bnk', frac, cell)   # [B,N,3]
+        x = self._frac_to_cart(frac, cell)   # [B,N,3]
         
         # pairwise differences (cartesian)
         dx = x[:, :, None, :] - x[:, None, :, :]        # [B,N,N,3]
@@ -4314,7 +4452,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # disp_cart = disp_i_cart + disp_j_cart
         
         disp_cart = 0.5 * delta.sum(dim=2)   # [B,N,3]
-        disp_frac = torch.einsum('bnm,bmk->bnk', disp_cart, inv_cell)   # [B,N,3]
+        disp_frac = self._cart_to_frac(disp_cart, inv_cell)   # [B,N,3]
         frac_new = frac + disp_frac
         frac_new = wrap_at_boundary(frac_new, wrapping_boundary=1.0)
 

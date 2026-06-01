@@ -254,11 +254,15 @@ mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260
 
 说明：
 - 默认开启 final decode 的 all-H guard；它只作用于最后 atom type decode / top-k search，不影响训练。
+- 几何主实验建议显式使用 `--lambda_sym 0.0`；当前 CLI 默认关闭 symmetry guidance。
 - 若要做 ablation，可在命令末尾加：`--disable-all-h-guard True`
+- symmetry guidance 小消融建议同一 checkpoint / seed 分别跑 `--lambda_sym 0.0` 和 `--lambda_sym 0.1`，再用下面的 geometry diagnostics 比较 close pairs。
 - 若要改 rescue 搜索宽度或最少非 H 数量，可加：`--all-h-guard-topk 4 --all-h-guard-min-non-h 1`
 - 开启 `--debug-atom-types True` 时，会额外写出：
   - `save_dir/atom_type_debug/atom_type_all_h_guard.jsonl`
   - `save_dir/atom_type_debug/atom_type_all_h_guard_summary.json`
+  - `save_dir/atom_type_debug/geometry_repulsion_correction.jsonl`
+  - `save_dir/atom_type_debug/geometry_repulsion_failures.jsonl`
 
 ### 服务器多卡采样 diffusion_LF_wrap（按 num_rounds 分片，不改采样逻辑）
 
@@ -295,6 +299,16 @@ cd ~/mcw/MCW_GEM && python scripts/debug_all_h_samples.py ~/data1/mcw/MCW_GEM/ou
   - `save_dir/worker_XX/atom_type_debug/atom_type_all_h_guard.jsonl`
   - `save_dir/worker_XX/atom_type_debug/atom_type_all_h_guard_summary.json`
 
+### 采样后统计 geometry validity
+单卡或多卡输出目录都可以直接跑：
+```
+cd ~/mcw/MCW_GEM && conda run -n mpgem python scripts/diagnose_geometry_validity.py ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260522_epoch100_multi_gpu
+```
+
+输出：
+- `geometry_diagnostics.csv`
+- `geometry_diagnostics_summary.json`
+
 若你的 lattice checkpoint 文件名是 `generative_model.npy` 而不是 `generative_model_ema.npy`，把上面命令中的对应路径替换掉即可。
 
 ```
@@ -330,4 +344,4 @@ VE-SDE 表现也相当强劲:
 CUDA_VISIBLE_DEVICES=4 nohup python -u main_LF_sample.py --device cuda --dp True --num_workers 0 --exp_name sample_LF --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 2 --sample_seed 2026 --num_rounds 16 --include_charges False --compute_novelty 1 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --sde_type ve --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy --pretrained_model ./outputs/train_LF_mp20/diffusion_LF_wrap/generative_model_ema_epoch70.npy --save_dir ./outputs/0206_sample_512_ve > sample.log 2>&1 &
 ```
 
-- 若使用guidance,比如对称性，加入 --lambda_sym 1.0
+- 若使用 guidance（比如对称性），先小范围消融 `--lambda_sym 0.1`；几何主实验默认保持 `--lambda_sym 0.0`。
