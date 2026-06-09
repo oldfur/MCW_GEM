@@ -15,6 +15,11 @@ from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core.structure import Structure
 from typing import Dict
 from functools import partial   # 固定某个函数的一部分参数，返回一个新的函数
+from mp20.novelty import (
+    DEFAULT_SKIP_STRUCTURE_REDUCTION,
+    build_structure_matcher,
+    is_structure_novel,
+)
 
 import json
 import torch
@@ -652,7 +657,7 @@ class CrystalGenerationEvaluator:
     ):
         self.dataset_cif_list = dataset_cif_list
         self.dataset_struct_list = None  # loader first time it is required
-        self.matcher = StructureMatcher(stol=stol, angle_tol=angle_tol, ltol=ltol)
+        self.matcher = build_structure_matcher(stol=stol, angle_tol=angle_tol, ltol=ltol)
         self.pred_arrays_list = []
         self.pred_crys_list = []
         self.device = device
@@ -696,10 +701,12 @@ class CrystalGenerationEvaluator:
 
     def _get_novelty(self, struct):
         # matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
-        for other_struct in self.dataset_struct_list:
-            if self.matcher.fit(struct, other_struct, skip_structure_reduction=True):
-                return False
-        return True
+        return is_structure_novel(
+            struct,
+            self.dataset_struct_list,
+            self.matcher,
+            skip_structure_reduction=DEFAULT_SKIP_STRUCTURE_REDUCTION,
+        )
 
     # !!!!!!
     def get_metrics(self, save: bool = False, save_dir: str = ""):

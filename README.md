@@ -311,6 +311,75 @@ cd ~/mcw/MCW_GEM && conda run -n mpgem python scripts/diagnose_geometry_validity
 
 若你的 lattice checkpoint 文件名是 `generative_model.npy` 而不是 `generative_model_ema.npy`，把上面命令中的对应路径替换掉即可。
 
+### Offline Novelty Evaluation
+对已经采样保存的 CIF 递归计算 novelty：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/evaluate_novelty_from_cifs.py \
+  --sample-glob "./outputs/sample_LF_mp20_2026*" \
+  --mp20-root "./mp20" \
+  --processed-dir "./mp20/precessed" \
+  --output-dir "./outputs/novelty_eval_$(date +%Y%m%d_%H%M%S)" \
+  --num-workers 8
+```
+
+输出文件：
+- `novelty_summary.json`：总体 novelty、reference 信息、matcher 参数、denominator 定义和运行耗时。
+- `novelty_per_sample.csv`：每个 CIF 的解析、有效性、novelty 和匹配 reference 信息。
+- `novelty_failures.jsonl`：CIF 解析或 matcher 失败记录。
+- `matched_pairs.jsonl`：非 novel 样本匹配到的 MP20 reference。
+
+脚本默认复用当前采样评估定义：`StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)`，先对 valid generated structures 做 `group_structures`，再用每个 unique group 的代表结构和 `mp20/raw/all.csv` 中的 reference CIF 比较。
+
+### Offline Uniqueness Evaluation
+对已经采样保存的 CIF 递归计算 generated samples 内部的总体 uniqueness：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/evaluate_uniqueness_from_cifs.py \
+  --sample-glob "./outputs/sample_LF_mp20_2026*" \
+  --output-dir "./outputs/uniqueness_eval_$(date +%Y%m%d_%H%M%S)" \
+  --num-workers 8 \
+  --valid-only True
+```
+
+输出文件：
+- `uniqueness_summary.json`：总体 uniqueness、denominator 定义、matcher 参数、cluster 统计和运行耗时。
+- `uniqueness_per_sample.csv`：每个 CIF 的解析、有效性、cluster 和 representative 信息。
+- `uniqueness_clusters.jsonl`：每个 unique cluster 的代表结构和成员列表。
+- `uniqueness_failures.jsonl`：CIF 解析、validity check 或 matcher 失败记录。
+
+脚本默认复用当前采样评估定义：只对 `mp20.crystal.array_dict_to_crystal(...).valid` 的 generated CIF 计算，使用 `StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)` 的 `group_structures`，并报告 `unique cluster 数 / evaluated valid CIF 数`。
+
+### Offline UN Rate Evaluation
+UN Rate 使用 CrystalDiT-style 定义：`unique_representative=True` 且 `novel=True` 的 generated samples 数量除以 evaluated generated samples 数量。主指标不是 `unique_count` 中 novel 的比例，后者会作为辅助的 `novel_among_unique_rate` 输出。
+
+方式 1：从已有 uniqueness / novelty 输出合并：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/evaluate_un_rate_from_cifs.py \
+  --uniqueness-dir "./outputs/uniqueness_eval" \
+  --novelty-dir "./outputs/novelty_eval" \
+  --output-dir "./outputs/un_rate_eval"
+```
+
+方式 2：从 CIF 直接计算；脚本会先调用已有 offline uniqueness / novelty 脚本，再合并结果：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/evaluate_un_rate_from_cifs.py \
+  --sample-glob "./outputs/sample_LF_mp20_2026*" \
+  --mp20-root "./mp20" \
+  --processed-dir "./mp20/precessed" \
+  --output-dir "./outputs/un_rate_eval_$(date +%Y%m%d_%H%M%S)" \
+  --num-workers 8 \
+  --valid-only True
+```
+
+输出文件：
+- `un_rate_summary.json`：UN Rate、uniqueness/novelty/per-sample denominator、merge 策略和 reference 信息。
+- `un_rate_per_sample.csv`：每个 CIF 的 unique、novel、unique_and_novel、cluster 和 reference 匹配信息。
+- `un_structures.jsonl`：所有 `unique_and_novel=True` 的样本。
+- `un_rate_failures.jsonl`：parse、merge、helper、evaluated flag 或 formula mismatch 等失败记录。
+
 ```
 CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u main_LF_train.py --device cuda --dp True --exp_name train_LF_mp20  --wandb_usr maochenwei-ustc --model DGAP --atom_type_pred 1 --include_charges False --lr 1e-4 --n_epochs 1000 --batch_size 128 --test_epochs 10 --visulaize_epoch 10 --save_epoch 50 --n_report_steps 16 --visualize_every_batch 20000 --n_samples 20 --sample_batch_size 32 --diffusion_steps 1000 --lambda_l 1 --lambda_a 1 --lambda_type 0.1 --n_corrector_steps 1 --online 0 --num_workers 0 --compute_novelty 1 --compute_novelty_epoch 150 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model.npy  > train.log 2>&1 &
 ```
