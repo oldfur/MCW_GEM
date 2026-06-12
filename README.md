@@ -380,6 +380,56 @@ PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/evaluate_un_rate_fro
 - `un_structures.jsonl`：所有 `unique_and_novel=True` 的样本。
 - `un_rate_failures.jsonl`：parse、merge、helper、evaluated flag 或 formula mismatch 等失败记录。
 
+### Figure 5: MACE-relaxed Generated Sample Visualization
+
+从 MACE-relaxed CIF 中筛选同时满足 structure-valid、composition-valid、unique、novel 的 100 个样本：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/select_mace_relaxed_visualization_samples.py \
+  --cif-dir outputs/20260601_mace_relax_final_256 \
+  --target-count 100 \
+  --output-dir outputs/visualization/generated_samples_mace_relaxed_100 \
+  --min-distance 0.5 \
+  --exclude-single-element \
+  --exclude-hydrogen \
+  --validity-csv outputs/eval/validity_per_sample.csv \
+  --uniqueness-csv outputs/eval/uniqueness_per_sample.csv \
+  --novelty-csv outputs/eval/novelty_per_sample.csv
+```
+
+如果不提供 `--uniqueness-csv` 或 `--novelty-csv`，脚本默认会尝试调用已有 offline uniqueness / novelty 脚本生成 per-sample CSV；正式论文作图建议显式传入已确认的评估 CSV。
+
+批量渲染选中的 CIF：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/render_crystal_cifs_batch.py \
+  --selected-csv outputs/visualization/generated_samples_mace_relaxed_100/selected/selected_samples.csv \
+  --output-dir outputs/visualization/generated_samples_mace_relaxed_100/renders \
+  --backend auto \
+  --supercell auto \
+  --image-size 1000
+```
+
+拼接 4 x 5 overview panels，方便人工挑选 Figure 5 样本：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/make_generated_samples_overview_panels.py \
+  --render-metadata outputs/visualization/generated_samples_mace_relaxed_100/renders/render_metadata.csv \
+  --output-dir outputs/visualization/generated_samples_mace_relaxed_100/panels \
+  --panel-rows 4 \
+  --panel-cols 5
+```
+
+生成论文 Figure 5 的 2 x 4 final panel：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/make_generated_samples_overview_panels.py \
+  --render-metadata outputs/visualization/generated_samples_mace_relaxed_100/renders/render_metadata.csv \
+  --output-dir outputs/visualization/generated_samples_mace_relaxed_100/panels \
+  --final-ids sample_003 sample_018 sample_021 sample_034 sample_047 sample_052 sample_071 sample_096 \
+  --final-output-prefix ~/papers/stage_decoupled_crystal_aaai/figures/fig5_generated_samples_mace_relaxed
+```
+
 ```
 CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u main_LF_train.py --device cuda --dp True --exp_name train_LF_mp20  --wandb_usr maochenwei-ustc --model DGAP --atom_type_pred 1 --include_charges False --lr 1e-4 --n_epochs 1000 --batch_size 128 --test_epochs 10 --visulaize_epoch 10 --save_epoch 50 --n_report_steps 16 --visualize_every_batch 20000 --n_samples 20 --sample_batch_size 32 --diffusion_steps 1000 --lambda_l 1 --lambda_a 1 --lambda_type 0.1 --n_corrector_steps 1 --online 0 --num_workers 0 --compute_novelty 1 --compute_novelty_epoch 150 --probabilistic_model diffusion_LF_wrap --pretrained_Lattice_model ./outputs/train_LatticeGen_mp20/diffusion_L/generative_model.npy  > train.log 2>&1 &
 ```
