@@ -399,6 +399,8 @@ PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/select_mace_relaxed_
 
 如果不提供 `--uniqueness-csv` 或 `--novelty-csv`，脚本默认会尝试调用已有 offline uniqueness / novelty 脚本生成 per-sample CSV；正式论文作图建议显式传入已确认的评估 CSV。
 
+当前 `outputs/20260601_mace_relax_final_256/relaxed_cifs_success_only/` 中严格排除 H 后只能得到 36 个满足条件的样本；如果需要选满 100 个 MACE-success 样本，可将上面的 `--exclude-hydrogen` 改为 `--no-exclude-hydrogen`。如果坚持 H-free，则把 `--target-count` 设为不超过 36。
+
 批量渲染选中的 CIF：
 ```
 cd ~/MCW_GEM

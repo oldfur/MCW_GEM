@@ -371,87 +371,97 @@ def ensure_metric_csvs(args: argparse.Namespace, output_dir: Path) -> tuple[str 
 
     if not uniqueness_csv:
         uniqueness_dir = eval_dir / "uniqueness"
-        uniqueness_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            cmd = [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "evaluate_uniqueness_from_cifs.py"),
-                "--sample-dir",
-                str(args.cif_dir),
-                "--output-dir",
-                str(uniqueness_dir),
-                "--num-workers",
-                str(args.num_workers),
-                "--valid-only",
-                "False",
-                "--save-per-sample",
-                "True",
-            ]
-            if args.max_cifs is not None:
-                cmd.extend(["--max-samples", str(args.max_cifs)])
-            run_helper(cmd, "uniqueness")
-            candidate = uniqueness_dir / "uniqueness_per_sample.csv"
-            if candidate.exists():
-                uniqueness_csv = str(candidate)
-            else:
+        existing = uniqueness_dir / "uniqueness_per_sample.csv"
+        if existing.exists():
+            uniqueness_csv = str(existing)
+            LOGGER.info("Reusing existing uniqueness CSV: %s", existing)
+        else:
+            uniqueness_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                cmd = [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "evaluate_uniqueness_from_cifs.py"),
+                    "--sample-dir",
+                    str(args.cif_dir),
+                    "--output-dir",
+                    str(uniqueness_dir),
+                    "--num-workers",
+                    str(args.num_workers),
+                    "--valid-only",
+                    "False",
+                    "--save-per-sample",
+                    "True",
+                ]
+                if args.max_cifs is not None:
+                    cmd.extend(["--max-samples", str(args.max_cifs)])
+                run_helper(cmd, "uniqueness")
+                candidate = uniqueness_dir / "uniqueness_per_sample.csv"
+                if candidate.exists():
+                    uniqueness_csv = str(candidate)
+                else:
+                    failures.append(
+                        {
+                            "kind": "missing_computed_uniqueness_csv",
+                            "directory": str(uniqueness_dir),
+                            "error_message": "Uniqueness helper completed but did not create uniqueness_per_sample.csv.",
+                        }
+                    )
+            except Exception as exc:
                 failures.append(
                     {
-                        "kind": "missing_computed_uniqueness_csv",
-                        "directory": str(uniqueness_dir),
-                        "error_message": "Uniqueness helper completed but did not create uniqueness_per_sample.csv.",
+                        "kind": "uniqueness_helper_failure",
+                        "error_message": str(exc),
                     }
                 )
-        except Exception as exc:
-            failures.append(
-                {
-                    "kind": "uniqueness_helper_failure",
-                    "error_message": str(exc),
-                }
-            )
 
     if not novelty_csv:
         novelty_dir = eval_dir / "novelty"
-        novelty_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            cmd = [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "evaluate_novelty_from_cifs.py"),
-                "--sample-dir",
-                str(args.cif_dir),
-                "--mp20-root",
-                str(args.mp20_root),
-                "--processed-dir",
-                str(args.processed_dir),
-                "--output-dir",
-                str(novelty_dir),
-                "--num-workers",
-                str(args.num_workers),
-                "--valid-only",
-                "False",
-                "--save-per-sample",
-                "True",
-            ]
-            if args.max_cifs is not None:
-                cmd.extend(["--max-samples", str(args.max_cifs)])
-            run_helper(cmd, "novelty")
-            candidate = novelty_dir / "novelty_per_sample.csv"
-            if candidate.exists():
-                novelty_csv = str(candidate)
-            else:
+        existing = novelty_dir / "novelty_per_sample.csv"
+        if existing.exists():
+            novelty_csv = str(existing)
+            LOGGER.info("Reusing existing novelty CSV: %s", existing)
+        else:
+            novelty_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                cmd = [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "evaluate_novelty_from_cifs.py"),
+                    "--sample-dir",
+                    str(args.cif_dir),
+                    "--mp20-root",
+                    str(args.mp20_root),
+                    "--processed-dir",
+                    str(args.processed_dir),
+                    "--output-dir",
+                    str(novelty_dir),
+                    "--num-workers",
+                    str(args.num_workers),
+                    "--valid-only",
+                    "False",
+                    "--save-per-sample",
+                    "True",
+                ]
+                if args.max_cifs is not None:
+                    cmd.extend(["--max-samples", str(args.max_cifs)])
+                run_helper(cmd, "novelty")
+                candidate = novelty_dir / "novelty_per_sample.csv"
+                if candidate.exists():
+                    novelty_csv = str(candidate)
+                else:
+                    failures.append(
+                        {
+                            "kind": "missing_computed_novelty_csv",
+                            "directory": str(novelty_dir),
+                            "error_message": "Novelty helper completed but did not create novelty_per_sample.csv.",
+                        }
+                    )
+            except Exception as exc:
                 failures.append(
                     {
-                        "kind": "missing_computed_novelty_csv",
-                        "directory": str(novelty_dir),
-                        "error_message": "Novelty helper completed but did not create novelty_per_sample.csv.",
+                        "kind": "novelty_helper_failure",
+                        "error_message": str(exc),
                     }
                 )
-        except Exception as exc:
-            failures.append(
-                {
-                    "kind": "novelty_helper_failure",
-                    "error_message": str(exc),
-                }
-            )
 
     return uniqueness_csv, novelty_csv, failures
 
@@ -566,6 +576,42 @@ def build_candidates(records: list[dict[str, Any]], args: argparse.Namespace) ->
             continue
         candidates.append(record)
     return candidates
+
+
+def exclusion_breakdown(records: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, int]:
+    base = [
+        record
+        for record in records
+        if record.get("struct_valid") is True
+        and record.get("comp_valid") is True
+        and record.get("unique") is True
+        and record.get("novel") is True
+    ]
+    after_mace = [
+        record
+        for record in base
+        if not (args.require_mace_success and record.get("mace_success") is False)
+    ]
+    after_single = [
+        record
+        for record in after_mace
+        if not (args.exclude_single_element and int(record.get("num_unique_elements") or 0) <= 1)
+    ]
+    after_hydrogen = [
+        record
+        for record in after_single
+        if not (args.exclude_hydrogen and record.get("contains_hydrogen"))
+    ]
+    return {
+        "base_valid_unique_novel_count": len(base),
+        "excluded_by_mace_success_count": len(base) - len(after_mace),
+        "after_mace_success_count": len(after_mace),
+        "excluded_by_single_element_count": len(after_mace) - len(after_single),
+        "after_single_element_count": len(after_single),
+        "excluded_by_hydrogen_count": len(after_single) - len(after_hydrogen),
+        "after_hydrogen_count": len(after_hydrogen),
+        "final_candidate_count": len(after_hydrogen),
+    }
 
 
 def diversity_bin(record: dict[str, Any]) -> tuple[int, int, int]:
@@ -723,6 +769,7 @@ def main() -> None:
         )
 
     counts = {"total_cifs": len(all_cifs), **filter_counts(records)}
+    breakdown = exclusion_breakdown(records, args)
     candidates = build_candidates(records, args)
     counts["candidate_after_exclusions_count"] = len(candidates)
 
@@ -733,6 +780,7 @@ def main() -> None:
             "status": "failed_insufficient_candidates",
             "args": vars(args),
             "counts": counts,
+            "exclusion_breakdown": breakdown,
             "merge_counts": dict(merge_counts),
             "sources": {
                 "validity_csv": validity_source,
@@ -749,7 +797,7 @@ def main() -> None:
         raise SystemExit(
             "Not enough candidates for requested target count. "
             f"Need {args.target_count}, found {len(candidates)}. "
-            f"Counts: {counts}"
+            f"Counts: {counts}. Exclusion breakdown: {breakdown}"
         )
 
     selected = select_diverse(candidates, args.target_count, args.seed)
@@ -794,6 +842,7 @@ def main() -> None:
         "status": "ok",
         "args": vars(args),
         "counts": counts,
+        "exclusion_breakdown": breakdown,
         "merge_counts": dict(merge_counts),
         "sources": {
             "validity_csv": validity_source,
