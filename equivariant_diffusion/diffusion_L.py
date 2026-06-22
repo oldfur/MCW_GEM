@@ -303,6 +303,8 @@ class VariationalDiffusion_L(torch.nn.Module):
             str_sigma_h = 0.05, str_sigma_x = 0.05,
             temp_index = 0, optimal_sampling = 0,
             len_dim=3, angle_dim=3, lambda_l=1, lambda_a=1,
+            condition_lattice_on_n=False, num_atom_embed_dim=32,
+            max_num_atoms=20,
             **kwargs):
         super().__init__()
         self.prediction_threshold_t = prediction_threshold_t
@@ -381,13 +383,37 @@ class VariationalDiffusion_L(torch.nn.Module):
         self.angle_dim = angle_dim
         self.lambda_l = lambda_l
         self.lambda_a = lambda_a
+        self.condition_lattice_on_n = bool(condition_lattice_on_n)
+        self.max_num_atoms = int(max_num_atoms)
+        self.num_atom_embed_dim = int(num_atom_embed_dim)
+        if self.max_num_atoms < 1:
+            raise ValueError(f"max_num_atoms must be positive, got {self.max_num_atoms}")
+        if self.num_atom_embed_dim < 1:
+            raise ValueError(
+                f"num_atom_embed_dim must be positive, got {self.num_atom_embed_dim}"
+            )
         print("use lambda_l: ", lambda_l)
         print("use lambda_a: ", lambda_a)
 
+        if self.condition_lattice_on_n:
+            self.num_atom_embedding = torch.nn.Embedding(
+                self.max_num_atoms + 1, self.num_atom_embed_dim
+            )
+            condition_dim = self.num_atom_embed_dim
+            print(
+                "conditioning lattice diffusion on num_atoms: "
+                f"max={self.max_num_atoms}, embed_dim={self.num_atom_embed_dim}"
+            )
+        else:
+            self.num_atom_embedding = None
+            condition_dim = None
+
         self.length_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
-                         hidden_dims=[128, 128], use_self_attn=False)
+                         hidden_dims=[128, 128], use_self_attn=False,
+                         condition_dim=condition_dim)
         self.angle_mlp = DiffusionMLP(input_dim=3, output_dim=3, 
-                         hidden_dims=[128, 128], use_self_attn=False)
+                         hidden_dims=[128, 128], use_self_attn=False,
+                         condition_dim=condition_dim)
         
         print(f"{self.__class__.__name__} initialized.")
         
@@ -436,11 +462,32 @@ class VariationalDiffusion_L(torch.nn.Module):
                 f'large with sigma_0 {sigma_0l:.5f} and '
                 f'1 / norm_value = {1. / max_norm_value}')
 
-    def phi(self, zl, za, t):
-        """noise predict network"""   
+    def _encode_num_atoms(self, num_atoms, batch_size, device):
+        """Return the optional per-cell atom-count embedding."""
+        if not self.condition_lattice_on_n or num_atoms is None:
+            return None
+        num_atoms = torch.as_tensor(num_atoms, device=device).long().reshape(-1)
+        if num_atoms.numel() == 1 and batch_size > 1:
+            num_atoms = num_atoms.expand(batch_size)
+        if num_atoms.numel() != batch_size:
+            raise ValueError(
+                f"num_atoms must have {batch_size} entries, got {num_atoms.numel()}"
+            )
+        if torch.any(num_atoms < 1) or torch.any(num_atoms > self.max_num_atoms):
+            observed_min = int(num_atoms.min().item())
+            observed_max = int(num_atoms.max().item())
+            raise ValueError(
+                "num_atoms is outside the lattice condition embedding range: "
+                f"observed=[{observed_min}, {observed_max}], "
+                f"allowed=[1, {self.max_num_atoms}]"
+            )
+        return self.num_atom_embedding(num_atoms)
 
-        net_eps_l = self.length_mlp(zl, t)
-        net_eps_a = self.angle_mlp(za, t)
+    def phi(self, zl, za, t, num_atoms=None):
+        """noise predict network"""
+        n_condition = self._encode_num_atoms(num_atoms, zl.size(0), zl.device)
+        net_eps_l = self.length_mlp(zl, t, condition=n_condition)
+        net_eps_a = self.angle_mlp(za, t, condition=n_condition)
 
         return net_eps_l, net_eps_a
     
@@ -604,7 +651,7 @@ class VariationalDiffusion_L(torch.nn.Module):
                degrees_of_freedom_a * (- log_sigma_a - 0.5 * np.log(2 * np.pi))
 
 
-    def sample_p_la_given_z0la(self, z0_l, z0_a, fix_noise=False):
+    def sample_p_la_given_z0la(self, z0_l, z0_a, fix_noise=False, num_atoms=None):
         """Samples l,a ~ p(x|z0_l,z0_a)."""
         bs = z0_l.size(0)
         zeros = torch.zeros(size=(bs, 1), device=z0_l.device)
@@ -613,7 +660,7 @@ class VariationalDiffusion_L(torch.nn.Module):
         sigma_l = self.SNR(-0.5 * gamma_0_l)
         sigma_a = self.SNR(-0.5 * gamma_0_a)
 
-        l_out, a_out = self.phi(z0_l, z0_a, zeros)
+        l_out, a_out = self.phi(z0_l, z0_a, zeros, num_atoms=num_atoms)
 
         # Compute mu for p(zs | zt).
         mu_l = self.compute_length_pred(l_out, z0_l, gamma_0_l)
@@ -667,7 +714,7 @@ class VariationalDiffusion_L(torch.nn.Module):
         return log_p_lengths_angles_given_z
 
 
-    def compute_loss(self, lengths, angles, t0_always):
+    def compute_loss(self, lengths, angles, t0_always, num_atoms=None):
 
         batch_size = lengths.size(0)
         device = lengths.device
@@ -724,7 +771,9 @@ class VariationalDiffusion_L(torch.nn.Module):
         z_t_angle = alpha_t_angle * angles + sigma_t_angle * eps_angle
       
         # Neural net prediction, the noisy zt is input
-        lengths_out, angles_out = self.phi(z_t_length, z_t_angle, t)
+        lengths_out, angles_out = self.phi(
+            z_t_length, z_t_angle, t, num_atoms=num_atoms
+        )
 
         # Compute the error.
         error, l_error, a_error = self.compute_error_mp20(lengths_out, angles_out, \
@@ -772,7 +821,9 @@ class VariationalDiffusion_L(torch.nn.Module):
             z_0_length = alpha_0_length * lengths + sigma_0_length * eps_0_length
             z_0_angle = alpha_0_angle * angles + sigma_0_angle * eps_0_angle
 
-            lengths_out, angles_out = self.phi(z_0_length, z_0_angle, t_zeros)
+            lengths_out, angles_out = self.phi(
+                z_0_length, z_0_angle, t_zeros, num_atoms=num_atoms
+            )
 
             # Compute the error for t = 0.            
             loss_term_0 = -self.log_p_la_given_z0_without_constants(
@@ -838,6 +889,7 @@ class VariationalDiffusion_L(torch.nn.Module):
             args = args[0]
         # 解包参数
         lengths, angles = args[:2]
+        num_atoms = kwargs.pop("num_atoms", args[2] if len(args) > 2 else None)
 
         lengths, angles, delta_log_pl, delta_log_pa = self.normalize_lengths_angles(lengths, angles)
         delta_log_pl = torch.tensor(delta_log_pl, device=lengths.device, dtype=lengths.dtype)
@@ -850,9 +902,13 @@ class VariationalDiffusion_L(torch.nn.Module):
 
         # compute loss
         if self.training:
-            loss, loss_dict = self.compute_loss(lengths, angles, t0_always=False)
+            loss, loss_dict = self.compute_loss(
+                lengths, angles, t0_always=False, num_atoms=num_atoms
+            )
         else:
-            loss, loss_dict = self.compute_loss(lengths, angles, t0_always=True)
+            loss, loss_dict = self.compute_loss(
+                lengths, angles, t0_always=True, num_atoms=num_atoms
+            )
 
         neg_log_pla = loss
         delta_log_pla = delta_log_pl + delta_log_pa
@@ -864,7 +920,9 @@ class VariationalDiffusion_L(torch.nn.Module):
         return neg_log_pla, loss_dict
         
 
-    def lattice_sample_p_zs_given_zt(self, s, t, zt_l, zt_a, fix_noise=False):
+    def lattice_sample_p_zs_given_zt(
+        self, s, t, zt_l, zt_a, fix_noise=False, num_atoms=None
+    ):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s_length = self.gamma_lengths(s)
         gamma_s_angle = self.gamma_angles(s)
@@ -881,7 +939,7 @@ class VariationalDiffusion_L(torch.nn.Module):
         sigma_t_angle = self.sigma(gamma_t_angle, target_tensor=zt_a)
 
         # Neural net prediction for l and a.
-        eps_t_l, eps_t_a = self.phi(zt_l, zt_a, t)
+        eps_t_l, eps_t_a = self.phi(zt_l, zt_a, t, num_atoms=num_atoms)
 
         mu_l = zt_l / alpha_t_given_s_length - \
             (sigma2_t_given_s_length / alpha_t_given_s_length / sigma_t_length) * eps_t_l
@@ -924,7 +982,7 @@ class VariationalDiffusion_L(torch.nn.Module):
 
 
     @torch.no_grad()
-    def sample(self, n_samples, device, fix_noise=False):
+    def sample(self, n_samples, device, fix_noise=False, num_atoms=None):
 
         if fix_noise:
             # Noise is broadcasted over the batch axis, useful for visualizations.
@@ -944,10 +1002,14 @@ class VariationalDiffusion_L(torch.nn.Module):
             t_array = s_array + 1
             s_array = s_array / self.T
             t_array = t_array / self.T
-            z_l, z_a = self.lattice_sample_p_zs_given_zt(s_array, t_array, z_l, z_a, fix_noise)
+            z_l, z_a = self.lattice_sample_p_zs_given_zt(
+                s_array, t_array, z_l, z_a, fix_noise, num_atoms=num_atoms
+            )
 
         # sample l and a, to construct lattice first.
-        rl, ra = self.sample_p_la_given_z0la(z_l, z_a, fix_noise)
+        rl, ra = self.sample_p_la_given_z0la(
+            z_l, z_a, fix_noise, num_atoms=num_atoms
+        )
 
         print('sample l and a done.')
 
@@ -977,4 +1039,3 @@ class VariationalDiffusion_L(torch.nn.Module):
         print(info)
 
         return info
-    

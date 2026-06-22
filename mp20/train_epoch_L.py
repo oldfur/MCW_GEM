@@ -30,17 +30,45 @@ def train_epoch_L(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
         data = reshape(data, device, dtype, include_charges=True)
         lengths = data['lengths'].to(device, dtype)
         angles = data['angles'].to(device, dtype)
+        num_atoms = data['num_atoms'].to(device).long().reshape(-1)
 
         if i <= 2 and epoch <= 1:
           print("lengths for training: ", lengths[:2].tolist())
           print("angles for training: ", angles[:2].tolist())
+          angle_rad = torch.deg2rad(angles)
+          alpha, beta, gamma = angle_rad[:, 0], angle_rad[:, 1], angle_rad[:, 2]
+          volume_term = (
+              1
+              + 2 * torch.cos(alpha) * torch.cos(beta) * torch.cos(gamma)
+              - torch.cos(alpha) ** 2
+              - torch.cos(beta) ** 2
+              - torch.cos(gamma) ** 2
+          ).clamp(min=0)
+          volume = lengths.prod(dim=1) * torch.sqrt(volume_term)
+          n_float = num_atoms.to(dtype=volume.dtype)
+          print(
+              "[LatticeTrain] ",
+              {
+                  "conditional_lattice_model": bool(
+                      getattr(args, "condition_lattice_on_n", False)
+                  ),
+                  "n": num_atoms[:2].tolist(),
+                  "volume": volume[:2].tolist(),
+                  "volume_per_atom": (volume / n_float.clamp(min=1))[:2].tolist(),
+                  "atom_number_density": (
+                      n_float / volume.clamp(min=1e-12)
+                  )[:2].tolist(),
+              },
+          )
 
         optim.zero_grad()
 
         # transform batch through flow
         # use model_dp
 
-        nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll_L(args, model_dp, lengths, angles)
+        nll, reg_term, mean_abs_z, loss_dict = compute_loss_and_nll_L(
+            args, model_dp, lengths, angles, num_atoms=num_atoms
+        )
 
         if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':    
             if 'l_error' in loss_dict:
@@ -102,4 +130,3 @@ def train_epoch_L(args, model_dp, model_ema, ema, dataloader, dataset_info, prop
         if args.break_train_epoch:
             break
     wandb.log({"Train Epoch NLL": np.mean(nll_epoch)}, commit=False)
-

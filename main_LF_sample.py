@@ -125,6 +125,43 @@ def get_optim(args, generative_model):
         lr=args.lr, amsgrad=True,
         weight_decay=1e-12)
     return optim
+
+
+def _extract_lattice_state_dict(checkpoint):
+    if not isinstance(checkpoint, dict):
+        raise TypeError('Lattice checkpoint must contain a state-dict mapping')
+    for key in ('state_dict', 'model_state_dict'):
+        nested = checkpoint.get(key)
+        if isinstance(nested, dict):
+            checkpoint = nested
+            break
+    normalized = {}
+    for key, value in checkpoint.items():
+        if not torch.is_tensor(value):
+            continue
+        normalized[key[7:] if key.startswith('module.') else key] = value
+    return normalized
+
+
+def _configure_lattice_condition_from_checkpoint(args, state_dict):
+    embedding = state_dict.get('num_atom_embedding.weight')
+    if embedding is not None:
+        args.condition_lattice_on_n = True
+        args.max_num_atoms = int(embedding.shape[0] - 1)
+        args.num_atom_embed_dim = int(embedding.shape[1])
+        print(
+            '[LatticeCheckpoint] detected conditional p(L|n): '
+            f'max_num_atoms={args.max_num_atoms}, '
+            f'num_atom_embed_dim={args.num_atom_embed_dim}'
+        )
+    elif bool(getattr(args, 'condition_lattice_on_n', False)):
+        # A legacy checkpoint must remain on the original unconditional path;
+        # otherwise randomly initialized condition layers would silently be used.
+        print(
+            '[LatticeCheckpoint] checkpoint has no num_atoms embedding; '
+            'using legacy unconditional p(L).'
+        )
+        args.condition_lattice_on_n = False
  
 
 def main(args):
@@ -163,7 +200,17 @@ def main(args):
     model, nodes_dist, prop_dist = construct_model(args, dataset_info, dataloaders['train'])
     model = add_first_nan_detector(model)
     
-    LatticeGenModel = get_Lattice_model(args, args.lattice_device, dataset_info, uni_diffusion=args.uni_diffusion)
+    lattice_state_dict = None
+    if args.pretrained_Lattice_model:
+        lattice_checkpoint = torch.load(
+            args.pretrained_Lattice_model, map_location=args.lattice_device
+        )
+        lattice_state_dict = _extract_lattice_state_dict(lattice_checkpoint)
+        _configure_lattice_condition_from_checkpoint(args, lattice_state_dict)
+
+    LatticeGenModel = get_Lattice_model(
+        args, args.lattice_device, dataset_info, uni_diffusion=args.uni_diffusion
+    )
     
     if prop_dist is not None:
         prop_dist.set_normalizer(property_norms)
@@ -184,7 +231,7 @@ def main(args):
     # load LatticeGen Model
     if args.pretrained_Lattice_model:
         print("LatticeGenModel device: ", args.lattice_device)
-        state_dict = torch.load(args.pretrained_Lattice_model, map_location=args.lattice_device)    
+        state_dict = lattice_state_dict
         current_model_dict = LatticeGenModel.state_dict()
         new_state_dict = {}
         for k,v in state_dict.items():
@@ -462,4 +509,3 @@ if __name__ == '__main__':
     main(args)
 
     """******  train & test  ******"""
-

@@ -10,6 +10,7 @@ from mp20.utils import RankedLogger, joblib_map, prepare_context_test, compute_l
     compute_loss_and_nll_pure_x, compute_loss_and_nll_L
 from mp20.ase_tools.viewer import AseView
 from mp20.batch_reshape import reshape
+from mp20.geometry_diagnostics import diagnose_geometry_records, save_raw_geometry_npz
 
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core.structure import Structure
@@ -405,24 +406,35 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
 
     # sample the crystal structures
     nodesxsample = nodes_dist.sample(batch_size)
+    collect_pre_correction = bool(
+        getattr(args, "diagnose_geometry_before_correction", False)
+        or getattr(args, "save_pre_correction_geometry_npz", False)
+        or getattr(args, "geometry_diagnostics_every_batch", False)
+    )
     if args.sample_realistic_LA:
         first_batch = next(iter(dataloader))
         first_batch = reshape(first_batch, device, dtype, include_charges=True)
         rl, ra = first_batch['lengths'], first_batch['angles']
         # test sampling with given L
-        one_hot, charges, frac_pos, node_mask, length, angle = sample_F(args, device, model_sample, LatticeGenModel, 
-                                                                    prop_dist=prop_dist, nodesxsample=nodesxsample, 
-                                                                    dataset_info=dataset_info, rl=rl, ra=ra)
+        sample_result = sample_F(args, device, model_sample, LatticeGenModel,
+                                 prop_dist=prop_dist, nodesxsample=nodesxsample,
+                                 dataset_info=dataset_info, rl=rl, ra=ra)
     else:
-        one_hot, charges, frac_pos, node_mask, length, angle = sample_F(args, device, model_sample, LatticeGenModel, 
-                                                                    prop_dist=prop_dist, nodesxsample=nodesxsample, 
-                                                                    dataset_info=dataset_info)
+        sample_result = sample_F(args, device, model_sample, LatticeGenModel,
+                                 prop_dist=prop_dist, nodesxsample=nodesxsample,
+                                 dataset_info=dataset_info)
+    if collect_pre_correction:
+        one_hot, charges, frac_pos, node_mask, length, angle, pre_correction_frac_pos = sample_result
+    else:
+        one_hot, charges, frac_pos, node_mask, length, angle = sample_result
+        pre_correction_frac_pos = None
     
     length = length.detach().cpu().numpy()
     angle = angle.detach().cpu().numpy() 
 
     num = int(args.num_rounds * batch_size)
 
+    pre_correction_records = []
     for i in range(num):
         lattice = lattice_matrix(length[i, 0], length[i, 1], length[i, 2],
                                     angle[i, 0], angle[i, 1], angle[i, 2])
@@ -468,13 +480,26 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
                 "padding_exists": bool(mask.numel() > real_atom_count),
             },
         )
+        if collect_pre_correction:
+            pre_correction_records.append(
+                {
+                    "sample_id": f"epoch_{epoch}_sample_{i}",
+                    "source": "main_LF_sample:before_first_geometry_correction",
+                    # mp20.crystal.lattice_matrix is row-wise. Diagnostics use
+                    # the LF model's column-wise convention: cart=frac@L.T.
+                    "lattice": lattice.T,
+                    "frac_coords": pre_correction_frac_pos[i][mask].detach().cpu().numpy(),
+                    "num_atoms": real_atom_count,
+                    "atom_types": atom_types,
+                }
+            )
         # charges = charges[i][mask].detach().cpu().numpy()
         
         if i <= 5:
-            print("sampled frac_pos:", frac_pos_valid)
-            print("sampled cart_pos:", cart_pos_valid)
-            print("sampled lengths:", length[i])
-            print("sampled angles:", angle[i])
+            print("[PostCorrectionGeometry] sampled frac_pos:", frac_pos_valid)
+            print("[PostCorrectionGeometry] sampled cart_pos:", cart_pos_valid)
+            print("[PostCorrectionGeometry] sampled lengths:", length[i])
+            print("[PostCorrectionGeometry] sampled angles:", angle[i])
             # print("sampled atom types:", atom_types)
         mp20_evaluator.append_pred_array(
                 {
@@ -485,6 +510,56 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
                     "angles": angle[i],
                     "sample_idx": f"epoch_{epoch}_sample_{i}"
                 }
+            )
+
+    diagnostics_output_dir = getattr(args, "geometry_diagnostics_output_dir", "")
+    if not diagnostics_output_dir:
+        diagnostics_output_dir = os.path.join(
+            args.save_dir, f"epoch_{epoch}", "geometry_pre_correction"
+        )
+    if getattr(args, "save_pre_correction_geometry_npz", False):
+        npz_path = save_raw_geometry_npz(
+            pre_correction_records,
+            os.path.join(diagnostics_output_dir, "geometry_pre_correction_raw.npz"),
+        )
+        print(f"[PreCorrectionGeometry] saved raw NPZ: {npz_path}")
+    if getattr(args, "diagnose_geometry_before_correction", False):
+        _, geometry_summary, _ = diagnose_geometry_records(
+            records=pre_correction_records,
+            output_dir=diagnostics_output_dir,
+            total_samples=len(pre_correction_records),
+            train_csv=getattr(args, "geometry_diagnostics_train_csv", ""),
+            make_plots=True,
+        )
+        print("[PreCorrectionGeometry] sampling-complete summary")
+        for key in (
+            "ratio_dmin_lt_0.7",
+            "ratio_pairs_lt_0.7_ge_2",
+            "median_volume_per_atom",
+            "median_atom_number_density",
+            "p05_d_min",
+        ):
+            print(f"  {key}: {geometry_summary.get(key)}")
+        print(f"[PreCorrectionGeometry] outputs: {diagnostics_output_dir}")
+    if getattr(args, "geometry_diagnostics_every_batch", False):
+        for round_index in range(int(args.num_rounds)):
+            start = round_index * batch_size
+            stop = start + batch_size
+            round_records = pre_correction_records[start:stop]
+            round_output = os.path.join(
+                diagnostics_output_dir, f"batch_{round_index:04d}"
+            )
+            _, round_summary, _ = diagnose_geometry_records(
+                records=round_records,
+                output_dir=round_output,
+                total_samples=len(round_records),
+                train_csv="",
+                make_plots=False,
+            )
+            print(
+                f"[PreCorrectionGeometry][batch={round_index}] "
+                f"ratio_dmin_lt_0.7={round_summary.get('ratio_dmin_lt_0.7')}, "
+                f"median_volume_per_atom={round_summary.get('median_volume_per_atom')}"
             )
 
     # Compute generation metrics
@@ -1092,9 +1167,12 @@ def test_L(args, loader, info, epoch, eval_model, partition='Test'):
             data = reshape(data, device, dtype, include_charges=True)
             lengths = data['lengths'].to(device, dtype)
             angles = data['angles'].to(device, dtype)
+            num_atoms = data['num_atoms'].to(device).long().reshape(-1)
             batch_size = lengths.size(0)
             
-            nll, _, _, loss_dict = compute_loss_and_nll_L(args, eval_model, lengths, angles)
+            nll, _, _, loss_dict = compute_loss_and_nll_L(
+                args, eval_model, lengths, angles, num_atoms=num_atoms
+            )
 
             nll_epoch += nll.item() * batch_size
             n_samples += batch_size

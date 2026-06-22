@@ -7,6 +7,7 @@ class DiffusionMLP(nn.Module):
                  input_dim=4,      # 输入数据维度
                  output_dim=4,     # 输出噪声维度（通常与输入相同）
                  time_emb_dim=32,  # 时间步嵌入维度
+                 condition_dim=None,  # 可选全局条件（如 unit-cell 原子数 embedding）
                  hidden_dims=[256, 256, 512],  # 隐藏层结构
                  dropout=0.1,      # Dropout率
                  use_self_attn=True):  # 是否使用注意力
@@ -18,6 +19,17 @@ class DiffusionMLP(nn.Module):
             nn.SiLU(),
             nn.Linear(time_emb_dim, time_emb_dim)
         )
+
+        # Keep this branch absent for the original unconditional model.  This
+        # preserves every legacy parameter name and shape, so old p(L)
+        # checkpoints continue to load unchanged.
+        self.condition_proj = None
+        if condition_dim is not None and int(condition_dim) > 0:
+            self.condition_proj = nn.Sequential(
+                nn.Linear(int(condition_dim), time_emb_dim),
+                nn.SiLU(),
+                nn.Linear(time_emb_dim, time_emb_dim),
+            )
         
         # 输入投影层（将输入+时间编码融合）
         self.input_proj = nn.Linear(input_dim + time_emb_dim, hidden_dims[0])
@@ -54,7 +66,7 @@ class DiffusionMLP(nn.Module):
                 nn.init.orthogonal_(m.weight)
                 nn.init.zeros_(m.bias)
     
-    def forward(self, x, t):
+    def forward(self, x, t, condition=None):
         """
         输入:
         - x: 噪声数据 [batch, input_dim]
@@ -63,6 +75,11 @@ class DiffusionMLP(nn.Module):
         # 时间编码 [batch, time_emb_dim]
         dtype = self.time_embed[0].weight.dtype
         t_emb = self.time_embed(t.to(dtype))
+        if condition is not None:
+            if self.condition_proj is None:
+                raise ValueError("condition was provided to an unconditional DiffusionMLP")
+            condition = condition.to(device=x.device, dtype=dtype)
+            t_emb = t_emb + self.condition_proj(condition)
         
         # 融合输入和时间编码
         h = torch.cat([x, t_emb], dim=-1)

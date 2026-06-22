@@ -307,6 +307,8 @@ def main(args):
 if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser(description='E3Diffusion')
+    parser.add_argument('--config', type=str, default='',
+                        help='Optional YAML file whose keys become argparse defaults; CLI flags override it.')
     parser.add_argument('--dataset_folder_path', type=str, default='./mp20/raw',)
     parser.add_argument('--exp_name', type=str, default='debug_mp20')
     parser.add_argument('--model', type=str, default='egnn_dynamics',
@@ -451,6 +453,24 @@ if __name__ == '__main__':
     parser.add_argument("--compute_novelty_epoch", type=int, default=150, help="compute novelty during generation")
 
     parser = setup_shared_args(parser)
+
+    # Two-pass parsing keeps every existing command line unchanged while
+    # allowing a separate, explicit conditional-lattice training config.
+    config_probe, _ = parser.parse_known_args()
+    if config_probe.config:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError('--config requires PyYAML') from exc
+        with open(config_probe.config, 'r', encoding='utf-8') as config_file:
+            config_defaults = yaml.safe_load(config_file) or {}
+        if not isinstance(config_defaults, dict):
+            raise ValueError('YAML config root must be a mapping')
+        known_dests = {action.dest for action in parser._actions}
+        unknown_keys = sorted(set(config_defaults) - known_dests)
+        if unknown_keys:
+            raise ValueError(f'Unknown config keys: {unknown_keys}')
+        parser.set_defaults(**config_defaults)
     args = parser.parse_args()
     
     args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -497,4 +517,3 @@ if __name__ == '__main__':
     main(args)
 
     """******  train & test  ******"""
-

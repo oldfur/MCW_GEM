@@ -1,0 +1,30 @@
+# Conditional MP-20 lattice diffusion: p(L | n).
+# CLI arguments override any value in this file.
+exp_name: lattice_cond_n
+probabilistic_model: diffusion_L
+condition_lattice_on_n: true
+num_atom_embed_dim: 32
+max_num_atoms: 20
+
+dataset: mp20
+datadir: ./mp20
+dataset_folder_path: ./mp20/raw
+device: cuda
+dp: true
+include_charges: true
+
+n_epochs: 1000
+batch_size: 128
+num_workers: 4
+lr: 0.0001
+diffusion_steps: 1000
+diffusion_noise_schedule: polynomial_2
+diffusion_loss_type: l2
+lambda_l: 1.0
+lambda_a: 1.0
+
+no_wandb: false
+online: 0
+test_epochs: 10
+visulaize_epoch: 10
+save_epoch: 50

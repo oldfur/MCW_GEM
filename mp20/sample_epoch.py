@@ -41,6 +41,13 @@ def stack_samples(samples):
     return xs, h, rls, ras, node_masks
 
 
+def stack_pre_correction_samples(samples):
+    """Stack snapshots captured before the first geometry correction."""
+    if not samples or len(samples[0]) < 6:
+        raise ValueError('sampling results do not contain pre-correction geometry')
+    return torch.cat([res[5] for res in samples], dim=0)
+
+
 def sample(args, device, generative_model, dataset_info,
            prop_dist=None, nodesxsample=torch.tensor([10]), # nodesxsample[i]为一个样本的节点数
            context=None, fix_noise=False, evaluate_condition_generation=False, pesudo_context=None, sample_steps=1000):
@@ -168,6 +175,11 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
 
     assert int(torch.max(nodesxsample)) <= max_n_nodes
     batch_size = len(nodesxsample)
+    collect_pre_correction = bool(
+        getattr(args, 'diagnose_geometry_before_correction', False)
+        or getattr(args, 'save_pre_correction_geometry_npz', False)
+        or getattr(args, 'geometry_diagnostics_every_batch', False)
+    )
 
     node_mask = torch.zeros(batch_size, max_n_nodes)
     for i in range(batch_size):
@@ -199,7 +211,8 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                 fix_noise=fix_noise, condition_generate_x=evaluate_condition_generation, 
                 annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
                 num_rounds=args.num_rounds, seed_base=args.sample_seed,
-                rl=rl, ra=ra, sample_realistic_LA=True, lambda_sym=args.lambda_sym
+                rl=rl, ra=ra, sample_realistic_LA=True, lambda_sym=args.lambda_sym,
+                collect_pre_correction=collect_pre_correction,
             )
         else:
             samples = generative_model.sample(
@@ -208,9 +221,14 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
                 condition_generate_x=evaluate_condition_generation, 
                 annel_l=args.expand_diff, n_corrector_steps=args.n_corrector_steps,
                 num_rounds=args.num_rounds, seed_base=args.sample_seed, 
-                sample_realistic_LA=False, lambda_sym=args.lambda_sym)
+                sample_realistic_LA=False, lambda_sym=args.lambda_sym,
+                collect_pre_correction=collect_pre_correction)
             
         frac_pos, h, length, angle, node_mask = stack_samples(samples) # num_rounds * B
+        pre_correction_frac_pos = (
+            stack_pre_correction_samples(samples)
+            if collect_pre_correction else None
+        )
 
         assert_correctly_masked(frac_pos, node_mask)
 
@@ -227,7 +245,10 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
     else:
         raise ValueError(args.probabilistic_model)
 
-    return one_hot, charges, frac_pos, node_mask, length, angle
+    result = (one_hot, charges, frac_pos, node_mask, length, angle)
+    if collect_pre_correction:
+        result = result + (pre_correction_frac_pos,)
+    return result
 
 
 def sample_pure_x(args, device, generative_model, dataset_info,
@@ -333,7 +354,10 @@ def sample_L(args, device, generative_model, dataset_info,
     if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':        
         print(f'sample Lattice ')
         args.expand_diff = 0
-        length, angle = generative_model.sample(batch_size, device, fix_noise=fix_noise)        
+        sample_kwargs = {"fix_noise": fix_noise}
+        if bool(getattr(generative_model, "condition_lattice_on_n", False)):
+            sample_kwargs["num_atoms"] = nodesxsample
+        length, angle = generative_model.sample(batch_size, device, **sample_kwargs)
     else:
         raise ValueError(args.probabilistic_model)
 

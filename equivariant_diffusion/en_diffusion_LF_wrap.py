@@ -567,6 +567,37 @@ def lattice_volume(lengths, angles):
     )  # [B]
 
 
+def _log_lattice_sampling_batch(lengths, angles, num_atoms, lattice_model):
+    """Emit one structured pre-coordinate-sampling lattice log record."""
+    with torch.no_grad():
+        volume = lattice_volume(lengths, angles)
+        n = num_atoms.to(device=volume.device, dtype=volume.dtype)
+        volume_per_atom = volume / n.clamp(min=1)
+        atom_number_density = n / volume.clamp(min=1e-12)
+        payload = {
+            "stage": "pre-correction geometry/lattice_sampling",
+            "conditional_lattice_model": bool(
+                getattr(lattice_model, "condition_lattice_on_n", False)
+            ),
+            "sampled_n": [int(v) for v in n.detach().cpu().tolist()],
+            "lattice_volume": [float(v) for v in volume.detach().cpu().tolist()],
+            "volume_per_atom": [
+                float(v) for v in volume_per_atom.detach().cpu().tolist()
+            ],
+            "atom_number_density": [
+                float(v) for v in atom_number_density.detach().cpu().tolist()
+            ],
+        }
+    print("[LatticeSampling] " + json.dumps(payload, ensure_ascii=True))
+
+
+def _sample_lattice_model(lattice_model, n_samples, fix_noise, num_atoms):
+    kwargs = {"fix_noise": fix_noise}
+    if bool(getattr(lattice_model, "condition_lattice_on_n", False)):
+        kwargs["num_atoms"] = num_atoms
+    return lattice_model.sample(n_samples, device="cpu", **kwargs)
+
+
 class PositiveLinear(torch.nn.Module):
     """Linear layer with weights forced to be positive."""
 
@@ -3038,9 +3069,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         """Samples from the model using score function."""
 
         print('use LatticeGenModel to sample l and a, beginning...')
-        rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+        lattice_num_atoms = node_mask.squeeze(-1).sum(-1).long().cpu()
+        rl, ra = _sample_lattice_model(
+            LatticeGenModel, n_samples, fix_noise, lattice_num_atoms
+        )
         rl = rl.to(node_mask.device)
         ra = ra.to(node_mask.device)
+        _log_lattice_sampling_batch(rl, ra, lattice_num_atoms, LatticeGenModel)
         print('sample lengths and angles done.')
 
         if fix_noise:
@@ -3155,7 +3190,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     @torch.no_grad()
     def sample(self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
                fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, n_corrector_steps=1,
-               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False, lambda_sym=0.0):
+               num_rounds=1, seed_base=None, rl=None, ra=None, sample_realistic_LA=False, lambda_sym=0.0,
+               collect_pre_correction=False):
         """Samples from the model using score function."""    
         results = []
         self._reset_atom_type_all_h_guard_summary()
@@ -3172,23 +3208,36 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # ---------------------------------
             if sample_realistic_LA:
                 assert rl is not None and ra is not None, "When sample_realistic_LA is True, rl and ra must be provided."
-                x, h = self.sample_score_sde_Lattice(
+                realistic_result = self.sample_score_sde_Lattice(
                     rl, ra, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
                     annel_l, pesudo_context, n_corrector_steps,
-                    round_index=i, lambda_sym=lambda_sym
+                    round_index=i, lambda_sym=lambda_sym,
+                    collect_pre_correction=collect_pre_correction,
                 )
+                if collect_pre_correction:
+                    x, h, pre_correction_frac = realistic_result
+                else:
+                    x, h = realistic_result
             else:
                 # x, h, rl, ra = self.sample_score(LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, 
                 #                     context, fix_noise, condition_generate_x, annel_l, pesudo_context)            
-                x, h, rl, ra = self.sample_score_sde(
+                sampled_result = self.sample_score_sde(
                     LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask,
                     context, fix_noise, condition_generate_x,
                     annel_l, pesudo_context,
-                    n_corrector_steps, round_index=i, lambda_sym=lambda_sym
+                    n_corrector_steps, round_index=i, lambda_sym=lambda_sym,
+                    collect_pre_correction=collect_pre_correction,
                 )
+                if collect_pre_correction:
+                    x, h, rl, ra, pre_correction_frac = sampled_result
+                else:
+                    x, h, rl, ra = sampled_result
 
-            results.append((x, h, rl, ra, node_mask.clone()))
+            result = (x, h, rl, ra, node_mask.clone())
+            if collect_pre_correction:
+                result = result + (pre_correction_frac,)
+            results.append(result)
 
         return results
         
@@ -3632,7 +3681,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde(
         self, LatticeGenModel, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.0
+        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.0,
+        collect_pre_correction=False,
     ):  
         # =======================================================
         # Sampling cell length/angles
@@ -3643,8 +3693,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # ra = ra.to(node_mask.device)
 
         max_retry = 10
+        lattice_num_atoms = node_mask.squeeze(-1).sum(-1).long().cpu()
         for _ in range(max_retry):
-            rl, ra = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+            rl, ra = _sample_lattice_model(
+                LatticeGenModel, n_samples, fix_noise, lattice_num_atoms
+            )
             rl = torch.abs(rl).to(node_mask.device)  # [B,3]
             ra = ra.to(node_mask.device)  # [B,3]
             valid = batch_valid_mask(rl, ra)
@@ -3655,7 +3708,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             invalid_idx = (~valid).nonzero().flatten().tolist()
             print(f"Found {len(invalid_idx)} invalid cells, resampling ...")
             # 再采样一批
-            rl_new, ra_new = LatticeGenModel.sample(n_samples, device='cpu', fix_noise=fix_noise)
+            rl_new, ra_new = _sample_lattice_model(
+                LatticeGenModel, n_samples, fix_noise, lattice_num_atoms
+            )
             rl_new = rl_new.to(node_mask.device)
             ra_new = ra_new.to(node_mask.device)
             for i in invalid_idx:
@@ -3675,6 +3730,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # =======================================================
 
         volume = lattice_volume(rl, ra)     # [B]
+        _log_lattice_sampling_batch(rl, ra, lattice_num_atoms, LatticeGenModel)
         cell = self.compute_lattice_matrix(rl, ra)  # [B,3,3]
         N = node_mask.squeeze(-1).sum(-1)   # [B]        
         B = n_samples
@@ -3715,6 +3771,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         last_atom_state_updated_step_index = None
         final_window_logits = []
         final_window_step_indices = []
+        pre_correction_frac = None
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
         # --- begin of for T steps
@@ -3866,6 +3923,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 #     r_cut=0.5,   
                 # )
                 zx = z[:, :, :3]
+                if collect_pre_correction and pre_correction_frac is None:
+                    pre_correction_frac = zx.detach().clone()
                 zx_before_correction = zx.detach().clone()
                 zx = self.local_repulsion_correction(
                         zx,
@@ -3950,6 +4009,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         h = {'integer': h_int, 'categorical': h_cat}
 
+        if collect_pre_correction:
+            if pre_correction_frac is None:
+                pre_correction_frac = x.detach().clone()
+            return x, h, rl, ra, pre_correction_frac
         return x, h, rl, ra
 
 
@@ -3957,7 +4020,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
     def sample_score_sde_Lattice(
         self, rl, ra, n_samples, n_nodes, node_mask, edge_mask, context, 
         fix_noise=False, condition_generate_x=False, annel_l=False, pesudo_context=None, 
-        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.0
+        n_corrector_steps=1, snr=0.01, round_index=0, lambda_sym=0.0,
+        collect_pre_correction=False,
     ):
         print('Sampling cell given real length/angles ...')
         rl = rl.to(node_mask.device)
@@ -3997,6 +4061,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         last_atom_state_updated_step_index = None
         final_window_logits = []
         final_window_step_indices = []
+        pre_correction_frac = None
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             t      = float(t_grid[i].item())
@@ -4068,6 +4133,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             
             # 在 t 很小时加入 ZBL 排斥力
             if t < 0.01:
+                if collect_pre_correction and pre_correction_frac is None:
+                    pre_correction_frac = z[:, :, :3].detach().clone()
                 zx = self.zbl_relax_step(
                     z, rl, ra,
                     node_mask=node_mask,
@@ -4134,6 +4201,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         h = {'integer': h_int, 'categorical': h_cat}
 
+        if collect_pre_correction:
+            if pre_correction_frac is None:
+                pre_correction_frac = x.detach().clone()
+            return x, h, pre_correction_frac
         return x, h
 
 

@@ -273,10 +273,10 @@ def compute_loss_and_nll(args, generative_model, nodes_dist, x, h, lengths, angl
     return nll, reg_term, mean_abs_z, loss_dict
     
 
-def compute_loss_and_nll_L(args, generative_model, lengths, angles):
+def compute_loss_and_nll_L(args, generative_model, lengths, angles, num_atoms=None):
     if args.probabilistic_model == 'diffusion_L' or args.probabilistic_model == 'diffusion_L_another':
         inputs = (lengths, angles)
-        nll, loss_dict = generative_model(*inputs)
+        nll, loss_dict = generative_model(*inputs, num_atoms=num_atoms)
         nll = nll.mean(0)
         reg_term = torch.tensor([0.]).to(nll.device)
         mean_abs_z = 0.
@@ -770,4 +770,3 @@ def save_nan_debug_info(module, input, output, layer_name=None):
 
         # 停止训练，强制中断
         raise RuntimeError(f"NaN/Inf detected in layer: {layer_name}")
-

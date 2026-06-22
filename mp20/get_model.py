@@ -24,6 +24,20 @@ from mp20.atom_type_mapping import canonicalize_dataset_info
 from mp20.utils import extract_attribute_safe, extract_property_safe
 
 
+def _lattice_condition_kwargs(args, dataset_info):
+    """Resolve optional p(L | n) settings without affecting legacy callers."""
+    dataset_max = int(dataset_info.get('max_n_nodes', 20))
+    configured_max = int(getattr(args, 'max_num_atoms', 0) or 0)
+    embed_dim = int(getattr(args, 'num_atom_embed_dim', 32) or 32)
+    return {
+        'condition_lattice_on_n': bool(
+            getattr(args, 'condition_lattice_on_n', False)
+        ),
+        'num_atom_embed_dim': embed_dim,
+        'max_num_atoms': configured_max if configured_max > 0 else dataset_max,
+    }
+
+
 def get_Lattice_model(args, device, dataset_info, uni_diffusion=False, pretrain=False):
     net_dynamics = None
     in_node_nf = max(dataset_info['atom_encoder'].values()) + int(args.include_charges)
@@ -62,8 +76,14 @@ def get_Lattice_model(args, device, dataset_info, uni_diffusion=False, pretrain=
             str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
             temp_index=args.temp_index if "temp_index" in args else 0,
             lambda_l=args.lambda_l, lambda_a=args.lambda_a,
+            **_lattice_condition_kwargs(args, dataset_info),
         )
     elif args.LatticeGenModel == 'diffusion_L_another':
+        if bool(getattr(args, 'condition_lattice_on_n', False)):
+            raise ValueError(
+                "condition_lattice_on_n is currently implemented for "
+                "LatticeGenModel=diffusion_L only"
+            )
         net = VariationalDiffusion_L_another(
             n_dims=3, device=device,
             dynamics=net_dynamics,
@@ -564,6 +584,7 @@ def get_model(args, device, dataset_info, dataloader_train,
             str_schedule_norm=args.str_schedule_norm if "str_schedule_norm" in args else False,
             temp_index=args.temp_index if "temp_index" in args else 0,
             lambda_l=args.lambda_l, lambda_a=args.lambda_a,
+            **_lattice_condition_kwargs(args, dataset_info),
             )
         
         # 假设你的模型变量名为 model

@@ -248,4 +248,24 @@ def setup_shared_args(parser):
     parser.add_argument('--all-h-guard-min-non-h', type=int, default=1,
                         help='Minimum number of non-H atoms enforced only when the raw final decode is all-H.')
 
+    # Conditional lattice p(L | n). Defaults preserve the original p(L) path.
+    parser.add_argument('--condition-lattice-on-n', action=BoolArg, default=False,
+                        help='Condition diffusion_L lattice generation on unit-cell atom count.')
+    parser.add_argument('--num-atom-embed-dim', type=int, default=32,
+                        help='Embedding width for lattice atom-count conditioning.')
+    parser.add_argument('--max-num-atoms', type=int, default=0,
+                        help='Maximum atom-count embedding index; 0 uses dataset max_n_nodes.')
+
+    # Pre-correction geometry diagnostics for the main sampling path.
+    parser.add_argument('--diagnose-geometry-before-correction', action=BoolArg, default=False,
+                        help='Collect and summarize geometry before the first repulsion/ZBL correction.')
+    parser.add_argument('--geometry-diagnostics-output-dir', type=str, default='',
+                        help='Output directory; defaults to <save_dir>/epoch_<n>/geometry_pre_correction.')
+    parser.add_argument('--geometry-diagnostics-every-batch', action=BoolArg, default=False,
+                        help='Also save/print diagnostics for each sampling round (current batch unit).')
+    parser.add_argument('--save-pre-correction-geometry-npz', action=BoolArg, default=False,
+                        help='Save padded raw lattice/frac_coords/num_atoms/atom_types arrays.')
+    parser.add_argument('--geometry-diagnostics-train-csv', type=str, default='',
+                        help='Optional MP-20 CSV for V/N conditional reference statistics.')
+
     return parser
