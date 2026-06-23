@@ -281,6 +281,33 @@ cd ~/data1/mcw/MCW_GEM && python -u ~/mcw/MCW_GEM/scripts/sample_multi_gpu.py --
 - launcher 会自动把 16 轮均分到 4 张卡，并给每个 worker 加不同的 `sample_seed` 偏移，避免重复样本。
 - 不要在 `--` 后面再手动传 `--num_rounds`、`--sample_seed`、`--save_dir`、`--debug-atom-dir`；这些会由 launcher 自动覆盖成每个 worker 的专属值。
 
+#### 条件 lattice epoch 220，多卡采样 1024 个结构（GPU 0,1,6,7）
+
+`sample_batch_size=32`、`num_rounds=32`，总样本数为 `32 * 32 = 1024`；每张卡分配 8 rounds / 256 个样本。不要显式传 `--geometry-diagnostics-output-dir`，诊断结果会自动写入各 worker 的独立目录。
+
+```
+mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024 && cd ~/data1/mcw/MCW_GEM && nohup conda run --no-capture-output -n mpgem python -u ~/mcw/MCW_GEM/scripts/sample_multi_gpu.py --gpus 0,1,6,7 --num-rounds 32 --sample-seed 2026 --save-dir ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024 -- --device cuda --dp True --num_workers 0 --exp_name sample_LF_condL_epoch220_1024 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 1 --lambda_sym 0.0 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --sde_type ve --datadir ~/mcw/MCW_GEM/mp20 --dataset_folder_path ~/mcw/MCW_GEM/mp20/raw --LatticeGenModel diffusion_L --pretrained_Lattice_model ~/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy --condition-lattice-on-n True --pretrained_model ~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy --diagnose-geometry-before-correction True --save-pre-correction-geometry-npz True --debug-atom-types True > ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024.log 2>&1 &
+```
+
+#### 比较无条件 p(L) 与条件 p(L|n) 的 volume / V/N
+
+`--mp20-root` 会按 lattice 训练脚本的默认 split seed（config 未设置时为 1）读取 processed MP-20 train split；如果使用 `--train-csv`，脚本会把该 CSV 本身视为 train set，并要求存在 `cif` 字段。
+
+```
+conda run -n mpgem python scripts/compare_lattice_volume_by_n.py \
+  --old-lattice-ckpt outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy \
+  --new-lattice-ckpt outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy \
+  --config configs/lattice_train_cond_n.yaml \
+  --mp20-root mp20 \
+  --n-min 1 \
+  --n-max 20 \
+  --samples-per-n 1000 \
+  --batch-size 128 \
+  --seed 42 \
+  --device cuda \
+  --output-dir outputs/lattice_cond_n_diagnostics/compare_old_vs_new
+```
+
 ### 采样后统计 all-H 样本
 单卡或单 worker 输出目录：
 ```
