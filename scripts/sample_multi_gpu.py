@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import json
 import os
 import shlex
@@ -84,6 +85,172 @@ def load_sampling_metrics(metrics_path):
         return None
     with metrics_path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_json(path):
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _sum_int(metrics_list, field):
+    values = [metrics.get(field) for metrics in metrics_list if metrics.get(field) is not None]
+    if not values:
+        return None
+    return int(sum(int(value) for value in values))
+
+
+def _rate(count, total):
+    if count is None:
+        return None
+    return float(count / total) if total else 0.0
+
+
+def _write_component_metrics_csv(base_save_dir, payload):
+    flat_fields = [
+        "config_name", "num_requested", "num_generated", "num_finalized_cifs",
+        "structural_valid_count", "structural_valid_rate",
+        "composition_valid_count", "composition_valid_rate",
+        "total_valid_count", "total_valid_rate",
+        "unique_count", "novel_count", "unique_and_novel_count", "UN_rate",
+        "all_H_count", "all_H_rate", "single_element_count", "single_element_rate",
+        "close_contact_fail_count", "close_contact_fail_rate",
+        "invalid_lattice_count", "invalid_lattice_rate",
+        "search_failure_count", "search_failure_rate",
+        "raw_argmax_mode", "constrained_search_mode",
+        "geometry_correction", "atom_decode_mode",
+        "pre_correction_structural_valid_count", "pre_correction_structural_valid_rate",
+        "post_correction_structural_valid_count", "post_correction_structural_valid_rate",
+    ]
+    row = {field: payload.get(field) for field in flat_fields}
+    for filename in ("summary.csv", "metrics.csv"):
+        path = base_save_dir / filename
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=flat_fields)
+            writer.writeheader()
+            writer.writerow(row)
+
+
+def aggregate_component_metrics(base_save_dir, worker_dirs, manifest):
+    """Aggregate per-worker component diagnostics without touching sampling logic."""
+    worker_payloads = []
+    for worker_dir in worker_dirs:
+        metrics_path = worker_dir / "metrics.json"
+        metrics = load_json(metrics_path)
+        if metrics is None:
+            continue
+        worker_payloads.append(
+            {
+                "worker_dir": str(worker_dir),
+                "metrics_path": str(metrics_path),
+                "metrics": metrics,
+            }
+        )
+
+    if not worker_payloads:
+        return None
+
+    metrics_list = [payload["metrics"] for payload in worker_payloads]
+    first = metrics_list[0]
+    num_generated = _sum_int(metrics_list, "num_generated") or 0
+    num_requested = _sum_int(metrics_list, "num_requested") or 0
+    constrained_mode = bool(first.get("constrained_search_mode"))
+    raw_argmax_mode = bool(first.get("raw_argmax_mode"))
+
+    payload = {
+        "config_name": first.get("config_name") or base_save_dir.name,
+        "num_requested": num_requested,
+        "num_generated": num_generated,
+        "num_finalized_cifs": _sum_int(metrics_list, "num_finalized_cifs") or 0,
+        "structural_valid_count": _sum_int(metrics_list, "structural_valid_count") or 0,
+        "composition_valid_count": _sum_int(metrics_list, "composition_valid_count") or 0,
+        "total_valid_count": _sum_int(metrics_list, "total_valid_count") or 0,
+        "unique_count": None,
+        "novel_count": None,
+        "unique_and_novel_count": None,
+        "UN_rate": None,
+        "all_H_count": _sum_int(metrics_list, "all_H_count") or 0,
+        "single_element_count": _sum_int(metrics_list, "single_element_count") or 0,
+        "close_contact_fail_count": _sum_int(metrics_list, "close_contact_fail_count") or 0,
+        "invalid_lattice_count": _sum_int(metrics_list, "invalid_lattice_count") or 0,
+        "search_failure_count": _sum_int(metrics_list, "search_failure_count") if constrained_mode else None,
+        "raw_argmax_mode": raw_argmax_mode,
+        "constrained_search_mode": constrained_mode,
+        "geometry_correction": bool(first.get("geometry_correction")),
+        "atom_decode_mode": first.get("atom_decode_mode"),
+        "pre_correction_structural_valid_count": _sum_int(metrics_list, "pre_correction_structural_valid_count"),
+        "post_correction_structural_valid_count": _sum_int(metrics_list, "post_correction_structural_valid_count") or 0,
+        "unknown_class_masked": bool(first.get("unknown_class_masked", True)),
+        "multi_gpu_worker_aggregate": True,
+        "multi_gpu_note": (
+            "Counts/rates are aggregated across workers. Global uniqueness/novelty/UN are "
+            "not recomputed here; use the offline UN evaluation for final paper numbers."
+        ),
+        "worker_metrics": [
+            {
+                "worker_dir": payload["worker_dir"],
+                "metrics_path": payload["metrics_path"],
+                "num_generated": payload["metrics"].get("num_generated"),
+                "num_finalized_cifs": payload["metrics"].get("num_finalized_cifs"),
+            }
+            for payload in worker_payloads
+        ],
+    }
+
+    payload["structural_valid_rate"] = _rate(payload["structural_valid_count"], num_generated)
+    payload["composition_valid_rate"] = _rate(payload["composition_valid_count"], num_generated)
+    payload["total_valid_rate"] = _rate(payload["total_valid_count"], num_generated)
+    payload["all_H_rate"] = _rate(payload["all_H_count"], num_generated)
+    payload["single_element_rate"] = _rate(payload["single_element_count"], num_generated)
+    payload["close_contact_fail_rate"] = _rate(payload["close_contact_fail_count"], num_generated)
+    payload["invalid_lattice_rate"] = _rate(payload["invalid_lattice_count"], num_generated)
+    payload["search_failure_rate"] = (
+        _rate(payload["search_failure_count"], num_generated) if constrained_mode else None
+    )
+    payload["pre_correction_structural_valid_rate"] = _rate(
+        payload["pre_correction_structural_valid_count"], num_generated
+    )
+    payload["post_correction_structural_valid_rate"] = _rate(
+        payload["post_correction_structural_valid_count"], num_generated
+    )
+
+    guard_fields = [
+        "search_failure_count",
+        "search_guard_call_count",
+        "raw_all_H_count_from_logits",
+        "final_all_H_count_from_logits",
+        "final_composition_valid_count_from_decode",
+    ]
+    payload["guard_summary"] = {
+        field: int(sum(int((metrics.get("guard_summary") or {}).get(field, 0)) for metrics in metrics_list))
+        for field in guard_fields
+    }
+    payload["geometry_pre_correction_summary_by_worker"] = [
+        metrics.get("geometry_pre_correction_summary") for metrics in metrics_list
+    ]
+
+    run_config = dict(first.get("run_config") or {})
+    run_config.update(
+        {
+            "config_name": payload["config_name"],
+            "num_samples": num_requested,
+            "num_rounds": int(manifest.get("num_rounds", 0)),
+            "save_dir": str(base_save_dir),
+            "multi_gpu": True,
+            "gpus": manifest.get("gpus", []),
+            "worker_dirs": [str(worker_dir) for worker_dir in worker_dirs],
+            "command_line": " ".join(sys.argv),
+        }
+    )
+    payload["run_config"] = run_config
+
+    with (base_save_dir / "metrics.json").open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2, allow_nan=False)
+    with (base_save_dir / "run_config.json").open("w", encoding="utf-8") as handle:
+        json.dump(run_config, handle, ensure_ascii=True, indent=2, allow_nan=False)
+    _write_component_metrics_csv(base_save_dir, payload)
+    return payload
 
 
 def summarize_workers(base_save_dir, worker_dirs, exit_codes):
@@ -395,6 +562,14 @@ def main():
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=True, indent=2)
     print(f"Saved aggregate summary to {summary_path}")
+
+    component_metrics = aggregate_component_metrics(
+        base_save_dir=base_save_dir,
+        worker_dirs=[Path(spec["worker_save_dir"]) for spec in worker_specs],
+        manifest=manifest,
+    )
+    if component_metrics is not None:
+        print(f"Saved aggregate component diagnostics to {base_save_dir / 'metrics.json'}")
 
     if any(code != 0 for code in exit_codes):
         raise SystemExit(max(code for code in exit_codes if code != 0))

@@ -774,6 +774,10 @@ def get_model(args, device, dataset_info, dataloader_train,
             disable_all_h_guard=getattr(args, 'disable_all_h_guard', False),
             all_h_guard_topk=getattr(args, 'all_h_guard_topk', 4),
             all_h_guard_min_non_h=getattr(args, 'all_h_guard_min_non_h', 1),
+            geometry_correction=getattr(args, 'geometry_correction', True),
+            atom_decode_mode=getattr(args, 'atom_decode_mode', 'constrained_search'),
+            atom_type_repair_topk=getattr(args, 'atom_type_repair_topk', 4),
+            atom_type_max_replace_atoms=getattr(args, 'atom_type_max_replace_atoms', 2),
         )
         total_params = sum(p.numel() for p in vdm.parameters())
         trainable_params = sum(p.numel() for p in vdm.parameters() if p.requires_grad)

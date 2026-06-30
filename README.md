@@ -289,6 +289,26 @@ cd ~/data1/mcw/MCW_GEM && python -u ~/mcw/MCW_GEM/scripts/sample_multi_gpu.py --
 mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024 && cd ~/data1/mcw/MCW_GEM && nohup conda run --no-capture-output -n mpgem python -u ~/mcw/MCW_GEM/scripts/sample_multi_gpu.py --gpus 0,1,6,7 --num-rounds 32 --sample-seed 2026 --save-dir ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024 -- --device cuda --dp True --num_workers 0 --exp_name sample_LF_condL_epoch220_1024 --wandb_usr maochenwei-ustc --no_wandb --model DGAP --atom_type_pred 1 --lambda_l 1.0 --lambda_a 1.0 --lambda_type 0.1 --n_corrector_steps 1 --lambda_sym 0.0 --include_charges False --compute_novelty 0 --compute_novelty_epoch 0 --visualize True --sample_batch_size 32 --probabilistic_model diffusion_LF_wrap --sde_type ve --datadir ~/mcw/MCW_GEM/mp20 --dataset_folder_path ~/mcw/MCW_GEM/mp20/raw --LatticeGenModel diffusion_L --pretrained_Lattice_model ~/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy --condition-lattice-on-n True --pretrained_model ~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy --diagnose-geometry-before-correction True --save-pre-correction-geometry-npz True --debug-atom-types True > ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024.log 2>&1 &
 ```
 
+#### 消融，MP-20 component ablation diagnostics，条件 lattice epoch 220，每组 1024 个结构（GPU 4,5）
+
+`sample_batch_size=32`、launcher `--num-rounds 32`，所以每组总样本数为 `32 * 32 = 1024`；GPU 4 和 GPU 5 各分配 16 rounds / 512 个样本。下面命令会串行跑四组 ablation，每组内部双卡并行，避免四组同时占用同两张卡。
+
+输出目录：
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/raw_geometry_raw_logits`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/raw_geometry_constrained_decode`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/corrected_geometry_raw_logits`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/full_pipeline`
+
+```
+mkdir -p ~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics && cd ~/data1/mcw/MCW_GEM && nohup env PYTHON='conda run --no-capture-output -n mpgem python' GPUS=4,5 NUM_SAMPLES=1024 BATCH_SIZE=32 SEED=2026 OUT_ROOT=$HOME/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics CHECKPOINT=$HOME/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy LATTICE_CHECKPOINT=$HOME/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy CONFIG=$HOME/mcw/MCW_GEM/configs/lattice_train_cond_n.yaml DATADIR=$HOME/mcw/MCW_GEM/mp20 DATASET_FOLDER_PATH=$HOME/mcw/MCW_GEM/mp20/raw CONDITION_LATTICE_ON_N=True LAMBDA_SYM=0.0 DEBUG_ATOM_TYPES=True bash ~/mcw/MCW_GEM/scripts/run_component_ablation_mp20.sh > ~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/component_ablation_1024_gpus45.log 2>&1 &
+```
+
+说明：
+- 每个 config 根目录会保存 `metrics.json`、`summary.csv` / `metrics.csv`、`run_config.json`、`sampling.log`、`multi_gpu_manifest.json`、`multi_gpu_summary.json`。
+- `raw_argmax` 组会显式跳过 constrained composition search / all-H guard / emergency repair；`constrained_search` 组保持 full pipeline 的 atom decoding。
+- `--geometry-correction False` 组会跳过 final-window geometry correction，最终 CIF 使用 raw learned anonymous geometry。
+- 四组跑完后会生成 `component_ablation_summary.csv` 和 `component_ablation_table.tex`。如需单独重跑某一组，只保留对应的 `run_one ...` 行。
+
 #### 比较无条件 p(L) 与条件 p(L|n) 的 volume / V/N
 
 `--mp20-root` 会按 lattice 训练脚本的默认 split seed（config 未设置时为 1）读取 processed MP-20 train split；如果使用 `--train-csv`，脚本会把该 CSV 本身视为 train set，并要求存在 `cif` 字段。

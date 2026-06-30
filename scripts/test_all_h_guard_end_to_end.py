@@ -17,10 +17,13 @@ def build_stub_model():
     model.atom_decoder = ["PAD", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na"]
     model.known_atom_class_ids = [1, 6, 7, 8, 11]
     model.disable_all_h_guard_arg = False
+    model.atom_decode_mode = "constrained_search"
+    model.geometry_correction_enabled = True
     model.all_h_guard_enabled = True
     model.all_h_guard_topk = 4
     model.all_h_guard_min_non_h = 1
     model.atom_type_repair_topk = 4
+    model.atom_type_max_replace_atoms = 2
     model.debug_atom_types = False
     model.debug_atom_dir = ""
     model._last_prepare_inputs_debug = {}

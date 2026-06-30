@@ -179,6 +179,7 @@ def sample_F(args, device, generative_model, LatticeGenModel, dataset_info,
         getattr(args, 'diagnose_geometry_before_correction', False)
         or getattr(args, 'save_pre_correction_geometry_npz', False)
         or getattr(args, 'geometry_diagnostics_every_batch', False)
+        or not getattr(args, 'geometry_correction', True)
     )
 
     node_mask = torch.zeros(batch_size, max_n_nodes)

@@ -247,6 +247,13 @@ def setup_shared_args(parser):
                         help='Top-k candidate width for the final all-H rescue search. Defaults to the existing atom-type repair top-k.')
     parser.add_argument('--all-h-guard-min-non-h', type=int, default=1,
                         help='Minimum number of non-H atoms enforced only when the raw final decode is all-H.')
+    parser.add_argument('--atom-decode-mode', type=str, default='constrained_search',
+                        choices=('constrained_search', 'raw_argmax'),
+                        help='Final atom decode mode. raw_argmax is diagnostic-only and disables composition repair/all-H guard.')
+    parser.add_argument('--atom-type-repair-topk', type=int, default=4,
+                        help='Top-k candidate width for constrained final atom composition search.')
+    parser.add_argument('--atom-type-max-replace-atoms', type=int, default=2,
+                        help='Maximum high-entropy sites replaced during constrained final atom composition search.')
 
     # Conditional lattice p(L | n). Defaults preserve the original p(L) path.
     parser.add_argument('--condition-lattice-on-n', action=BoolArg, default=False,
@@ -267,5 +274,14 @@ def setup_shared_args(parser):
                         help='Save padded raw lattice/frac_coords/num_atoms/atom_types arrays.')
     parser.add_argument('--geometry-diagnostics-train-csv', type=str, default='',
                         help='Optional MP-20 CSV for V/N conditional reference statistics.')
+    parser.add_argument('--geometry-correction', action=BoolArg, default=True,
+                        help='Enable final low-noise geometry correction during LF_wrap sampling.')
+    parser.add_argument('--disable-geometry-correction', dest='geometry_correction',
+                        action='store_false',
+                        help='Disable final low-noise geometry correction; diagnostic ablation only.')
+    parser.add_argument('--component-config-name', type=str, default='',
+                        help='Optional component ablation config name written to run_config.json/metrics.json.')
+    parser.add_argument('--sampling-config-path', type=str, default='',
+                        help='Optional sampling config path recorded in run_config.json; not loaded by this entrypoint.')
 
     return parser

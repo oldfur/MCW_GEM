@@ -22,6 +22,11 @@ from mp20.novelty import (
     is_structure_novel,
 )
 
+import csv
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
 import json
 import torch
 import wandb
@@ -51,6 +56,8 @@ def _atom_type_debug_enabled(args):
 
 
 def _all_h_guard_enabled(args):
+    if getattr(args, "atom_decode_mode", "constrained_search") == "raw_argmax":
+        return False
     if hasattr(args, "disable_all_h_guard"):
         return not bool(getattr(args, "disable_all_h_guard", False))
     env_value = os.environ.get("MCW_ALL_H_GUARD_ENABLED")
@@ -58,16 +65,22 @@ def _all_h_guard_enabled(args):
 
 
 def _all_h_guard_fail_fast(args):
+    if getattr(args, "atom_decode_mode", "constrained_search") == "raw_argmax":
+        return False
     return bool(_all_h_guard_enabled(args) or _atom_type_debug_enabled(args))
 
 
 def _set_all_h_guard_env(args):
     enabled = _all_h_guard_enabled(args)
     disable_arg = bool(getattr(args, "disable_all_h_guard", False))
+    atom_decode_mode = getattr(args, "atom_decode_mode", "constrained_search")
     os.environ["MCW_ALL_H_GUARD_ENABLED"] = "1" if enabled else "0"
     os.environ["MCW_ALL_H_GUARD_DISABLED_ARG"] = "1" if disable_arg else "0"
+    os.environ["MCW_ATOM_DECODE_MODE"] = atom_decode_mode
     print("analyze_test disable_all_h_guard arg:", disable_arg)
     print("analyze_test all_h_guard_enabled:", enabled)
+    print("analyze_test atom_decode_mode:", atom_decode_mode)
+    print("analyze_test geometry_correction:", getattr(args, "geometry_correction", True))
     _write_atom_type_debug_line(
         args,
         "atom_type_session.jsonl",
@@ -75,6 +88,8 @@ def _set_all_h_guard_env(args):
             "event": "analyze_test_guard_config",
             "disable_all_h_guard_arg": disable_arg,
             "all_h_guard_enabled": enabled,
+            "atom_decode_mode": atom_decode_mode,
+            "geometry_correction": bool(getattr(args, "geometry_correction", True)),
             "all_h_guard_fail_fast_enabled": bool(_all_h_guard_fail_fast(args)),
         },
     )
@@ -195,6 +210,306 @@ def _write_sampling_metrics(args, epoch, metrics_dict):
         },
     )
     return metrics_payload
+
+
+def _jsonify(value):
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return _jsonify(value.detach().cpu().item())
+        return [_jsonify(v) for v in value.detach().cpu().reshape(-1).tolist()]
+    if isinstance(value, np.ndarray):
+        return [_jsonify(v) for v in value.reshape(-1).tolist()]
+    if isinstance(value, (np.bool_, bool)):
+        return bool(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        if not np.isfinite(float(value)):
+            return None
+        return float(value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _jsonify(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonify(v) for v in value]
+    return value
+
+
+def _rate(count, total):
+    return float(count / total) if total else 0.0
+
+
+def _metric_count(metrics_dict, key):
+    metric = metrics_dict.get(key)
+    if metric is None:
+        return 0, 0, None
+    metric_cpu = metric.detach().cpu().reshape(-1)
+    total = int(metric_cpu.numel())
+    count = int(metric_cpu.sum().item())
+    rate = float(metric_cpu.float().mean().item()) if total > 0 else None
+    return count, total, rate
+
+
+def _unwrap_model(model):
+    return getattr(model, "module", model)
+
+
+def _git_commit_hash():
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return None
+
+
+def _run_config_payload(args, epoch):
+    num_samples = int(getattr(args, "num_rounds", 1) * getattr(args, "sample_batch_size", 0))
+    atom_decode_mode = getattr(args, "atom_decode_mode", "constrained_search")
+    return {
+        "config_name": getattr(args, "component_config_name", "") or Path(args.save_dir).name,
+        "checkpoint_path": getattr(args, "pretrained_model", ""),
+        "lattice_checkpoint_path": getattr(args, "pretrained_Lattice_model", ""),
+        "sampling_config_path": getattr(args, "sampling_config_path", ""),
+        "random_seed": int(getattr(args, "sample_seed", getattr(args, "seed", 0))),
+        "num_samples": num_samples,
+        "num_rounds": int(getattr(args, "num_rounds", 1)),
+        "batch_size": int(getattr(args, "sample_batch_size", 0)),
+        "geometry_correction": bool(getattr(args, "geometry_correction", True)),
+        "atom_decode_mode": atom_decode_mode,
+        "final_window_threshold_tau": int(getattr(args, "prediction_threshold_t", 10)),
+        "top_k": int(getattr(args, "atom_type_repair_topk", 4)),
+        "all_h_guard_top_k": int(getattr(args, "all_h_guard_topk", 4)),
+        "max_high_entropy_replacement_sites": int(getattr(args, "atom_type_max_replace_atoms", 2)),
+        "all_H_guard_enabled": bool(_all_h_guard_enabled(args)),
+        "emergency_repair_enabled": bool(os.environ.get("MCW_ENABLE_EMERGENCY_ALL_H_REPAIR", "0") == "1"
+                                          and atom_decode_mode == "constrained_search"),
+        "unknown_class_masked": True,
+        "epoch": int(epoch),
+        "save_dir": getattr(args, "save_dir", ""),
+        "date_time": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "git_commit_hash": _git_commit_hash(),
+        "command_line": " ".join(sys.argv),
+    }
+
+
+def _write_run_config(args, epoch):
+    payload = _run_config_payload(args, epoch)
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    for path in (save_dir / "run_config.json", save_dir / f"epoch_{epoch}" / "run_config.json"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(_jsonify(payload), handle, ensure_ascii=True, indent=2, allow_nan=False)
+    return payload
+
+
+def _evaluate_structural_validity_from_records(records):
+    if not records:
+        return {"count": None, "total": 0, "rate": None}
+    flags = []
+    for record in records:
+        try:
+            lengths = np.asarray(record.get("lengths"), dtype=float)
+            angles = np.asarray(record.get("angles"), dtype=float)
+            if lengths.size != 3 or angles.size != 3:
+                from mp20.geometry_diagnostics import lattice_lengths_angles
+                lengths, angles = lattice_lengths_angles(np.asarray(record["lattice"], dtype=float))
+            crystal = array_dict_to_crystal(
+                {
+                    "frac_coords": np.asarray(record["frac_coords"], dtype=float),
+                    "atom_types": np.asarray(record["atom_types"], dtype=int),
+                    "lengths": lengths,
+                    "angles": angles,
+                    "sample_idx": record.get("sample_id", ""),
+                },
+                save=False,
+                save_dir_name="",
+            )
+            flags.append(bool(crystal.struct_valid))
+        except Exception:
+            flags.append(False)
+    count = int(sum(flags))
+    total = int(len(flags))
+    return {"count": count, "total": total, "rate": _rate(count, total)}
+
+
+def _count_generated_cifs(save_dir, epoch):
+    epoch_dir = Path(save_dir) / f"epoch_{epoch}"
+    if not epoch_dir.exists():
+        return 0
+    return sum(1 for _ in epoch_dir.rglob("*.cif"))
+
+
+def _diagnostic_counts_from_predictions(pred_arrays, pred_crys):
+    all_h_count = 0
+    single_element_count = 0
+    close_contact_fail_count = 0
+    invalid_lattice_count = 0
+    invalid_lattice_reasons = {
+        "non_positive_lattice",
+        "nan_value",
+        "unrealistically_small_lattice",
+        "construction_raises_exception",
+    }
+    for pred, crystal in zip(pred_arrays, pred_crys):
+        atom_types = np.asarray(pred.get("atom_types", []), dtype=int).reshape(-1)
+        if atom_types.size > 0:
+            all_h_count += int(np.all(atom_types == 1))
+            single_element_count += int(len(set(atom_types.tolist())) == 1)
+        invalid_reason = getattr(crystal, "invalid_reason", "")
+        if invalid_reason == "constructed but structure invalid":
+            close_contact_fail_count += 1
+        if invalid_reason in invalid_lattice_reasons:
+            invalid_lattice_count += 1
+    return {
+        "all_H_count": int(all_h_count),
+        "single_element_count": int(single_element_count),
+        "close_contact_fail_count": int(close_contact_fail_count),
+        "invalid_lattice_count": int(invalid_lattice_count),
+    }
+
+
+def _guard_summary_from_model(model_sample):
+    model = _unwrap_model(model_sample)
+    summary = getattr(model, "_atom_type_all_h_guard_summary", {}) or {}
+    return {
+        "search_failure_count": int(summary.get("search_failed_count", 0)),
+        "search_guard_call_count": int(summary.get("search_guard_call_count", 0)),
+        "raw_all_H_count_from_logits": int(summary.get("raw_all_H_count", 0)),
+        "final_all_H_count_from_logits": int(summary.get("final_all_H_count", 0)),
+        "final_composition_valid_count_from_decode": int(summary.get("final_composition_valid_count", 0)),
+    }
+
+
+def _build_component_metrics_payload(
+    args,
+    epoch,
+    metrics_dict,
+    evaluator,
+    model_sample,
+    pre_correction_structural,
+    geometry_summary,
+    run_config,
+):
+    num_requested = int(getattr(args, "num_rounds", 1) * getattr(args, "sample_batch_size", 0))
+    num_generated = int(len(evaluator.pred_arrays_list))
+    valid_count, _, valid_rate = _metric_count(metrics_dict, "valid_rate")
+    comp_valid_count, _, comp_valid_rate = _metric_count(metrics_dict, "comp_valid_rate")
+    struct_valid_count, _, struct_valid_rate = _metric_count(metrics_dict, "struct_valid_rate")
+    diagnostics = _diagnostic_counts_from_predictions(evaluator.pred_arrays_list, evaluator.pred_crys_list)
+    guard_summary = _guard_summary_from_model(model_sample)
+
+    valid_structs = getattr(evaluator, "_last_valid_structs", None)
+    if valid_structs is None:
+        valid_structs = [c.structure for c in evaluator.pred_crys_list if c.valid]
+    unique_groups = getattr(evaluator, "_last_unique_struct_groups", None)
+    if unique_groups is None:
+        unique_groups = evaluator.matcher.group_structures(valid_structs) if valid_structs else []
+    unique_count = int(len(unique_groups))
+    novel_rate_value = _to_float(metrics_dict.get("novel_rate", torch.tensor(-1.0)))
+    unique_group_is_novel = getattr(evaluator, "_last_unique_group_is_novel", None)
+    if unique_group_is_novel is not None:
+        novel_count = int(sum(bool(v) for v in unique_group_is_novel))
+        unique_and_novel_count = novel_count
+        un_rate = _rate(unique_and_novel_count, len(valid_structs))
+    elif novel_rate_value is not None and novel_rate_value >= 0:
+        novel_count = int(round(unique_count * novel_rate_value))
+        unique_and_novel_count = novel_count
+        un_rate = _rate(unique_and_novel_count, len(valid_structs))
+    else:
+        novel_count = None
+        unique_and_novel_count = None
+        un_rate = None
+
+    atom_decode_mode = getattr(args, "atom_decode_mode", "constrained_search")
+    constrained_mode = atom_decode_mode == "constrained_search"
+    search_failure_count = guard_summary["search_failure_count"] if constrained_mode else None
+    search_failure_rate = (
+        _rate(search_failure_count, num_generated)
+        if constrained_mode and search_failure_count is not None else None
+    )
+
+    payload = {
+        "config_name": run_config["config_name"],
+        "num_requested": num_requested,
+        "num_generated": num_generated,
+        "num_finalized_cifs": _count_generated_cifs(args.save_dir, epoch),
+        "structural_valid_count": int(struct_valid_count),
+        "structural_valid_rate": struct_valid_rate,
+        "composition_valid_count": int(comp_valid_count),
+        "composition_valid_rate": comp_valid_rate,
+        "total_valid_count": int(valid_count),
+        "total_valid_rate": valid_rate,
+        "unique_count": unique_count,
+        "novel_count": novel_count,
+        "unique_and_novel_count": unique_and_novel_count,
+        "UN_rate": un_rate,
+        "all_H_count": diagnostics["all_H_count"],
+        "all_H_rate": _rate(diagnostics["all_H_count"], num_generated),
+        "single_element_count": diagnostics["single_element_count"],
+        "single_element_rate": _rate(diagnostics["single_element_count"], num_generated),
+        "close_contact_fail_count": diagnostics["close_contact_fail_count"],
+        "close_contact_fail_rate": _rate(diagnostics["close_contact_fail_count"], num_generated),
+        "invalid_lattice_count": diagnostics["invalid_lattice_count"],
+        "invalid_lattice_rate": _rate(diagnostics["invalid_lattice_count"], num_generated),
+        "search_failure_count": search_failure_count,
+        "search_failure_rate": search_failure_rate,
+        "raw_argmax_mode": bool(atom_decode_mode == "raw_argmax"),
+        "constrained_search_mode": bool(constrained_mode),
+        "geometry_correction": bool(getattr(args, "geometry_correction", True)),
+        "atom_decode_mode": atom_decode_mode,
+        "pre_correction_structural_valid_count": pre_correction_structural["count"],
+        "pre_correction_structural_valid_rate": pre_correction_structural["rate"],
+        "post_correction_structural_valid_count": int(struct_valid_count),
+        "post_correction_structural_valid_rate": struct_valid_rate,
+        "unknown_class_masked": True,
+        "guard_summary": guard_summary,
+        "geometry_pre_correction_summary": geometry_summary or None,
+        "run_config": run_config,
+    }
+    return payload
+
+
+def _write_component_metrics(args, epoch, payload):
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    json_paths = [save_dir / "metrics.json", save_dir / f"epoch_{epoch}" / "metrics.json"]
+    for path in json_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(_jsonify(payload), handle, ensure_ascii=True, indent=2, allow_nan=False)
+
+    flat_fields = [
+        "config_name", "num_requested", "num_generated", "num_finalized_cifs",
+        "structural_valid_count", "structural_valid_rate",
+        "composition_valid_count", "composition_valid_rate",
+        "total_valid_count", "total_valid_rate",
+        "unique_count", "novel_count", "unique_and_novel_count", "UN_rate",
+        "all_H_count", "all_H_rate", "single_element_count", "single_element_rate",
+        "close_contact_fail_count", "close_contact_fail_rate",
+        "invalid_lattice_count", "invalid_lattice_rate",
+        "search_failure_count", "search_failure_rate",
+        "raw_argmax_mode", "constrained_search_mode",
+        "geometry_correction", "atom_decode_mode",
+        "pre_correction_structural_valid_count", "pre_correction_structural_valid_rate",
+        "post_correction_structural_valid_count", "post_correction_structural_valid_rate",
+    ]
+    row = {field: _jsonify(payload.get(field)) for field in flat_fields}
+    for filename in ("summary.csv", "metrics.csv"):
+        path = save_dir / filename
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=flat_fields)
+            writer.writeheader()
+            writer.writerow(row)
+    print(f"[ComponentDiagnostics] wrote metrics.json and summary.csv under {save_dir}")
 
 
 def analyze_and_save(args, epoch, model_sample, nodes_dist, dataset_info, 
@@ -378,6 +693,7 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
                      prop_dist, evaluate_condition_generation, dataloader=None):
     print(f'Analyzing crystal validity at epoch {epoch}...')
     _set_all_h_guard_env(args)
+    run_config = _write_run_config(args, epoch)
     batch_size = args.sample_batch_size
     device = args.device
     dtype = args.dtype
@@ -410,6 +726,7 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
         getattr(args, "diagnose_geometry_before_correction", False)
         or getattr(args, "save_pre_correction_geometry_npz", False)
         or getattr(args, "geometry_diagnostics_every_batch", False)
+        or not getattr(args, "geometry_correction", True)
     )
     if args.sample_realistic_LA:
         first_batch = next(iter(dataloader))
@@ -488,6 +805,8 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
                     # mp20.crystal.lattice_matrix is row-wise. Diagnostics use
                     # the LF model's column-wise convention: cart=frac@L.T.
                     "lattice": lattice.T,
+                    "lengths": length[i],
+                    "angles": angle[i],
                     "frac_coords": pre_correction_frac_pos[i][mask].detach().cpu().numpy(),
                     "num_atoms": real_atom_count,
                     "atom_types": atom_types,
@@ -523,6 +842,7 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
             os.path.join(diagnostics_output_dir, "geometry_pre_correction_raw.npz"),
         )
         print(f"[PreCorrectionGeometry] saved raw NPZ: {npz_path}")
+    geometry_summary = None
     if getattr(args, "diagnose_geometry_before_correction", False):
         _, geometry_summary, _ = diagnose_geometry_records(
             records=pre_correction_records,
@@ -582,6 +902,18 @@ def analyze_and_save_F(args, epoch, model_sample, LatticeGenModel, nodes_dist, d
             'Uniqueness': metrics_dict["unique_rate"], 
             'Novelty': metrics_dict["novel_rate"]})
     _write_sampling_metrics(args, epoch, metrics_dict)
+    pre_correction_structural = _evaluate_structural_validity_from_records(pre_correction_records)
+    component_metrics = _build_component_metrics_payload(
+        args=args,
+        epoch=epoch,
+        metrics_dict=metrics_dict,
+        evaluator=mp20_evaluator,
+        model_sample=model_sample,
+        pre_correction_structural=pre_correction_structural,
+        geometry_summary=geometry_summary,
+        run_config=run_config,
+    )
+    _write_component_metrics(args, epoch, component_metrics)
 
     return metrics_dict
 
@@ -749,12 +1081,23 @@ class CrystalGenerationEvaluator:
 
     def _arrays_to_crystals(self, save: bool = False, save_dir: str = ""):
         """Convert stored predictions and ground truths to Crystal objects for evaluation."""
+        converter = partial(
+            array_dict_to_crystal,
+            save=save,
+            save_dir_name=save_dir,
+        )
+        if len(self.pred_arrays_list) <= 16:
+            self.pred_crys_list = [
+                converter(pred)
+                for pred in tqdm(
+                    self.pred_arrays_list,
+                    desc="    Pred to Crystal",
+                    total=len(self.pred_arrays_list),
+                )
+            ]
+            return
         self.pred_crys_list = joblib_map(
-            partial(
-                array_dict_to_crystal,
-                save=save,
-                save_dir_name=save_dir,
-            ),
+            converter,
             self.pred_arrays_list,
             n_jobs=-4,
             inner_max_num_threads=1,
@@ -804,6 +1147,8 @@ class CrystalGenerationEvaluator:
         # Compute uniqueness
         valid_structs = [c.structure for c in self.pred_crys_list if c.valid]
         unique_struct_groups = self.matcher.group_structures(valid_structs)
+        self._last_valid_structs = valid_structs
+        self._last_unique_struct_groups = unique_struct_groups
         if len(valid_structs) > 0:
             metrics_dict["unique_rate"] = torch.tensor(
                 len(unique_struct_groups) / len(valid_structs), device=self.device
@@ -821,11 +1166,13 @@ class CrystalGenerationEvaluator:
                 total=len(unique_struct_groups),
             ):
                 struct_is_novel.append(self._get_novelty(struct))
+            self._last_unique_group_is_novel = struct_is_novel
 
             metrics_dict["novel_rate"] = torch.tensor(
                 sum(struct_is_novel) / len(struct_is_novel), device=self.device
             )
         else:
+            self._last_unique_group_is_novel = None
             metrics_dict["novel_rate"] = torch.tensor(-1.0, device=self.device)
 
         return metrics_dict

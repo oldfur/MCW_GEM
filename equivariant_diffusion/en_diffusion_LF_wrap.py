@@ -835,6 +835,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             known_atom_class_ids=None, unknown_atom_type_idx=0,
             disable_all_h_guard=False, all_h_guard_topk=DEFAULT_ATOM_TYPE_REPAIR_TOPK,
             all_h_guard_min_non_h=1,
+            geometry_correction=True,
+            atom_decode_mode="constrained_search",
+            atom_type_repair_topk=DEFAULT_ATOM_TYPE_REPAIR_TOPK,
+            atom_type_max_replace_atoms=2,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -963,6 +967,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.atom_decoder = list(atom_decoder) if atom_decoder is not None else None
         self.known_atom_class_ids = list(known_atom_class_ids) if known_atom_class_ids is not None else None
         self.unknown_atom_type_idx = int(unknown_atom_type_idx)
+        atom_decode_mode = str(atom_decode_mode)
+        if atom_decode_mode not in {"constrained_search", "raw_argmax"}:
+            raise ValueError(f"Unknown atom_decode_mode={atom_decode_mode!r}")
+        self.atom_decode_mode = atom_decode_mode
+        self.geometry_correction_enabled = bool(geometry_correction)
         self.h_class_idx = 1
         if self.atom_decoder is not None:
             for class_idx, symbol in enumerate(self.atom_decoder):
@@ -972,13 +981,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         self.debug_atom_types = bool(debug_atom_types) or os.environ.get("DEBUG_ATOM_TYPES", "0") == "1"
         self.debug_atom_dir = debug_atom_dir or os.environ.get("DEBUG_ATOM_TYPES_DIR")
         self.disable_all_h_guard_arg = bool(disable_all_h_guard)
-        self.all_h_guard_enabled = not self.disable_all_h_guard_arg
-        self.atom_type_repair_topk = int(DEFAULT_ATOM_TYPE_REPAIR_TOPK)
+        self.all_h_guard_enabled = (not self.disable_all_h_guard_arg) and self.atom_decode_mode == "constrained_search"
+        self.atom_type_repair_topk = max(1, int(atom_type_repair_topk))
+        self.atom_type_max_replace_atoms = max(0, int(atom_type_max_replace_atoms))
         self.all_h_guard_topk = max(1, int(all_h_guard_topk))
         self.all_h_guard_min_non_h = max(1, int(all_h_guard_min_non_h))
         self.enable_emergency_all_h_one_site_repair = os.environ.get(
             "MCW_ENABLE_EMERGENCY_ALL_H_REPAIR", "0"
-        ) == "1"
+        ) == "1" and self.atom_decode_mode == "constrained_search"
         self._atom_debug_decoder_written = False
         self._input_atom_type_debug_written = False
         self._last_prepare_inputs_debug = {}
@@ -992,13 +1002,18 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("cutoff for repulsion loss: ", cutoff)
         print("use lambda_type_adjust: ", lambda_type_adjust)
         print("adjust atom type during diffusion: ", adjust_atom_type)
+        print("geometry correction enabled: ", self.geometry_correction_enabled)
+        print("atom decode mode: ", self.atom_decode_mode)
         print("disable_all_h_guard arg: ", self.disable_all_h_guard_arg)
         print("all-H guard enabled: ", self.all_h_guard_enabled)
+        print("atom type repair top-k: ", self.atom_type_repair_topk)
+        print("atom type max high-entropy replacement sites: ", self.atom_type_max_replace_atoms)
         print("all-H guard top-k: ", self.all_h_guard_topk)
         print("all-H guard min non-H: ", self.all_h_guard_min_non_h)
         print("emergency one-site all-H repair enabled: ", self.enable_emergency_all_h_one_site_repair)
         os.environ["MCW_ALL_H_GUARD_ENABLED"] = "1" if self.all_h_guard_enabled else "0"
         os.environ["MCW_ALL_H_GUARD_DISABLED_ARG"] = "1" if self.disable_all_h_guard_arg else "0"
+        os.environ["MCW_ATOM_DECODE_MODE"] = self.atom_decode_mode
 
         if self.debug_atom_types:
             if not self.debug_atom_dir:
@@ -1021,6 +1036,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     "debug_atom_dir": self.debug_atom_dir,
                     "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
                     "all_h_guard_enabled": bool(self.all_h_guard_enabled),
+                    "geometry_correction_enabled": bool(self.geometry_correction_enabled),
+                    "atom_decode_mode": self.atom_decode_mode,
+                    "atom_type_repair_topk": int(self.atom_type_repair_topk),
+                    "atom_type_max_replace_atoms": int(self.atom_type_max_replace_atoms),
                     "all_h_guard_topk": int(self.all_h_guard_topk),
                     "all_h_guard_min_non_h": int(self.all_h_guard_min_non_h),
                     "all_h_guard_mode": "search_tree_rejection",
@@ -1150,6 +1169,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         payload = {
             "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
             "all_h_guard_enabled": bool(self.all_h_guard_enabled),
+            "geometry_correction_enabled": bool(self.geometry_correction_enabled),
+            "atom_decode_mode": self.atom_decode_mode,
+            "atom_type_repair_topk": int(self.atom_type_repair_topk),
+            "atom_type_max_replace_atoms": int(self.atom_type_max_replace_atoms),
             "all_h_guard_mode": "search_tree_rejection",
             "emergency_one_site_all_h_repair_enabled": bool(self.enable_emergency_all_h_one_site_repair),
             "all_h_guard_fail_fast_enabled": bool(self._all_h_guard_fail_fast_enabled()),
@@ -1192,7 +1215,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             json.dump(payload, f, ensure_ascii=True, indent=2)
 
     def _all_h_guard_fail_fast_enabled(self):
-        return bool(self.all_h_guard_enabled or self.debug_atom_types)
+        return bool((self.all_h_guard_enabled or self.debug_atom_types) and self.atom_decode_mode == "constrained_search")
 
     def _raise_all_h_guard_violation(self, stage, payload):
         failure_payload = dict(payload)
@@ -1619,6 +1642,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         apply_repair=True,
         final_window_ensemble_logits=None,
         final_window_step_indices=None,
+        atom_decode_mode=None,
     ):
         assert logits.dim() == 3, f"atom logits must be [B, N, C], got {tuple(logits.shape)}"
         assert node_mask.dim() == 3 and node_mask.size(-1) == 1, \
@@ -1628,6 +1652,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             f"logits/node_mask shape mismatch: logits={tuple(logits.shape)} node_mask={tuple(node_mask.shape)}"
         assert C == self.num_classes, \
             f"atom logits last dim must equal num_classes={self.num_classes}, got {C}"
+        decode_mode = self.atom_decode_mode if atom_decode_mode is None else str(atom_decode_mode)
+        if decode_mode not in {"constrained_search", "raw_argmax"}:
+            raise ValueError(f"Unknown atom_decode_mode={decode_mode!r}")
+        use_constrained_search = bool(apply_repair and decode_mode == "constrained_search")
+        raw_argmax_mode = bool(decode_mode == "raw_argmax" or not use_constrained_search)
 
         decode_logits = logits
         decode_logits_source = "final_step_logits"
@@ -1668,17 +1697,18 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         masked_probs = torch.softmax(masked_logits, dim=softmax_dim)
         argmax_after_mask = torch.argmax(masked_logits, dim=-1)
 
-        if apply_repair:
+        if use_constrained_search:
             final_elem_idx_batch, search_infos = repair_composition_batch(
                 masked_logits,
                 node_mask,
                 smact_validity_fn=smact_validity,
                 topk=self.atom_type_repair_topk,
-                max_replace_atoms=2,
+                max_replace_atoms=self.atom_type_max_replace_atoms,
                 h_class_idx=self.h_class_idx,
                 expanded_topk=self.all_h_guard_topk,
             )
         else:
+            # Diagnostic raw-logits path: final-window average + unknown mask + independent argmax only.
             final_elem_idx_batch = argmax_after_mask
             search_infos = []
             for b in range(B):
@@ -1726,6 +1756,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             "event": "atom_type_batch_summary",
             "source_tag": source_tag,
             "round_index": int(round_index),
+            "atom_decode_mode": decode_mode,
+            "constrained_search_mode": bool(use_constrained_search),
+            "raw_argmax_mode": bool(raw_argmax_mode),
+            "unknown_class_masked": True,
+            "atom_type_repair_topk": int(self.atom_type_repair_topk),
+            "atom_type_max_replace_atoms": int(self.atom_type_max_replace_atoms),
+            "all_h_guard_enabled": bool(self.all_h_guard_enabled and use_constrained_search),
             "softmax_dim": softmax_dim,
             "decode_logits_source": decode_logits_source,
             "final_window_step_indices": [int(v) for v in (final_window_step_indices or [])],
@@ -1839,7 +1876,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     f"[AllHSearchGuard] accepted non-all-H candidate after rejecting all-H leaf "
                     f"at global sample index {sample_global_index} ({source_tag}, round={round_index}, batch={b})"
                 )
-            if self._all_h_guard_fail_fast_enabled() and all_h:
+            if use_constrained_search and self._all_h_guard_fail_fast_enabled() and all_h:
                 self._raise_all_h_guard_violation(
                     "finalize_atom_type_logits",
                     {
@@ -1902,7 +1939,11 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 "decoded_species": [self._class_index_to_symbol(v) for v in final_idx.detach().cpu().tolist()],
                 "raw_score": float(guard_info["raw_score"]),
                 "final_score": float(guard_info["final_score"]),
-                "all_h_guard_enabled": bool(self.all_h_guard_enabled),
+                "atom_decode_mode": decode_mode,
+                "constrained_search_mode": bool(use_constrained_search),
+                "raw_argmax_mode": bool(raw_argmax_mode),
+                "unknown_class_masked": True,
+                "all_h_guard_enabled": bool(self.all_h_guard_enabled and use_constrained_search),
                 "all_h_guard_repaired": False,
                 "all_h_guard_min_non_h": int(self.all_h_guard_min_non_h),
                 "all_h_guard_topk": int(self.all_h_guard_topk),
@@ -2127,7 +2168,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         summary = self._atom_type_all_h_guard_summary
         summary["guard_decode_call_count"] += int(B)
-        summary["search_guard_call_count"] += int(B)
+        summary["search_guard_call_count"] += int(B) if use_constrained_search else 0
         summary["guard_trigger_count"] += int(raw_all_h_count)
         summary["guard_repair_success_count"] += 0
         summary["valence_valid_all_H_rejected_count"] += int(valence_valid_all_h_rejected_count)
@@ -2154,13 +2195,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         h_cat = F.one_hot(elem_idx, self.num_classes) * node_mask
         assert h_cat.shape == logits.shape, \
             f"decoded one-hot shape mismatch: expected {tuple(logits.shape)}, got {tuple(h_cat.shape)}"
-        self._assert_no_all_h_in_one_hot_batch(
-            h_cat,
-            node_mask,
-            source_tag=source_tag,
-            round_index=round_index,
-            stage="finalize_atom_type_logits_return",
-        )
+        if use_constrained_search:
+            self._assert_no_all_h_in_one_hot_batch(
+                h_cat,
+                node_mask,
+                source_tag=source_tag,
+                round_index=round_index,
+                stage="finalize_atom_type_logits_return",
+            )
         return h_cat
 
     def get_k_params(self, bins):
@@ -3765,6 +3807,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print(f"> Reverse SDE steps = {self.T}")
         print('SDE type:', self.sde_type)
         print('Corrector steps:', n_corrector_steps)
+        print('Geometry correction enabled:', self.geometry_correction_enabled)
+        print('Atom decode mode:', self.atom_decode_mode)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
         atom_type_state = None
@@ -3772,6 +3816,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         final_window_logits = []
         final_window_step_indices = []
         pre_correction_frac = None
+        zbl_skip_logged = False
+        geometry_correction_window_start = max(0, self.T - self.prediction_threshold_t)
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
         # --- begin of for T steps
@@ -3913,7 +3959,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             # =======================================================
             
             # 在 t 很小时加入 ZBL 排斥力
-            if i >= self.T - self.prediction_threshold_t:
+            if i >= geometry_correction_window_start:
                 # ZBL-based relaxation step
                 # zx = self.zbl_relax_step(
                 #     z, rl, ra,
@@ -3923,28 +3969,31 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 #     r_cut=0.5,   
                 # )
                 zx = z[:, :, :3]
-                if collect_pre_correction and pre_correction_frac is None:
+                if self.geometry_correction_enabled and collect_pre_correction and pre_correction_frac is None:
                     pre_correction_frac = zx.detach().clone()
-                zx_before_correction = zx.detach().clone()
-                zx = self.local_repulsion_correction(
-                        zx,
-                        cell,
-                        node_mask,
-                        d_min=0.5,
-                        margin=0.05,
-                        alpha=0.5
-                )
-                if i >= self.T - 10:
-                    self._record_local_repulsion_correction(
-                        round_index=round_index,
-                        step_index=step_index,
-                        frac_before=zx_before_correction,
-                        frac_after=zx.detach(),
-                        cell=cell,
-                        node_mask=node_mask,
-                        cutoff=0.5,
-                        lambda_sym=lambda_sym,
+                if self.geometry_correction_enabled:
+                    zx_before_correction = zx.detach().clone()
+                    zx = self.local_repulsion_correction(
+                            zx,
+                            cell,
+                            node_mask,
+                            d_min=0.5,
+                            margin=0.05,
+                            alpha=0.5
                     )
+                    if i >= self.T - 10:
+                        self._record_local_repulsion_correction(
+                            round_index=round_index,
+                            step_index=step_index,
+                            frac_before=zx_before_correction,
+                            frac_after=zx.detach(),
+                            cell=cell,
+                            node_mask=node_mask,
+                            cutoff=0.5,
+                            lambda_sym=lambda_sym,
+                        )
+                elif i == geometry_correction_window_start:
+                    print("[GeometryCorrection] disabled; skipping final-window local repulsion correction.")
                 z[:, :, :3] = zx
         # --- end of for T steps
 
@@ -3996,21 +4045,23 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             apply_repair=True,
             final_window_ensemble_logits=final_window_ensemble_logits,
             final_window_step_indices=final_window_step_indices,
+            atom_decode_mode=self.atom_decode_mode,
         )
-        self._assert_no_all_h_in_one_hot_batch(
-            h_cat,
-            node_mask,
-            source_tag="sample_score_sde",
-            round_index=round_index,
-            stage="sample_score_sde_output_one_hot",
-        )
+        if self.atom_decode_mode == "constrained_search":
+            self._assert_no_all_h_in_one_hot_batch(
+                h_cat,
+                node_mask,
+                source_tag="sample_score_sde",
+                round_index=round_index,
+                stage="sample_score_sde_output_one_hot",
+            )
 
         h_int = torch.round(h_int).long() * node_mask
 
         h = {'integer': h_int, 'categorical': h_cat}
 
         if collect_pre_correction:
-            if pre_correction_frac is None:
+            if (not self.geometry_correction_enabled) or pre_correction_frac is None:
                 pre_correction_frac = x.detach().clone()
             return x, h, rl, ra, pre_correction_frac
         return x, h, rl, ra
@@ -4055,6 +4106,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         print(f"> Reverse SDE steps = {self.T}")
         print('Corrector steps:', n_corrector_steps)
+        print('Geometry correction enabled:', self.geometry_correction_enabled)
+        print('Atom decode mode:', self.atom_decode_mode)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
         atom_type_state = None
@@ -4133,16 +4186,21 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             
             # 在 t 很小时加入 ZBL 排斥力
             if t < 0.01:
-                if collect_pre_correction and pre_correction_frac is None:
+                if self.geometry_correction_enabled and collect_pre_correction and pre_correction_frac is None:
                     pre_correction_frac = z[:, :, :3].detach().clone()
-                zx = self.zbl_relax_step(
-                    z, rl, ra,
-                    node_mask=node_mask,
-                    dt=dt,
-                    eps=2e-3,
-                    r_cut=0.5,   
-                )
-                z[:, :, :3] = zx
+                if self.geometry_correction_enabled:
+                    zx = self.zbl_relax_step(
+                        z, rl, ra,
+                        node_mask=node_mask,
+                        dt=dt,
+                        eps=2e-3,
+                        r_cut=0.5,
+                    )
+                    z[:, :, :3] = zx
+                else:
+                    if not zbl_skip_logged:
+                        print("[GeometryCorrection] disabled; skipping final-window ZBL relaxation.")
+                        zbl_skip_logged = True
 
             self._record_atom_type_state_flow(
                 source_tag="sample_score_sde_Lattice",
@@ -4189,20 +4247,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             apply_repair=False,
             final_window_ensemble_logits=final_window_ensemble_logits,
             final_window_step_indices=final_window_step_indices,
+            atom_decode_mode=self.atom_decode_mode,
         )
-        self._assert_no_all_h_in_one_hot_batch(
-            h_cat,
-            node_mask,
-            source_tag="sample_score_sde_Lattice",
-            round_index=round_index,
-            stage="sample_score_sde_Lattice_output_one_hot",
-        )
+        # sample_score_sde_Lattice keeps its legacy raw decode path because apply_repair=False.
         h_int = torch.round(h_int).long() * node_mask
 
         h = {'integer': h_int, 'categorical': h_cat}
 
         if collect_pre_correction:
-            if pre_correction_frac is None:
+            if (not self.geometry_correction_enabled) or pre_correction_frac is None:
                 pre_correction_frac = x.detach().clone()
             return x, h, pre_correction_frac
         return x, h

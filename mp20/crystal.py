@@ -32,6 +32,8 @@ def _all_h_guard_disabled_arg_env():
 
 
 def _all_h_guard_fail_fast_env():
+    if os.environ.get("MCW_ATOM_DECODE_MODE", "constrained_search") == "raw_argmax":
+        return False
     return bool(_all_h_guard_enabled_env() or _atom_debug_enabled())
 
 
