@@ -3818,6 +3818,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         pre_correction_frac = None
         zbl_skip_logged = False
         geometry_correction_window_start = max(0, self.T - self.prediction_threshold_t)
+        geometry_correction_disp_cart_sum = None
+        geometry_correction_first_pre_min = None
+        geometry_correction_last_post_min = None
+        geometry_correction_steps_applied = 0
+        geometry_correction_d_min = 0.5
+        geometry_correction_move_tol = 1e-4
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
         # --- begin of for T steps
@@ -3977,10 +3983,32 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                             zx,
                             cell,
                             node_mask,
-                            d_min=0.5,
+                            d_min=geometry_correction_d_min,
                             margin=0.05,
                             alpha=0.5
                     )
+                    if geometry_correction_disp_cart_sum is None:
+                        geometry_correction_disp_cart_sum = torch.zeros_like(zx)
+                    if geometry_correction_first_pre_min is None:
+                        geometry_correction_first_pre_min, _, _, _ = self._pbc_pair_distance_stats(
+                            zx_before_correction,
+                            cell,
+                            node_mask,
+                            cutoff=geometry_correction_d_min,
+                        )
+                        geometry_correction_first_pre_min = geometry_correction_first_pre_min.detach().clone()
+                    delta_frac = zx.detach() - zx_before_correction
+                    delta_frac = delta_frac - torch.round(delta_frac)
+                    delta_cart = self._frac_to_cart(delta_frac, cell) * node_mask
+                    geometry_correction_disp_cart_sum = geometry_correction_disp_cart_sum + delta_cart
+                    geometry_correction_last_post_min, _, _, _ = self._pbc_pair_distance_stats(
+                        zx.detach(),
+                        cell,
+                        node_mask,
+                        cutoff=geometry_correction_d_min,
+                    )
+                    geometry_correction_last_post_min = geometry_correction_last_post_min.detach().clone()
+                    geometry_correction_steps_applied += 1
                     if i >= self.T - 10:
                         self._record_local_repulsion_correction(
                             round_index=round_index,
@@ -4020,6 +4048,18 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 )
 
         print('Sampling finished.')
+
+        if self.geometry_correction_enabled and geometry_correction_disp_cart_sum is not None:
+            self._record_geometry_correction_displacement_summary(
+                round_index=round_index,
+                node_mask=node_mask,
+                displacement_cart_sum=geometry_correction_disp_cart_sum,
+                pre_min_distance=geometry_correction_first_pre_min,
+                post_min_distance=geometry_correction_last_post_min,
+                d_min=geometry_correction_d_min,
+                move_tol=geometry_correction_move_tol,
+                num_correction_steps=geometry_correction_steps_applied,
+            )
 
         x = z[:, :, :self.n_dims]
         h_int = z[:, :, -1:] if self.include_charges else torch.zeros(0, device=z.device)
@@ -4475,6 +4515,75 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     "failures": failures,
                 },
             )
+
+    def _record_geometry_correction_displacement_summary(
+        self,
+        round_index,
+        node_mask,
+        displacement_cart_sum,
+        pre_min_distance,
+        post_min_distance,
+        d_min=0.5,
+        move_tol=1e-4,
+        num_correction_steps=0,
+    ):
+        if not self.debug_atom_types:
+            return
+        valid_mask = node_mask.squeeze(-1).bool()
+        displacement = torch.linalg.norm(displacement_cart_sum, dim=-1)
+        B = displacement.size(0)
+        rows = []
+        for b in range(B):
+            vals = displacement[b][valid_mask[b]].detach().cpu()
+            moved = vals > float(move_tol)
+            moved_vals = vals[moved]
+            num_atoms = int(vals.numel())
+            num_moved = int(moved.sum().item())
+            rmsd = float(torch.sqrt(torch.mean(vals ** 2)).item()) if num_atoms else 0.0
+            row = {
+                "sample_local_index": int(b),
+                "sample_global_index": int(round_index * B + b),
+                "num_atoms": num_atoms,
+                "num_atoms_moved": num_moved,
+                "any_correction": bool(num_moved > 0),
+                "mean_displacement": float(vals.mean().item()) if num_atoms else 0.0,
+                "median_displacement": float(vals.median().item()) if num_atoms else 0.0,
+                "max_displacement": float(vals.max().item()) if num_atoms else 0.0,
+                "rmsd": rmsd,
+                "mean_displacement_moved_only": float(moved_vals.mean().item()) if num_moved else None,
+                "median_displacement_moved_only": float(moved_vals.median().item()) if num_moved else None,
+                "p95_displacement_moved_only": (
+                    float(torch.quantile(moved_vals, 0.95).item()) if num_moved else None
+                ),
+                "max_displacement_moved_only": float(moved_vals.max().item()) if num_moved else None,
+                "pre_min_distance": float(pre_min_distance[b].detach().cpu().item())
+                    if pre_min_distance is not None else None,
+                "post_min_distance": float(post_min_distance[b].detach().cpu().item())
+                    if post_min_distance is not None else None,
+                "displacements": [float(v) for v in vals.tolist()],
+                "moved_displacements": [float(v) for v in moved_vals.tolist()],
+            }
+            row["pre_contact_fail"] = (
+                row["pre_min_distance"] is not None and row["pre_min_distance"] < float(d_min)
+            )
+            row["post_contact_fail"] = (
+                row["post_min_distance"] is not None and row["post_min_distance"] < float(d_min)
+            )
+            rows.append(row)
+
+        self._write_atom_debug_line(
+            "geometry_correction_displacement.jsonl",
+            {
+                "event": "geometry_correction_displacement_batch",
+                "source_tag": "sample_score_sde",
+                "round_index": int(round_index),
+                "d_min": float(d_min),
+                "move_tol": float(move_tol),
+                "num_correction_steps": int(num_correction_steps),
+                "lattice_changed_by_correction": False,
+                "samples": rows,
+            },
+        )
 
     
     def debug_zbl_force_direction(self, dist, dx, F_pair, close_mask):

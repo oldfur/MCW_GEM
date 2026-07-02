@@ -294,21 +294,21 @@ mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_condL_epoch220_1024 && cd ~/data1
 `sample_batch_size=32`、launcher `--num-rounds 32`，所以每组总样本数为 `32 * 32 = 1024`；GPU 4 和 GPU 5 各分配 16 rounds / 512 个样本。下面命令会串行跑四组 ablation，每组内部双卡并行，避免四组同时占用同两张卡。
 
 根据服务器成功运行 CLI 推断：
-- 运行目录 / 输出根目录：`/home/mcw/data1/mcw/MCW_GEM`
-- 代码目录：`/home/mcw/mcw/MCW_GEM`
-- MP-20 数据目录：`/home/mcw/mcw/MCW_GEM/mp20`
-- MP-20 raw CSV/CIF 目录：`/home/mcw/mcw/MCW_GEM/mp20/raw`
-- 条件 lattice checkpoint：`/home/mcw/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy`
-- LF_wrap checkpoint：`/home/mcw/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy`
+- 运行目录 / 输出根目录：`~/data1/mcw/MCW_GEM`
+- 代码目录：`~/mcw/MCW_GEM`
+- MP-20 数据目录：`~/mcw/MCW_GEM/mp20`
+- MP-20 raw CSV/CIF 目录：`~/mcw/MCW_GEM/mp20/raw`
+- 条件 lattice checkpoint：`~/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy`
+- LF_wrap checkpoint：`~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy`
 
 输出目录：
-- `/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/raw_geometry_raw_logits`
-- `/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/raw_geometry_constrained_decode`
-- `/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/corrected_geometry_raw_logits`
-- `/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/full_pipeline`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/raw_geometry_raw_logits`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/raw_geometry_constrained_decode`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/corrected_geometry_raw_logits`
+- `~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/full_pipeline`
 
 ```
-mkdir -p /home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics && cd /home/mcw/data1/mcw/MCW_GEM && nohup env PYTHON='conda run --no-capture-output -n mpgem python' GPUS=4,5 NUM_SAMPLES=1024 BATCH_SIZE=32 SEED=2026 OUT_ROOT=/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics CHECKPOINT=/home/mcw/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy LATTICE_CHECKPOINT=/home/mcw/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy CONFIG=/home/mcw/mcw/MCW_GEM/configs/lattice_train_cond_n.yaml DATADIR=/home/mcw/mcw/MCW_GEM/mp20 DATASET_FOLDER_PATH=/home/mcw/mcw/MCW_GEM/mp20/raw CONDITION_LATTICE_ON_N=True LAMBDA_SYM=0.0 DEBUG_ATOM_TYPES=True bash /home/mcw/mcw/MCW_GEM/scripts/run_component_ablation_mp20.sh > /home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/component_ablation_1024_gpus45.log 2>&1 &
+mkdir -p ~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics && cd ~/data1/mcw/MCW_GEM && nohup env PYTHON='conda run --no-capture-output -n mpgem python' GPUS=4,5 NUM_SAMPLES=1024 BATCH_SIZE=32 SEED=2026 OUT_ROOT=~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics CHECKPOINT=~/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy LATTICE_CHECKPOINT=~/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy CONFIG=~/mcw/MCW_GEM/configs/lattice_train_cond_n.yaml DATADIR=~/mcw/MCW_GEM/mp20 DATASET_FOLDER_PATH=~/mcw/MCW_GEM/mp20/raw CONDITION_LATTICE_ON_N=True LAMBDA_SYM=0.0 DEBUG_ATOM_TYPES=True bash ~/mcw/MCW_GEM/scripts/run_component_ablation_mp20.sh > ~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics/component_ablation_1024_gpus45.log 2>&1 &
 ```
 
 说明：
