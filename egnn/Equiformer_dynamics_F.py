@@ -99,6 +99,15 @@ class StableTimeMLP(nn.Module):
         return x.clamp(-10, 10)
 
 
+def _match_module_float(module, tensor):
+    if tensor is None or not torch.is_floating_point(tensor):
+        return tensor
+    ref = next(module.parameters(), None)
+    if ref is None:
+        return tensor
+    return tensor.to(device=ref.device, dtype=ref.dtype)
+
+
 class LatticeDecoder(nn.Module):
     """
     将 9D 晶格矩阵 -> 6D 参数 (3长度 + 3角度)
@@ -732,6 +741,12 @@ class EquiformerV2(BaseModel):
                 node_feats=None, z=None, lat_mat=None, batch=None,
                 previous_atom_logits=None, unknown_mask=None):
         # now use cart pos
+        pos = _match_module_float(self, pos)
+        lengths = _match_module_float(self, lengths)
+        angles = _match_module_float(self, angles)
+        lat_mat = _match_module_float(self, lat_mat)
+        if node_feats:
+            node_feats = [_match_module_float(self, feat) for feat in node_feats]
         self.batch_size = len(natoms)
         self.dtype = pos.dtype
 
@@ -1261,16 +1276,18 @@ class BaseDynamics(nn.Module):
         node_feats = []
 
         if z is not None:
+            z = _match_module_float(self, z)
             node_feats.append(z.repeat_interleave(natoms, dim=0))
 
         if t is not None:
             if self.condition_time == "embed":
                 assert len(t.shape) == 1
                 time_emb = get_timestep_embedding(t, self.time_dim)
+                time_emb = _match_module_float(self, time_emb)
                 time_emb = self.fc_time(time_emb)
 
             elif self.condition_time == "constant":
-                time_emb = t
+                time_emb = _match_module_float(self, t)
             elif self.condition_time == "neglect":
                 time_emb = None
             else:
@@ -1279,14 +1296,17 @@ class BaseDynamics(nn.Module):
             node_feats.append(time_emb)
 
         if self.embed_noisy_types:
+            noisy_atom_types = _match_module_float(self, noisy_atom_types)
             node_feats.append(self.noisy_atom_emb(noisy_atom_types))
 
         if self.embed_lattices:
+            noisy_lattices = _match_module_float(self, noisy_lattices)
             lattice_feats = noisy_lattices.view(-1, 9)
             lattice_feats = self.lattice_emb(lattice_feats)
             node_feats.append(lattice_feats.repeat_interleave(natoms, dim=0))
 
         if cond_feat is not None:
+            cond_feat = _match_module_float(self, cond_feat)
             node_feats.append(cond_feat)
 
         return node_feats
@@ -1478,7 +1498,14 @@ class EquiformerV2DynamicsF(BaseDynamics):
                 lengths=None, angles=None, z=None, 
                 cond_feat=None, batch=None, previous_atom_logits=None):
         # t: [B,1]
-        t = t.squeeze(-1) # [B]
+        t = _match_module_float(self, t.squeeze(-1)) # [B]
+        pos = _match_module_float(self, pos)
+        lattices = _match_module_float(self, lattices)
+        noisy_atom_types = _match_module_float(self, noisy_atom_types)
+        lengths = _match_module_float(self, lengths)
+        angles = _match_module_float(self, angles)
+        z = _match_module_float(self, z)
+        cond_feat = _match_module_float(self, cond_feat)
         
         if batch is None:
             batch = torch.arange(
