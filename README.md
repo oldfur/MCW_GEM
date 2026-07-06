@@ -264,6 +264,201 @@ mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260
   - `save_dir/atom_type_debug/geometry_repulsion_correction.jsonl`
   - `save_dir/atom_type_debug/geometry_repulsion_failures.jsonl`
 
+### 服务器训练 / 采样 diffusion_LF_wrap lattice-aware metric
+
+默认 lattice-aware metric 使用方案 B：
+
+- `coord_noise_metric=lattice`
+- `coord_score_parameterization=sigma_precond_score_f`
+- 训练 target 为 `sigma * G^-1 score_f`
+- 采样时 `model_output / sigma` 已经是 preconditioned score，不再额外 apply `G^-1`
+
+注意：`main_LF_train.py` / `main_LF_sample.py` 当前不直接加载 `configs/*.yaml`，所以实际生效必须在 CLI 中显式传 `--coord-noise-metric ... --coord-score-parameterization ...`。`--sampling-config-path` 主要用于记录 run config。
+
+公共路径：
+```
+CODE_DIR=~/mcw/MCW_GEM
+RUN_ROOT=~/data1/mcw/MCW_GEM
+LATTICE_CKPT=$RUN_ROOT/outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy
+
+mkdir -p $RUN_ROOT/outputs $RUN_ROOT/mp20/analyze_test
+cd $RUN_ROOT
+```
+
+如果代码实际在 `/home/mcw/MCW_GEM`，把 `CODE_DIR=~/mcw/MCW_GEM` 改成：
+```
+CODE_DIR=/home/mcw/MCW_GEM
+```
+
+#### 方案 B，训练 lattice-aware metric 默认版本
+
+```
+CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u $CODE_DIR/main_LF_train.py \
+  --device cuda --dp True \
+  --exp_name train_LF_wrap_lattice_metric_precond_20260706 \
+  --wandb_usr maochenwei-ustc \
+  --model DGAP \
+  --atom_type_pred 1 \
+  --include_charges False \
+  --lr 1e-4 \
+  --n_epochs 1000 \
+  --batch_size 128 \
+  --test_epochs 10 \
+  --visulaize_epoch 10 \
+  --save_epoch 50 \
+  --n_report_steps 16 \
+  --visualize_every_batch 20000 \
+  --n_samples 20 \
+  --sample_batch_size 32 \
+  --diffusion_steps 1000 \
+  --lambda_l 1 \
+  --lambda_a 1 \
+  --lambda_type 0.1 \
+  --n_corrector_steps 1 \
+  --online 0 \
+  --num_workers 0 \
+  --compute_novelty 1 \
+  --compute_novelty_epoch 150 \
+  --probabilistic_model diffusion_LF_wrap \
+  --sde_type ve \
+  --coord-noise-metric lattice \
+  --coord-score-parameterization sigma_precond_score_f \
+  --coord-metric-debug False \
+  --datadir $CODE_DIR/mp20 \
+  --dataset_folder_path $CODE_DIR/mp20/raw \
+  --pretrained_Lattice_model $LATTICE_CKPT \
+  --save_dir $RUN_ROOT/mp20/analyze_test/train_LF_wrap_lattice_metric_precond_20260706 \
+  > $RUN_ROOT/outputs/train_LF_wrap_lattice_metric_precond_20260706.log 2>&1 &
+```
+
+训练 checkpoint 默认保存到：
+```
+$RUN_ROOT/outputs/train_LF_wrap_lattice_metric_precond_20260706/diffusion_LF_wrap/
+```
+
+#### 方案 B，采样匹配 checkpoint
+
+```
+CKPT=$RUN_ROOT/outputs/train_LF_wrap_lattice_metric_precond_20260706/diffusion_LF_wrap/generative_model_ema_epoch100.npy
+SAMPLE_DIR=$RUN_ROOT/outputs/sample_LF_wrap_lattice_metric_precond_epoch100
+
+mkdir -p $SAMPLE_DIR
+cd $RUN_ROOT
+
+CUDA_VISIBLE_DEVICES=2 python -u $CODE_DIR/main_LF_sample.py \
+  --device cuda --dp True \
+  --num_workers 0 \
+  --exp_name sample_LF_wrap_lattice_metric_precond_epoch100 \
+  --wandb_usr maochenwei-ustc \
+  --no_wandb \
+  --model DGAP \
+  --atom_type_pred 1 \
+  --lambda_l 1.0 \
+  --lambda_a 1.0 \
+  --lambda_type 0.1 \
+  --n_corrector_steps 1 \
+  --sample_seed 2026 \
+  --num_rounds 16 \
+  --include_charges False \
+  --compute_novelty 0 \
+  --compute_novelty_epoch 0 \
+  --visualize True \
+  --sample_batch_size 32 \
+  --probabilistic_model diffusion_LF_wrap \
+  --sde_type ve \
+  --coord-noise-metric lattice \
+  --coord-score-parameterization sigma_precond_score_f \
+  --coord-metric-debug False \
+  --sampling-config-path $CODE_DIR/configs/sample_lattice_metric.yaml \
+  --datadir $CODE_DIR/mp20 \
+  --dataset_folder_path $CODE_DIR/mp20/raw \
+  --pretrained_Lattice_model $LATTICE_CKPT \
+  --pretrained_model $CKPT \
+  --save_dir $SAMPLE_DIR \
+  --debug-atom-types True \
+  --debug-atom-dir $SAMPLE_DIR/atom_type_debug
+```
+
+#### 方案 A ablation，raw fractional score
+
+方案 A 显式使用：
+
+- `coord_score_parameterization=sigma_score_f`
+- 训练 target 为 `sigma * score_f`
+- 采样时会计算 `G^-1(model_output / sigma)`
+
+训练：
+```
+CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u $CODE_DIR/main_LF_train.py \
+  --device cuda --dp True \
+  --exp_name train_LF_wrap_lattice_metric_rawscore_20260706 \
+  --wandb_usr maochenwei-ustc \
+  --model DGAP \
+  --atom_type_pred 1 \
+  --include_charges False \
+  --lr 1e-4 \
+  --n_epochs 1000 \
+  --batch_size 128 \
+  --test_epochs 10 \
+  --visulaize_epoch 10 \
+  --save_epoch 50 \
+  --n_report_steps 16 \
+  --visualize_every_batch 20000 \
+  --n_samples 20 \
+  --sample_batch_size 32 \
+  --diffusion_steps 1000 \
+  --lambda_l 1 \
+  --lambda_a 1 \
+  --lambda_type 0.1 \
+  --n_corrector_steps 1 \
+  --online 0 \
+  --num_workers 0 \
+  --probabilistic_model diffusion_LF_wrap \
+  --sde_type ve \
+  --coord-noise-metric lattice \
+  --coord-score-parameterization sigma_score_f \
+  --datadir $CODE_DIR/mp20 \
+  --dataset_folder_path $CODE_DIR/mp20/raw \
+  --pretrained_Lattice_model $LATTICE_CKPT \
+  --save_dir $RUN_ROOT/mp20/analyze_test/train_LF_wrap_lattice_metric_rawscore_20260706 \
+  > $RUN_ROOT/outputs/train_LF_wrap_lattice_metric_rawscore_20260706.log 2>&1 &
+```
+
+采样：
+```
+CKPT=$RUN_ROOT/outputs/train_LF_wrap_lattice_metric_rawscore_20260706/diffusion_LF_wrap/generative_model_ema_epoch100.npy
+SAMPLE_DIR=$RUN_ROOT/outputs/sample_LF_wrap_lattice_metric_rawscore_epoch100
+
+CUDA_VISIBLE_DEVICES=2 python -u $CODE_DIR/main_LF_sample.py \
+  --device cuda --dp True \
+  --num_workers 0 \
+  --exp_name sample_LF_wrap_lattice_metric_rawscore_epoch100 \
+  --wandb_usr maochenwei-ustc \
+  --no_wandb \
+  --model DGAP \
+  --atom_type_pred 1 \
+  --lambda_l 1.0 \
+  --lambda_a 1.0 \
+  --lambda_type 0.1 \
+  --n_corrector_steps 1 \
+  --sample_seed 2026 \
+  --num_rounds 16 \
+  --include_charges False \
+  --compute_novelty 0 \
+  --visualize True \
+  --sample_batch_size 32 \
+  --probabilistic_model diffusion_LF_wrap \
+  --sde_type ve \
+  --coord-noise-metric lattice \
+  --coord-score-parameterization sigma_score_f \
+  --sampling-config-path $CODE_DIR/configs/sample_lattice_metric_rawscore.yaml \
+  --datadir $CODE_DIR/mp20 \
+  --dataset_folder_path $CODE_DIR/mp20/raw \
+  --pretrained_Lattice_model $LATTICE_CKPT \
+  --pretrained_model $CKPT \
+  --save_dir $SAMPLE_DIR
+```
+
 ### 服务器多卡采样 diffusion_LF_wrap（按 num_rounds 分片，不改采样逻辑）
 
 - 原则：每张卡启动一个独立 `main_LF_sample.py` 进程，自动分配 `num_rounds`，每个 worker 写到 `save_dir/worker_XX`。

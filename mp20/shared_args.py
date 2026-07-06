@@ -254,6 +254,17 @@ def setup_shared_args(parser):
                         help='Top-k candidate width for constrained final atom composition search.')
     parser.add_argument('--atom-type-max-replace-atoms', type=int, default=2,
                         help='Maximum high-entropy sites replaced during constrained final atom composition search.')
+    parser.add_argument('--coord-noise-metric', dest='coord_noise_metric', type=str,
+                        default='fractional', choices=('fractional', 'lattice'),
+                        help='Coordinate diffusion metric: legacy fractional or lattice-aware Cartesian metric.')
+    parser.add_argument('--lattice-aware-metric', action=BoolArg, default=False,
+                        help='Boolean alias for --coord-noise-metric lattice. Defaults to legacy fractional.')
+    parser.add_argument('--coord-score-parameterization', dest='coord_score_parameterization',
+                        type=str, default='auto',
+                        choices=('auto', 'sigma_score_f', 'sigma_precond_score_f'),
+                        help='Coordinate score target: auto, raw sigma*score_f, or sigma*G^-1*score_f for lattice metric.')
+    parser.add_argument('--coord-metric-debug', action=BoolArg, default=False,
+                        help='Print limited diagnostics for the lattice-aware coordinate metric branch.')
 
     # Conditional lattice p(L | n). Defaults preserve the original p(L) path.
     parser.add_argument('--condition-lattice-on-n', action=BoolArg, default=False,

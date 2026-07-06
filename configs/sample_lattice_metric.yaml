@@ -1,0 +1,9 @@
+# Minimal LF_wrap sampling example for lattice-aware coordinate metric.
+# Default lattice metric uses scheme B: model_output / sigma is already G^-1 score_f.
+# Some sampling entrypoints record config paths but do not load yaml directly;
+# pass --coord-noise-metric lattice on those CLIs.
+probabilistic_model: diffusion_LF_wrap
+coord_noise_metric: lattice
+coord_score_parameterization: sigma_precond_score_f
+coord_metric_debug: false
+sde_type: ve

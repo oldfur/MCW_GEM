@@ -1,0 +1,7 @@
+# Lattice-aware metric ablation, scheme A: apply G^-1 during sampling.
+probabilistic_model: diffusion_LF_wrap
+coord_noise_metric: lattice
+coord_score_parameterization: sigma_score_f
+coord_metric_debug: false
+sde_type: ve
+

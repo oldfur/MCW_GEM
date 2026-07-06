@@ -1,0 +1,8 @@
+# Lattice-aware metric ablation, scheme A: train sigma * score_f.
+probabilistic_model: diffusion_LF_wrap
+coord_noise_metric: lattice
+coord_score_parameterization: sigma_score_f
+coord_metric_debug: false
+sde_type: ve
+frac_coords_mode: 1
+

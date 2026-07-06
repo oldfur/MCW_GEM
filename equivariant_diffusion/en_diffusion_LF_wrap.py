@@ -555,6 +555,155 @@ def get_pbc_offsets(pbc: torch.Tensor, max_offset_integer: int = 3) -> torch.Ten
     return pbc_offset_per_molecule
 
 
+def get_lattice_per_node(lattice: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+    """Map graph-level lattice matrices [B,3,3] to node-level [N,3,3]."""
+    if lattice.dim() != 3 or lattice.shape[-2:] != (3, 3):
+        raise ValueError(f"lattice must have shape [B,3,3], got {tuple(lattice.shape)}")
+    batch = batch.to(device=lattice.device, dtype=torch.long).reshape(-1)
+    return lattice[batch]
+
+
+def _broadcast_sigma_like(sigma, target: torch.Tensor) -> torch.Tensor:
+    if not torch.is_tensor(sigma):
+        sigma = torch.as_tensor(sigma, device=target.device, dtype=target.dtype)
+    else:
+        sigma = sigma.to(device=target.device, dtype=target.dtype)
+    while sigma.dim() > target.dim() and sigma.shape[-1] == 1:
+        sigma = sigma.squeeze(-1)
+    while sigma.dim() < target.dim():
+        sigma = sigma.unsqueeze(-1)
+    return sigma
+
+
+def _broadcast_lattice_to_vec(lattice_node: torch.Tensor, vec_frac: torch.Tensor) -> torch.Tensor:
+    """Broadcast graph/node lattice matrices to vec_frac leading dimensions."""
+    if lattice_node.shape[-2:] != (3, 3):
+        raise ValueError(f"lattice_node must end with [3,3], got {tuple(lattice_node.shape)}")
+    lattice_node = lattice_node.to(device=vec_frac.device, dtype=vec_frac.dtype)
+
+    if vec_frac.dim() == 2:
+        n = vec_frac.shape[0]
+        if lattice_node.dim() != 3:
+            raise ValueError(
+                f"node-level vectors require lattice [N,3,3], got {tuple(lattice_node.shape)}"
+            )
+        if lattice_node.shape[0] == 1 and n != 1:
+            lattice_node = lattice_node.expand(n, -1, -1)
+        elif lattice_node.shape[0] != n:
+            raise ValueError(
+                f"lattice/vector node count mismatch: {lattice_node.shape[0]} vs {n}"
+            )
+        return lattice_node
+
+    if vec_frac.dim() == 3:
+        b, n = vec_frac.shape[:2]
+        if lattice_node.dim() == 3:
+            if lattice_node.shape[0] == b:
+                return lattice_node[:, None, :, :].expand(b, n, 3, 3)
+            if lattice_node.shape[0] == b * n:
+                return lattice_node.reshape(b, n, 3, 3)
+            if lattice_node.shape[0] == 1:
+                return lattice_node.view(1, 1, 3, 3).expand(b, n, 3, 3)
+        elif lattice_node.dim() == 4:
+            if lattice_node.shape[0] == b and lattice_node.shape[1] in (1, n):
+                return lattice_node.expand(b, n, 3, 3)
+        raise ValueError(
+            f"cannot broadcast lattice {tuple(lattice_node.shape)} to vectors {tuple(vec_frac.shape)}"
+        )
+
+    raise ValueError(f"vec_frac must be [N,3] or [B,N,3], got {tuple(vec_frac.shape)}")
+
+
+def sample_lattice_metric_noise(lattice_node: torch.Tensor, sigma=1.0) -> torch.Tensor:
+    """
+    Sample fractional noise with Cartesian-isotropic covariance.
+
+    With cart = frac @ L.T, solving L delta_frac = eps_cart gives
+    delta_frac ~ N(0, G^{-1}), G = L.T @ L.
+    """
+    if lattice_node.shape[-2:] != (3, 3):
+        raise ValueError(f"lattice_node must end with [3,3], got {tuple(lattice_node.shape)}")
+    eps_cart = torch.randn(
+        (*lattice_node.shape[:-2], 3),
+        device=lattice_node.device,
+        dtype=lattice_node.dtype,
+    )
+    try:
+        delta_frac = torch.linalg.solve(lattice_node, eps_cart.unsqueeze(-1)).squeeze(-1)
+    except RuntimeError:
+        eye = torch.eye(3, device=lattice_node.device, dtype=lattice_node.dtype)
+        jittered_lattice = lattice_node + 1e-8 * eye
+        print("[CoordMetric] warning: lattice solve failed; retrying with 1e-8 jitter.")
+        delta_frac = torch.linalg.solve(jittered_lattice, eps_cart.unsqueeze(-1)).squeeze(-1)
+    return delta_frac * _broadcast_sigma_like(sigma, delta_frac)
+
+
+def apply_metric_G(vec_frac: torch.Tensor, lattice_node: torch.Tensor) -> torch.Tensor:
+    lattice_node = _broadcast_lattice_to_vec(lattice_node, vec_frac)
+    metric = lattice_node.transpose(-1, -2) @ lattice_node
+    return torch.matmul(metric, vec_frac.unsqueeze(-1)).squeeze(-1)
+
+
+def apply_metric_G_inv(vec_frac: torch.Tensor, lattice_node: torch.Tensor) -> torch.Tensor:
+    lattice_node = _broadcast_lattice_to_vec(lattice_node, vec_frac)
+    metric = lattice_node.transpose(-1, -2) @ lattice_node
+    rhs = vec_frac.unsqueeze(-1)
+    try:
+        return torch.linalg.solve(metric, rhs).squeeze(-1)
+    except RuntimeError:
+        eye = torch.eye(3, device=metric.device, dtype=metric.dtype)
+        print("[CoordMetric] warning: metric solve failed; retrying with 1e-8 jitter.")
+        return torch.linalg.solve(metric + 1e-8 * eye, rhs).squeeze(-1)
+
+
+def _make_wrap_shifts(wrap_shifts, device, dtype) -> torch.Tensor:
+    if wrap_shifts is None:
+        wrap_shifts = 3
+    if isinstance(wrap_shifts, int):
+        offset_range = torch.arange(-wrap_shifts, wrap_shifts + 1, device=device, dtype=dtype)
+        meshgrid = torch.stack(
+            torch.meshgrid(offset_range, offset_range, offset_range, indexing="xy"), dim=-1
+        )
+        return meshgrid.reshape(-1, 3)
+    return wrap_shifts.to(device=device, dtype=dtype)
+
+
+def lattice_metric_wrapped_score(
+    x_t: torch.Tensor,
+    x_0: torch.Tensor,
+    lattice_node: torch.Tensor,
+    sigma,
+    wrap_shifts=None,
+    node_mask: torch.Tensor = None,
+) -> torch.Tensor:
+    """Wrapped Gaussian score in fractional coordinates under G = L.T @ L."""
+    lattice_node = _broadcast_lattice_to_vec(lattice_node, x_t)
+    metric = lattice_node.transpose(-1, -2) @ lattice_node
+    shifts = _make_wrap_shifts(wrap_shifts, x_t.device, x_t.dtype)
+
+    if shifts.dim() == 2:
+        view_shape = (1,) * (x_t.dim() - 1) + shifts.shape
+        shifts = shifts.view(view_shape)
+    elif shifts.dim() == 3 and x_t.dim() == 3:
+        shifts = shifts[:, None, :, :]
+    else:
+        raise ValueError(f"wrap_shifts must be [K,3] or [B,K,3], got {tuple(shifts.shape)}")
+
+    diffs_k = x_t.unsqueeze(-2) - x_0.unsqueeze(-2) + shifts
+    metric_diffs_k = torch.matmul(metric.unsqueeze(-3), diffs_k.unsqueeze(-1)).squeeze(-1)
+    maha_k = (diffs_k * metric_diffs_k).sum(dim=-1)
+
+    sigma_maha = torch.clamp(_broadcast_sigma_like(sigma, maha_k), min=1e-12)
+    logw_k = -maha_k / (2.0 * sigma_maha.pow(2))
+    weights = torch.softmax(logw_k, dim=-1)
+
+    sigma_score = torch.clamp(_broadcast_sigma_like(sigma, x_t), min=1e-12)
+    score = -(weights.unsqueeze(-1) * metric_diffs_k).sum(dim=-2) / sigma_score.pow(2)
+    if node_mask is not None:
+        score = score * node_mask.to(device=score.device, dtype=score.dtype)
+    return score
+
+
 def lattice_volume(lengths, angles):
     # lengths: [B,3], angles: [B,3] in radians
     angles = torch.deg2rad(angles)  # 转为弧度
@@ -839,6 +988,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             atom_decode_mode="constrained_search",
             atom_type_repair_topk=DEFAULT_ATOM_TYPE_REPAIR_TOPK,
             atom_type_max_replace_atoms=2,
+            coord_noise_metric="fractional",
+            lattice_aware_metric=False,
+            coord_score_parameterization="auto",
+            coord_metric_debug=False,
             **kwargs):
         super().__init__()
         self.property_pred = property_pred
@@ -854,6 +1007,53 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # sde type
         self.sde_type = sde_type
         print("SDE type: ", sde_type)
+        if lattice_aware_metric is None:
+            lattice_aware_metric = kwargs.get("lattice_aware_metric", False)
+        if coord_noise_metric is None:
+            coord_noise_metric = "fractional"
+        if bool(lattice_aware_metric) and str(coord_noise_metric).lower() == "fractional":
+            coord_noise_metric = "lattice"
+        coord_noise_metric = str(coord_noise_metric or "fractional").lower()
+        if coord_noise_metric not in {"fractional", "lattice"}:
+            raise ValueError(
+                "coord_noise_metric must be 'fractional' or 'lattice', "
+                f"got {coord_noise_metric!r}"
+            )
+        raw_coord_score_parameterization = (
+            coord_score_parameterization
+            if coord_score_parameterization is not None
+            else kwargs.get("coord_score_parameterization", "auto")
+        )
+        raw_coord_score_parameterization = str(raw_coord_score_parameterization or "auto").lower()
+        valid_coord_score_parameterizations = {
+            "auto",
+            "sigma_score_f",
+            "sigma_precond_score_f",
+        }
+        if raw_coord_score_parameterization not in valid_coord_score_parameterizations:
+            raise ValueError(
+                "coord_score_parameterization must be one of "
+                f"{sorted(valid_coord_score_parameterizations)}, "
+                f"got {raw_coord_score_parameterization!r}"
+            )
+        if raw_coord_score_parameterization == "auto":
+            if coord_noise_metric == "lattice":
+                effective_coord_score_parameterization = "sigma_precond_score_f"
+            else:
+                effective_coord_score_parameterization = "sigma_score_f"
+        else:
+            effective_coord_score_parameterization = raw_coord_score_parameterization
+        self.coord_noise_metric = coord_noise_metric
+        self.raw_coord_score_parameterization = raw_coord_score_parameterization
+        self.coord_score_parameterization = effective_coord_score_parameterization
+        self.coord_metric_debug = (
+            bool(coord_metric_debug)
+            or bool(kwargs.get("coord_metric_debug", False))
+            or os.environ.get("DEBUG_COORD_METRIC", "0") == "1"
+        )
+        self._coord_metric_diag_count = 0
+        print("coord_noise_metric: ", self.coord_noise_metric)
+        print("coord_score_parameterization: ", self.coord_score_parameterization)
 
         # bfn schedule
         self.bfn_schedule = bfn_schedule
@@ -1038,6 +1238,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     "all_h_guard_enabled": bool(self.all_h_guard_enabled),
                     "geometry_correction_enabled": bool(self.geometry_correction_enabled),
                     "atom_decode_mode": self.atom_decode_mode,
+                    "coord_noise_metric": self.coord_noise_metric,
+                    "raw_coord_score_parameterization": self.raw_coord_score_parameterization,
+                    "coord_score_parameterization": self.coord_score_parameterization,
                     "atom_type_repair_topk": int(self.atom_type_repair_topk),
                     "atom_type_max_replace_atoms": int(self.atom_type_max_replace_atoms),
                     "all_h_guard_topk": int(self.all_h_guard_topk),
@@ -1091,6 +1294,164 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             "nan_count": int(torch.isnan(tensor).sum().item()),
             "inf_count": int(torch.isinf(tensor).sum().item()),
         }
+
+    def _using_lattice_metric(self):
+        return self.coord_noise_metric == "lattice"
+
+    def _lattice_for_nodes(self, lattice, x):
+        return _broadcast_lattice_to_vec(lattice, x)
+
+    def _metric_noise_like(self, x, lattice, sigma=1.0, node_mask=None):
+        lattice_node = self._lattice_for_nodes(lattice, x)
+        noise = sample_lattice_metric_noise(lattice_node, sigma)
+        if node_mask is not None:
+            noise = noise * node_mask.to(device=noise.device, dtype=noise.dtype)
+        return noise
+
+    def _precondition_coord_score(self, score, lattice, node_mask=None):
+        precond_score = apply_metric_G_inv(score, lattice)
+        if node_mask is not None:
+            precond_score = precond_score * node_mask.to(
+                device=precond_score.device,
+                dtype=precond_score.dtype,
+            )
+        return precond_score
+
+    def _lattice_metric_training_target(self, score_f, sigma, lattice, node_mask=None):
+        if self.coord_score_parameterization == "sigma_precond_score_f":
+            target_score = self._precondition_coord_score(score_f, lattice, node_mask)
+            used_preconditioned_target = True
+        elif self.coord_score_parameterization == "sigma_score_f":
+            target_score = score_f
+            used_preconditioned_target = False
+        else:
+            raise ValueError(
+                f"Unsupported coord_score_parameterization={self.coord_score_parameterization!r}"
+            )
+        target = target_score * sigma
+        if node_mask is not None:
+            target = target * node_mask.to(device=target.device, dtype=target.dtype)
+        return target, target_score, used_preconditioned_target
+
+    def _coord_model_output_to_lattice_reverse_score(
+        self,
+        model_output_over_sigma,
+        lattice,
+        node_mask=None,
+    ):
+        if self.coord_score_parameterization == "sigma_precond_score_f":
+            preconditioned_score = model_output_over_sigma
+            skipped_sampling_G_inv = True
+        elif self.coord_score_parameterization == "sigma_score_f":
+            preconditioned_score = self._precondition_coord_score(
+                model_output_over_sigma, lattice, node_mask
+            )
+            skipped_sampling_G_inv = False
+        else:
+            raise ValueError(
+                f"Unsupported coord_score_parameterization={self.coord_score_parameterization!r}"
+            )
+        if node_mask is not None:
+            preconditioned_score = preconditioned_score * node_mask.to(
+                device=preconditioned_score.device,
+                dtype=preconditioned_score.dtype,
+            )
+        return preconditioned_score, skipped_sampling_G_inv
+
+    def _frac_delta_to_cart(self, delta_frac, lattice):
+        lattice_node = self._lattice_for_nodes(lattice, delta_frac)
+        return torch.matmul(
+            delta_frac.unsqueeze(-2),
+            lattice_node.transpose(-1, -2),
+        ).squeeze(-2)
+
+    def _maybe_log_coord_metric_diagnostics(
+        self,
+        stage,
+        lattice,
+        node_mask=None,
+        delta_frac=None,
+        score=None,
+        precond_score=None,
+        raw_output_over_sigma=None,
+        used_preconditioned_target=None,
+        skipped_sampling_G_inv=None,
+    ):
+        if not self.coord_metric_debug or self._coord_metric_diag_count >= 5:
+            return
+        with torch.no_grad():
+            payload = {
+                "event": "coord_metric_diagnostics",
+                "stage": stage,
+                "coord_noise_metric": self.coord_noise_metric,
+                "raw_coord_score_parameterization": self.raw_coord_score_parameterization,
+                "effective_coord_score_parameterization": self.coord_score_parameterization,
+                "using_lattice_metric": bool(self._using_lattice_metric()),
+            }
+            if used_preconditioned_target is not None:
+                payload["using_preconditioned_target"] = bool(used_preconditioned_target)
+            if skipped_sampling_G_inv is not None:
+                payload["skipped_sampling_G_inv"] = bool(skipped_sampling_G_inv)
+            try:
+                cond = torch.linalg.cond(lattice.detach().float())
+                payload["lattice_cond_median"] = float(cond.median().item())
+                payload["lattice_cond_max"] = float(cond.max().item())
+            except RuntimeError as exc:
+                payload["lattice_cond_error"] = str(exc)
+
+            finite_ok = True
+            if delta_frac is not None:
+                masked_delta = delta_frac
+                if node_mask is not None:
+                    masked_delta = masked_delta * node_mask.to(
+                        device=masked_delta.device, dtype=masked_delta.dtype
+                    )
+                delta_norm = masked_delta.detach().norm(dim=-1)
+                cart_norm = self._frac_delta_to_cart(masked_delta.detach(), lattice).norm(dim=-1)
+                valid = torch.isfinite(delta_norm)
+                if node_mask is not None:
+                    valid = valid & node_mask.squeeze(-1).bool()
+                if valid.any():
+                    payload["delta_frac_norm_mean"] = float(delta_norm[valid].mean().item())
+                    payload["delta_frac_norm_median"] = float(delta_norm[valid].median().item())
+                    payload["delta_cart_norm_mean"] = float(cart_norm[valid].mean().item())
+                    payload["delta_cart_norm_median"] = float(cart_norm[valid].median().item())
+                finite_ok = finite_ok and bool(torch.isfinite(masked_delta).all().item())
+
+            if score is not None:
+                score_norm = score.detach().norm(dim=-1)
+                valid = torch.isfinite(score_norm)
+                if node_mask is not None:
+                    valid = valid & node_mask.squeeze(-1).bool()
+                if valid.any():
+                    payload["score_norm_mean"] = float(score_norm[valid].mean().item())
+                    payload["score_norm_median"] = float(score_norm[valid].median().item())
+                finite_ok = finite_ok and bool(torch.isfinite(score).all().item())
+
+            if raw_output_over_sigma is not None:
+                raw_norm = raw_output_over_sigma.detach().norm(dim=-1)
+                valid = torch.isfinite(raw_norm)
+                if node_mask is not None:
+                    valid = valid & node_mask.squeeze(-1).bool()
+                if valid.any():
+                    payload["raw_output_over_sigma_norm_mean"] = float(raw_norm[valid].mean().item())
+                    payload["raw_output_over_sigma_norm_median"] = float(raw_norm[valid].median().item())
+                finite_ok = finite_ok and bool(torch.isfinite(raw_output_over_sigma).all().item())
+
+            if precond_score is not None:
+                precond_norm = precond_score.detach().norm(dim=-1)
+                valid = torch.isfinite(precond_norm)
+                if node_mask is not None:
+                    valid = valid & node_mask.squeeze(-1).bool()
+                if valid.any():
+                    payload["precond_score_norm_mean"] = float(precond_norm[valid].mean().item())
+                    payload["precond_score_norm_median"] = float(precond_norm[valid].median().item())
+                finite_ok = finite_ok and bool(torch.isfinite(precond_score).all().item())
+
+            payload["finite"] = bool(finite_ok)
+        self._coord_metric_diag_count += 1
+        print("[CoordMetric] " + json.dumps(payload, ensure_ascii=True))
+        self._write_atom_debug_line("coord_metric_diagnostics.jsonl", payload)
 
     def _class_index_to_symbol(self, index):
         if self.atom_decoder is None:
@@ -2686,23 +3047,56 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         alpha_t = self.alpha(gamma_t, x)
         sigma_t = self.sigma(gamma_t, x)
         # print("sigma_t min/max: ", sigma_t.min().item(), sigma_t.max().item()) # ~0.1, ~0.9
+        metric_lattice = None
+        if self._using_lattice_metric():
+            metric_lattice = self.compute_lattice_matrix(
+                *self.unnormalize_lengths_angles(lengths, angles)
+            )  # [B,3,3]
 
         # compute score function
         mean_t = alpha_t * x
-        variance_t = sigma_t.pow(2).expand(-1, x.shape[1], -1) # -1: 该维度保持原来的大小
-        wrapped_score = self.wrapped_normal_score_batch(
-            x, mean_t, variance_t, node_mask, 
-            wrapping_boundary=1.0, max_offset_integer=3
-            )   # [B,N,3]
-        target = wrapped_score * sigma_t # predict score scaled by sigma_t, 为保持各时间步的loss数值稳定
+        if self._using_lattice_metric():
+            lattice_node = self._lattice_for_nodes(metric_lattice, x)
+            delta_frac = sample_lattice_metric_noise(lattice_node, sigma_t) * node_mask
+            z_pos = wrap_at_boundary(mean_t + delta_frac, wrapping_boundary=1.0)
+            wrapped_score = lattice_metric_wrapped_score(
+                z_pos,
+                mean_t,
+                lattice_node,
+                sigma_t,
+                wrap_shifts=3,
+                node_mask=node_mask,
+            )  # [B,N,3]
+            target, target_score, used_preconditioned_target = self._lattice_metric_training_target(
+                wrapped_score,
+                sigma_t,
+                lattice_node,
+                node_mask=node_mask,
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "train_vp_forward",
+                metric_lattice,
+                node_mask=node_mask,
+                delta_frac=delta_frac,
+                score=wrapped_score,
+                precond_score=target_score if used_preconditioned_target else None,
+                used_preconditioned_target=used_preconditioned_target,
+            )
+        else:
+            variance_t = sigma_t.pow(2).expand(-1, x.shape[1], -1) # -1: 该维度保持原来的大小
+            wrapped_score = self.wrapped_normal_score_batch(
+                x, mean_t, variance_t, node_mask,
+                wrapping_boundary=1.0, max_offset_integer=3
+                )   # [B,N,3]
+            # use net to predict score
+            eps = self.sample_combined_position_feature_noise(
+                n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
+            z_pos = alpha_t * x + sigma_t * eps
+            z_pos = wrap_at_boundary(z_pos, wrapping_boundary=1.0) # wrap, mod 1
+            target = wrapped_score * sigma_t # predict score scaled by sigma_t, 为保持各时间步的loss数值稳定
 
-        # use net to predict score
-        eps = self.sample_combined_position_feature_noise(
-            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask)
         fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
-        z_t = alpha_t * x + sigma_t * eps
-        z_t = wrap_at_boundary(z_t, wrapping_boundary=1.0) # wrap, mod 1
-        z_t = torch.cat([z_t, fix_h], dim=2)
+        z_t = torch.cat([z_pos, fix_h], dim=2)
 
         # score-matching model
         net_out = self.phi(z_t, t, node_mask, edge_mask, context, rl=lengths, ra=angles)
@@ -2732,10 +3126,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         score_pred = pred / (sigma_t + 1e-8)  # [B,N,3], unscaled score prediction
         len_scale = (volume / (N + 1e-8)).pow(1/3).view(batch_size,1,1)  # [B,1,1]
         zx_s = self.reverse_sde_step_given_pred_training(
-            z_t[:, :, :3], t, dt, node_mask, score_pred, len_scale
+            z_t[:, :, :3], t, dt, node_mask, score_pred, len_scale,
+            lattice=metric_lattice,
         )
-        L = self.compute_lattice_matrix(
-            *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
+        L = metric_lattice
+        if L is None:
+            L = self.compute_lattice_matrix(
+                *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
         repulsion_loss = self.zbl_repulsion_loss(
             zx_s, L, h_pred, node_mask, t_int,
             prediction_threshold_t=self.prediction_threshold_t, min_dist=1.5)
@@ -2818,28 +3215,61 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         # ---- VE sigma(t) ----
         sigma_t = self.sigma_ve(t, x)  # [B,1,1]
+        metric_lattice = None
+        if self._using_lattice_metric():
+            metric_lattice = self.compute_lattice_matrix(
+                *self.unnormalize_lengths_angles(lengths, angles)
+            )  # [B,3,3]
 
-        # sample eps in position space
-        eps = self.sample_combined_position_feature_noise(
-            n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask
-        )  # [B,N,3]
-
-        # ---- VE perturbation: z = x + sigma eps ----
-        z_pos = x + sigma_t * eps # note: z_pos = x + sqrt(sigma_t^2-sigma_0^2) * eps is standard VE formula
-        z_pos = wrap_at_boundary(z_pos, wrapping_boundary=1.0)
-
-        # ---- VE target score on torus: score wrt z_pos, mean=x, var=sigma^2 ----
         mean_t = x  # [B,N,3]
-        variance_t = sigma_t.pow(2).expand(-1, x.shape[1], -1)  # [B,N,1]
-        variance_t = torch.clamp(variance_t, min=1e-12)         # stability for small sigma
+        if self._using_lattice_metric():
+            lattice_node = self._lattice_for_nodes(metric_lattice, x)
+            delta_frac = sample_lattice_metric_noise(lattice_node, sigma_t) * node_mask
+            z_pos = wrap_at_boundary(mean_t + delta_frac, wrapping_boundary=1.0)
+            wrapped_score = lattice_metric_wrapped_score(
+                z_pos,
+                mean_t,
+                lattice_node,
+                sigma_t,
+                wrap_shifts=3,
+                node_mask=node_mask,
+            )  # [B,N,3]
+            target, target_score, used_preconditioned_target = self._lattice_metric_training_target(
+                wrapped_score,
+                sigma_t,
+                lattice_node,
+                node_mask=node_mask,
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "train_ve_forward",
+                metric_lattice,
+                node_mask=node_mask,
+                delta_frac=delta_frac,
+                score=wrapped_score,
+                precond_score=target_score if used_preconditioned_target else None,
+                used_preconditioned_target=used_preconditioned_target,
+            )
+        else:
+            # sample eps in position space
+            eps = self.sample_combined_position_feature_noise(
+                n_samples=batch_size, n_nodes=x.size(1), node_mask=node_mask
+            )  # [B,N,3]
 
-        wrapped_score = self.wrapped_normal_score_batch(
-            z_pos, mean_t, variance_t, node_mask,
-            wrapping_boundary=1.0, max_offset_integer=3
-        )  # [B,N,3]
+            # ---- VE perturbation: z = x + sigma eps ----
+            z_pos = x + sigma_t * eps # note: z_pos = x + sqrt(sigma_t^2-sigma_0^2) * eps is standard VE formula
+            z_pos = wrap_at_boundary(z_pos, wrapping_boundary=1.0)
 
-        # keep your stabilization: predict sigma * score
-        target = wrapped_score * sigma_t  # [B,N,3]
+            # ---- VE target score on torus: score wrt z_pos, mean=x, var=sigma^2 ----
+            variance_t = sigma_t.pow(2).expand(-1, x.shape[1], -1)  # [B,N,1]
+            variance_t = torch.clamp(variance_t, min=1e-12)         # stability for small sigma
+
+            wrapped_score = self.wrapped_normal_score_batch(
+                z_pos, mean_t, variance_t, node_mask,
+                wrapping_boundary=1.0, max_offset_integer=3
+            )  # [B,N,3]
+
+            # keep your stabilization: predict sigma * score
+            target = wrapped_score * sigma_t  # [B,N,3]
 
         # build network input exactly like before
         fix_h = torch.ones_like(torch.cat([h['categorical'], h['integer']], dim=2))
@@ -2876,10 +3306,13 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         score_pred = pred / (sigma_t + 1e-8)  # [B,N,3], unscaled score prediction
         len_scale = (volume / (N + 1e-8)).pow(1/3).view(batch_size,1,1)  # [B,1,1]
         zx_s = self.reverse_sde_step_given_pred_training(
-            z_t[:, :, :3], t, dt, node_mask, score_pred, len_scale
+            z_t[:, :, :3], t, dt, node_mask, score_pred, len_scale,
+            lattice=metric_lattice,
         )
-        L = self.compute_lattice_matrix(
-            *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
+        L = metric_lattice
+        if L is None:
+            L = self.compute_lattice_matrix(
+                *self.unnormalize_lengths_angles(lengths, angles))  # [B,3,3]
         repulsion_loss = self.zbl_repulsion_loss(
             zx_s, L, h_pred, node_mask, t_int,
             prediction_threshold_t=self.prediction_threshold_t, min_dist=1.5)
@@ -3186,13 +3619,40 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         # Compute mu for p(zs | zt).
         score_pos = score[:, :, :3]
         atom_type_pred = score[:, :, 3:]
-        mu = zt / alpha_t_given_s + (sigma2_t_given_s / alpha_t_given_s) * score_pos # difference here
+        if self._using_lattice_metric():
+            metric_lattice = self.compute_lattice_matrix(rl, ra)
+            score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                score_pos, metric_lattice, node_mask
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "sample_legacy_predictor_score",
+                metric_lattice,
+                node_mask=node_mask,
+                score=score_pos,
+                raw_output_over_sigma=score_pos,
+                precond_score=score_update,
+                skipped_sampling_G_inv=skipped_sampling_G_inv,
+            )
+        else:
+            metric_lattice = None
+            score_update = score_pos
+        mu = zt / alpha_t_given_s + (sigma2_t_given_s / alpha_t_given_s) * score_update # difference here
 
         # Compute sigma for p(zs | zt).
         sigma = sigma_t_given_s * sigma_s / sigma_t
        
         # Sample zs given the paramters derived from zt.
-        zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
+        if self._using_lattice_metric():
+            metric_noise = self._metric_noise_like(mu, metric_lattice, sigma=sigma, node_mask=node_mask)
+            zs = mu + metric_noise
+            self._maybe_log_coord_metric_diagnostics(
+                "sample_legacy_predictor_noise",
+                metric_lattice,
+                node_mask=node_mask,
+                delta_frac=metric_noise,
+            )
+        else:
+            zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
         # mod 1 to frac space
         zs[:, :, :self.n_dims] = wrap_at_boundary(zs[:, :, :self.n_dims], wrapping_boundary=1.0) # mod 1
@@ -3553,6 +4013,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         context,
         len_scale=None,
         atom_type_state=None,
+        lattice=None,
     ):  
         B, N, D = x.shape
         device = x.device
@@ -3571,17 +4032,37 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         sigma_t = sigma_t.view(B,1,1)
         score = net_out[:, :, :3] / sigma_t
         score = score / len_scale # scale score according to length scale
+        if self._using_lattice_metric():
+            if lattice is None:
+                lattice = self.compute_lattice_matrix(rl, ra)
+            score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                score, lattice, node_mask
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "reverse_vp_predictor_score",
+                lattice,
+                node_mask=node_mask,
+                score=score,
+                raw_output_over_sigma=score,
+                precond_score=score_update,
+                skipped_sampling_G_inv=skipped_sampling_G_inv,
+            )
+        else:
+            score_update = score
 
         # 3) get drift+diffusion
         f, g = self.f_and_g(x, t_tensor)   # f=[B,N,3], g=[B,1,1]
 
         # 4) noise
-        noise = torch.randn_like(x) * node_mask
+        if self._using_lattice_metric():
+            noise = self._metric_noise_like(x, lattice, sigma=1.0, node_mask=node_mask)
+        else:
+            noise = torch.randn_like(x) * node_mask
 
         # 5) update
         x_next = (
             x
-            + (f - (g*g)*score) * dt
+            + (f - (g*g)*score_update) * dt
             + g * (abs(dt)**0.5) * noise
         )
 
@@ -3603,6 +4084,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         context,
         model_out_is_eps=False,
         len_scale=None,
+        lattice=None,
     ):  
         """adapted to full zt input including atom type feature"""
         B, N, _ = zt.shape
@@ -3622,17 +4104,37 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         sigma_t = sigma_t.view(B,1,1)
         score = net_out[:, :, :3] / sigma_t
         score = score / len_scale # scale score according to length scale
+        if self._using_lattice_metric():
+            if lattice is None:
+                lattice = self.compute_lattice_matrix(rl, ra)
+            score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                score, lattice, node_mask
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "reverse_vp_all_predictor_score",
+                lattice,
+                node_mask=node_mask,
+                score=score,
+                raw_output_over_sigma=score,
+                precond_score=score_update,
+                skipped_sampling_G_inv=skipped_sampling_G_inv,
+            )
+        else:
+            score_update = score
 
         # 3) get drift+diffusion
         f, g = self.f_and_g(x, t_tensor)   # f=[B,N,3], g=[B,1,1]
 
         # 4) noise
-        noise = torch.randn_like(x) * node_mask
+        if self._using_lattice_metric():
+            noise = self._metric_noise_like(x, lattice, sigma=1.0, node_mask=node_mask)
+        else:
+            noise = torch.randn_like(x) * node_mask
 
         # 5) update
         x_next = (
             x
-            + (f - (g*g)*score) * dt
+            + (f - (g*g)*score_update) * dt
             + g * (abs(dt)**0.5) * noise
         )
 
@@ -3650,13 +4152,34 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         node_mask,
         score_pred,   # [B,N,3], predicted score from training
         len_scale=1.0,
+        lattice=None,
     ):  
         score = score_pred / len_scale # scale score according to length scale
+        if self._using_lattice_metric():
+            if lattice is None:
+                raise ValueError("lattice is required for lattice coord_noise_metric")
+            score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                score, lattice, node_mask
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "train_reverse_aux_score",
+                lattice,
+                node_mask=node_mask,
+                score=score,
+                raw_output_over_sigma=score,
+                precond_score=score_update,
+                skipped_sampling_G_inv=skipped_sampling_G_inv,
+            )
+        else:
+            score_update = score
         f, g = self.f_and_g(x, t)   # f=[B,N,3], g=[B,1,1]
-        noise = torch.randn_like(x) * node_mask
+        if self._using_lattice_metric():
+            noise = self._metric_noise_like(x, lattice, sigma=1.0, node_mask=node_mask)
+        else:
+            noise = torch.randn_like(x) * node_mask
         x_next = (
             x
-            + (f - (g*g)*score) * dt
+            + (f - (g*g)*score_update) * dt
             + g * (abs(dt)**0.5) * noise
         )
         zx = wrap_at_boundary(x_next, wrapping_boundary=1.0) # mod 1
@@ -3687,6 +4210,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         context,
         len_scale=None,
         atom_type_state=None,
+        lattice=None,
     ):
         B, N, D = x.shape
         device = x.device
@@ -3704,14 +4228,34 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         if len_scale is not None:
             score = score / len_scale
+        if self._using_lattice_metric():
+            if lattice is None:
+                lattice = self.compute_lattice_matrix(rl, ra)
+            score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                score, lattice, node_mask
+            )
+            self._maybe_log_coord_metric_diagnostics(
+                "reverse_ve_predictor_score",
+                lattice,
+                node_mask=node_mask,
+                score=score,
+                raw_output_over_sigma=score,
+                precond_score=score_update,
+                skipped_sampling_G_inv=skipped_sampling_G_inv,
+            )
+        else:
+            score_update = score
 
         f, g = self.f_and_g_ve(x, t_tensor)
 
-        noise = torch.randn_like(x) * node_mask
+        if self._using_lattice_metric():
+            noise = self._metric_noise_like(x, lattice, sigma=1.0, node_mask=node_mask)
+        else:
+            noise = torch.randn_like(x) * node_mask
         dt_abs = -dt if dt < 0 else dt  # should be positive
 
         # reverse VE update
-        drift = (f - (g * g) * score) * node_mask
+        drift = (f - (g * g) * score_update) * node_mask
         x_next = x + drift * dt + g * (dt_abs ** 0.5) * noise
 
         x_next = torch.remainder(x_next, 1.0)
@@ -3806,6 +4350,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         print(f"> Reverse SDE steps = {self.T}")
         print('SDE type:', self.sde_type)
+        print('Coord noise metric:', self.coord_noise_metric)
+        print('Coord score parameterization:', self.coord_score_parameterization)
         print('Corrector steps:', n_corrector_steps)
         print('Geometry correction enabled:', self.geometry_correction_enabled)
         print('Atom decode mode:', self.atom_decode_mode)
@@ -3858,14 +4404,30 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     sigma_t = self.sigma_ve(t_tensor, zx).view(B, 1, 1)  # [B,1,1]
                     score = net_out[:, :, :3] / torch.clamp(sigma_t, min=1e-12)
                     score = score / len_scale
-                    noise = torch.randn_like(zx) * node_mask
-                    grad_norm  = score.reshape(B, -1).norm(dim=-1)         # [B]
+                    if self._using_lattice_metric():
+                        score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                            score, cell, node_mask
+                        )
+                        noise = self._metric_noise_like(zx, cell, sigma=1.0, node_mask=node_mask)
+                        self._maybe_log_coord_metric_diagnostics(
+                            "sample_ve_corrector",
+                            cell,
+                            node_mask=node_mask,
+                            score=score,
+                            raw_output_over_sigma=score,
+                            precond_score=score_update,
+                            skipped_sampling_G_inv=skipped_sampling_G_inv,
+                        )
+                    else:
+                        score_update = score
+                        noise = torch.randn_like(zx) * node_mask
+                    grad_norm  = score_update.reshape(B, -1).norm(dim=-1)         # [B]
                     noise_norm = noise.reshape(B, -1).norm(dim=-1)         # [B]
                     # Song PC-style: eps = 2 * (snr * ||noise|| / ||grad||)^2
                     eps = 2.0 * (snr * noise_norm / (grad_norm + 1e-12))**2   # [B]
                     eps = torch.minimum(eps, (0.1 * sigma_t.squeeze())**2)   # 经验：每次 corrector 不要走超过 sigma 的某个比例
                     eps = eps.view(B, 1, 1)
-                    zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                    zx = zx + eps * score_update + torch.sqrt(2.0 * eps) * noise
                     zx = torch.remainder(zx, 1.0)
             else: # VP-SDE
                 for _ in range(n_corrector_steps):
@@ -3879,16 +4441,32 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
                     score = net_out[:, :, :3] / sigma_t
                     score = score / len_scale # scale score according to length scale
+                    if self._using_lattice_metric():
+                        score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                            score, cell, node_mask
+                        )
+                        noise = self._metric_noise_like(zx, cell, sigma=1.0, node_mask=node_mask)
+                        self._maybe_log_coord_metric_diagnostics(
+                            "sample_vp_corrector",
+                            cell,
+                            node_mask=node_mask,
+                            score=score,
+                            raw_output_over_sigma=score,
+                            precond_score=score_update,
+                            skipped_sampling_G_inv=skipped_sampling_G_inv,
+                        )
+                    else:
+                        score_update = score
+                        noise = torch.randn_like(zx) * node_mask # 噪声
                     # 计算 alpha_t_pc, see SDE paper P23 Algorithm 3, 5
                     alpha_t_pc = self.alpha(gamma_t, zx) ** 2
-                    noise = torch.randn_like(zx) * node_mask # 噪声
                     # Langevin 步
                     # SNR 根据 PC 论文设置
-                    grad_norm = score.reshape(B, -1).norm(dim=-1) # [B]
+                    grad_norm = score_update.reshape(B, -1).norm(dim=-1) # [B]
                     noise_norm = noise.reshape(B, -1).norm(dim=-1) # [B]
                     eps = 2.0 * ((snr * noise_norm / (grad_norm + 1e-10))**2) * alpha_t_pc.squeeze() # [B]
                     eps = eps.view(B,1,1)
-                    zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                    zx = zx + eps * score_update + torch.sqrt(2.0 * eps) * noise
                     zx = torch.remainder(zx, 1.0) # mod 1
 
             # =======================================================
@@ -3907,6 +4485,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     context=context,
                     len_scale=len_scale,
                     atom_type_state=atom_type_state,
+                    lattice=cell,
                 )
             else: # vp
                 z = self.reverse_sde_step(
@@ -3919,6 +4498,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     context=context,
                     len_scale=len_scale,
                     atom_type_state=atom_type_state,
+                    lattice=cell,
                 )
             if z.size(-1) >= self.n_dims + self.num_classes:
                 atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]
@@ -4121,6 +4701,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         device = node_mask.device
         volume = lattice_volume(rl, ra)     # [B]
         N = node_mask.squeeze(-1).sum(-1)   # [B]
+        cell = self.compute_lattice_matrix(rl, ra)  # [B,3,3]
 
         len_scale = (volume / (N + 1e-8)).pow(1/3).view(B,1,1)  # [B,1,1]
 
@@ -4145,6 +4726,8 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         )
 
         print(f"> Reverse SDE steps = {self.T}")
+        print('Coord noise metric:', self.coord_noise_metric)
+        print('Coord score parameterization:', self.coord_score_parameterization)
         print('Corrector steps:', n_corrector_steps)
         print('Geometry correction enabled:', self.geometry_correction_enabled)
         print('Atom decode mode:', self.atom_decode_mode)
@@ -4185,19 +4768,33 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 sigma_t = self.sigma(gamma_t, zx).view(B,1,1)
                 score = net_out[:, :, :3] / sigma_t
                 score = score / len_scale # length scale
+                if self._using_lattice_metric():
+                    score_update, skipped_sampling_G_inv = self._coord_model_output_to_lattice_reverse_score(
+                        score, cell, node_mask
+                    )
+                    noise = self._metric_noise_like(zx, cell, sigma=1.0, node_mask=node_mask)
+                    self._maybe_log_coord_metric_diagnostics(
+                        "sample_lattice_vp_corrector",
+                        cell,
+                        node_mask=node_mask,
+                        score=score,
+                        raw_output_over_sigma=score,
+                        precond_score=score_update,
+                        skipped_sampling_G_inv=skipped_sampling_G_inv,
+                    )
+                else:
+                    score_update = score
+                    noise = torch.randn_like(zx) * node_mask
                 # 计算 alpha_t_pc, 见 SDE 论文 P23 Algorithm 3, 5
                 alpha_t_pc = self.alpha(gamma_t, zx) ** 2
-                
-                # 噪声
-                noise = torch.randn_like(zx) * node_mask
 
                 # Langevin 步
                 # SNR 根据 PC 论文设置
-                grad_norm = score.reshape(B, -1).norm(dim=-1) # [B]
+                grad_norm = score_update.reshape(B, -1).norm(dim=-1) # [B]
                 noise_norm = noise.reshape(B, -1).norm(dim=-1) # [B]
                 eps = 2  * ((snr * noise_norm / (grad_norm + 1e-10))**2) * alpha_t_pc.squeeze() # [B]
                 eps = eps.view(B,1,1)
-                zx = zx + eps * score + torch.sqrt(2.0 * eps) * noise
+                zx = zx + eps * score_update + torch.sqrt(2.0 * eps) * noise
                 zx = torch.remainder(zx, 1.0) # mod 1
 
             # =======================================================
@@ -4215,6 +4812,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 context=context,
                 len_scale=len_scale,
                 atom_type_state=atom_type_state,
+                lattice=cell,
             )
             if z.size(-1) >= self.n_dims + self.num_classes:
                 atom_type_state = z[:, :, self.n_dims:self.n_dims+self.num_classes]

@@ -730,6 +730,12 @@ def get_model(args, device, dataset_info, dataloader_train,
             getattr(args, 'save_dir', 'mp20/analyze_test/'),
             'atom_type_debug',
         )
+        raw_coord_noise_metric = getattr(args, 'coord_noise_metric', 'fractional')
+        raw_lattice_aware_metric = getattr(args, 'lattice_aware_metric', False)
+        if raw_coord_noise_metric == 'fractional' and raw_lattice_aware_metric:
+            effective_coord_noise_metric = 'lattice'
+        else:
+            effective_coord_noise_metric = raw_coord_noise_metric
         vdm = EquiTransVariationalDiffusion_LF_wrap(
             n_dims=3, device=device,
             dynamics=net_dynamics,
@@ -778,6 +784,9 @@ def get_model(args, device, dataset_info, dataloader_train,
             atom_decode_mode=getattr(args, 'atom_decode_mode', 'constrained_search'),
             atom_type_repair_topk=getattr(args, 'atom_type_repair_topk', 4),
             atom_type_max_replace_atoms=getattr(args, 'atom_type_max_replace_atoms', 2),
+            coord_noise_metric=effective_coord_noise_metric,
+            coord_score_parameterization=getattr(args, 'coord_score_parameterization', 'auto'),
+            coord_metric_debug=getattr(args, 'coord_metric_debug', False),
         )
         total_params = sum(p.numel() for p in vdm.parameters())
         trainable_params = sum(p.numel() for p in vdm.parameters() if p.requires_grad)

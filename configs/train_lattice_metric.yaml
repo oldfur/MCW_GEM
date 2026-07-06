@@ -1,0 +1,9 @@
+# Minimal LF_wrap training example for lattice-aware coordinate metric.
+# Default lattice metric uses scheme B: sigma * G^-1 score_f.
+# CLI arguments override values in this file when using entrypoints that load --config.
+probabilistic_model: diffusion_LF_wrap
+coord_noise_metric: lattice
+coord_score_parameterization: sigma_precond_score_f
+coord_metric_debug: false
+sde_type: ve
+frac_coords_mode: 1
