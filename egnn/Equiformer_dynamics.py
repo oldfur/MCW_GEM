@@ -95,12 +95,18 @@ class DTypeSafeSequential(nn.Sequential):
 
 class DTypeSafeLayerNorm(nn.LayerNorm):
     def forward(self, input):
-        return super().forward(_match_module_float(self, input))
+        if torch.is_floating_point(input) and self.weight is not None:
+            input = input.to(device=self.weight.device, dtype=self.weight.dtype)
+        elif torch.is_floating_point(input) and self.bias is not None:
+            input = input.to(device=self.bias.device, dtype=self.bias.dtype)
+        return F.layer_norm(input, self.normalized_shape, self.weight, self.bias, self.eps)
 
 
 class DTypeSafeLinear(nn.Linear):
     def forward(self, input):
-        return F.linear(_match_module_float(self, input), self.weight, self.bias)
+        if torch.is_floating_point(input):
+            input = input.to(device=self.weight.device, dtype=self.weight.dtype)
+        return F.linear(input, self.weight, self.bias)
 
 
 class LatticeDecoder(nn.Module):
