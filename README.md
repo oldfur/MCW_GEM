@@ -279,7 +279,7 @@ mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260
 ```
 CODE_DIR=~/mcw/MCW_GEM
 RUN_ROOT=~/data1/mcw/MCW_GEM
-LATTICE_CKPT=$RUN_ROOT/outputs/train_LatticeGen_mp20/diffusion_L/generative_model_ema.npy
+LATTICE_CKPT=$RUN_ROOT/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy
 
 mkdir -p $RUN_ROOT/outputs $RUN_ROOT/mp20/analyze_test
 cd $RUN_ROOT
@@ -324,6 +324,8 @@ CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u $CODE_DIR/main_LF_train.py \
   --coord-noise-metric lattice \
   --coord-score-parameterization sigma_precond_score_f \
   --coord-metric-debug False \
+  --LatticeGenModel diffusion_L \
+  --condition-lattice-on-n True \
   --datadir $CODE_DIR/mp20 \
   --dataset_folder_path $CODE_DIR/mp20/raw \
   --pretrained_Lattice_model $LATTICE_CKPT \
@@ -370,6 +372,8 @@ CUDA_VISIBLE_DEVICES=2 python -u $CODE_DIR/main_LF_sample.py \
   --coord-score-parameterization sigma_precond_score_f \
   --coord-metric-debug False \
   --sampling-config-path $CODE_DIR/configs/sample_lattice_metric.yaml \
+  --LatticeGenModel diffusion_L \
+  --condition-lattice-on-n True \
   --datadir $CODE_DIR/mp20 \
   --dataset_folder_path $CODE_DIR/mp20/raw \
   --pretrained_Lattice_model $LATTICE_CKPT \
@@ -417,6 +421,8 @@ CUDA_VISIBLE_DEVICES=3,4,5,6 nohup python -u $CODE_DIR/main_LF_train.py \
   --sde_type ve \
   --coord-noise-metric lattice \
   --coord-score-parameterization sigma_score_f \
+  --LatticeGenModel diffusion_L \
+  --condition-lattice-on-n True \
   --datadir $CODE_DIR/mp20 \
   --dataset_folder_path $CODE_DIR/mp20/raw \
   --pretrained_Lattice_model $LATTICE_CKPT \
@@ -452,6 +458,8 @@ CUDA_VISIBLE_DEVICES=2 python -u $CODE_DIR/main_LF_sample.py \
   --coord-noise-metric lattice \
   --coord-score-parameterization sigma_score_f \
   --sampling-config-path $CODE_DIR/configs/sample_lattice_metric_rawscore.yaml \
+  --LatticeGenModel diffusion_L \
+  --condition-lattice-on-n True \
   --datadir $CODE_DIR/mp20 \
   --dataset_folder_path $CODE_DIR/mp20/raw \
   --pretrained_Lattice_model $LATTICE_CKPT \
