@@ -277,17 +277,12 @@ mkdir -p ~/data1/mcw/MCW_GEM/outputs/sample_LF_mp20_emptygraph_atomtypefix_20260
 
 公共路径：
 ```
-CODE_DIR=~/mcw/MCW_GEM
+CODE_DIR=/home/mcw/MCW_GEM
 RUN_ROOT=~/data1/mcw/MCW_GEM
 LATTICE_CKPT=$RUN_ROOT/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy
 
 mkdir -p $RUN_ROOT/outputs $RUN_ROOT/mp20/analyze_test
 cd $RUN_ROOT
-```
-
-如果代码实际在 `/home/mcw/MCW_GEM`，把 `CODE_DIR=~/mcw/MCW_GEM` 改成：
-```
-CODE_DIR=/home/mcw/MCW_GEM
 ```
 
 #### 方案 B，训练 lattice-aware metric 默认版本

@@ -210,13 +210,13 @@ def lattice_params_to_matrix_torch(lengths, angles):
     gamma_star = torch.arccos(val)
 
     vector_a = torch.stack([lengths[:, 0],
-        torch.zeros(lengths.size(0), device=lengths.device),
-        torch.zeros(lengths.size(0), device=lengths.device),
+        torch.zeros(lengths.size(0), device=lengths.device, dtype=lengths.dtype),
+        torch.zeros(lengths.size(0), device=lengths.device, dtype=lengths.dtype),
         ], dim=1)
 
     vector_b = torch.stack([
         lengths[:, 1] * coses[:, 2],
-        lengths[:, 1] * sins[:, 2],torch.zeros(lengths.size(0), device=lengths.device),], dim=1)
+        lengths[:, 1] * sins[:, 2],torch.zeros(lengths.size(0), device=lengths.device, dtype=lengths.dtype),], dim=1)
 
     vector_c = torch.stack([
         lengths[:, 2] * coses[:, 1],
@@ -224,6 +224,10 @@ def lattice_params_to_matrix_torch(lengths, angles):
         lengths[:, 2] * sins[:, 1] * torch.sin(gamma_star)], dim=1)
 
     return torch.stack([vector_a, vector_b, vector_c], dim=1)
+
+
+def _match_lattice_to_coords(lattice, coords):
+    return lattice.to(device=coords.device, dtype=coords.dtype)
 
 
 def compute_volume(batch_lattice):
@@ -282,7 +286,9 @@ def frac_to_cart_coords(
     angles,
     num_atoms,
 ):
-    lattice = lattice_params_to_matrix_torch(lengths, angles)
+    lattice = _match_lattice_to_coords(
+        lattice_params_to_matrix_torch(lengths, angles), frac_coords
+    )
     lattice_nodes = torch.repeat_interleave(lattice, num_atoms, dim=0)
     pos = torch.einsum('bi,bij->bj', frac_coords, lattice_nodes)  # cart coords
     return pos
@@ -303,7 +309,9 @@ def frac_to_cart_coords_batched(frac_coords, lengths, angles, node_mask=None):
         cart_coords: [B, N, 3] 张量，对应笛卡尔坐标
     """
     # === 1. 构造晶格矩阵 ===
-    lattice = lattice_params_to_matrix_torch(lengths, angles)  # [B, 3, 3]
+    lattice = _match_lattice_to_coords(
+        lattice_params_to_matrix_torch(lengths, angles), frac_coords
+    )  # [B, 3, 3]
     
     # === 2. 分数坐标转笛卡尔坐标 ===
     # 等价于 frac_coords @ lattice.T
@@ -323,7 +331,9 @@ def cart_to_frac_coords(
     angles,
     num_atoms,
 ):
-    lattice = lattice_params_to_matrix_torch(lengths, angles)
+    lattice = _match_lattice_to_coords(
+        lattice_params_to_matrix_torch(lengths, angles), cart_coords
+    )
     # use pinv in case the predicted lattice is not rank 3
     inv_lattice = torch.linalg.pinv(lattice)
     inv_lattice_nodes = torch.repeat_interleave(inv_lattice, num_atoms, dim=0)
@@ -345,7 +355,9 @@ def cart_to_frac_coords_batched(cart_coords, lengths, angles, node_mask=None):
     Returns:
         frac_coords: [B, N, 3] 张量，分数坐标
     """
-    lattice = lattice_params_to_matrix_torch(lengths, angles)  # [B, 3, 3]
+    lattice = _match_lattice_to_coords(
+        lattice_params_to_matrix_torch(lengths, angles), cart_coords
+    )  # [B, 3, 3]
     
     # 计算逆矩阵 (A^{-1})，用来从笛卡尔坐标还原分数坐标
     lattice_inv = torch.inverse(lattice)  # [B, 3, 3]
@@ -378,6 +390,7 @@ def get_pbc_distances(
     if coord_is_cart:
         pos = coords
     else:
+        lattice = _match_lattice_to_coords(lattice, coords)
         lattice_nodes = torch.repeat_interleave(lattice, num_atoms, dim=0)
         pos = torch.einsum('bi,bij->bj', coords, lattice_nodes)  # cart coords
 
@@ -386,8 +399,13 @@ def get_pbc_distances(
     distance_vectors = pos[j_index] - pos[i_index]
 
     # correct for pbc
+    lattice = _match_lattice_to_coords(lattice, distance_vectors)
     lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)
-    offsets = torch.einsum('bi,bij->bj', to_jimages.to(DTYPE), lattice_edges)
+    offsets = torch.einsum(
+        'bi,bij->bj',
+        to_jimages.to(device=lattice_edges.device, dtype=lattice_edges.dtype),
+        lattice_edges,
+    )
     distance_vectors += offsets
 
     # compute distances
@@ -477,6 +495,7 @@ def radius_graph_pbc(cart_coords, lattice, num_atoms,
     if isinstance(lattice, tuple):
         lengths, angles = lattice
         lattice = lattice_params_to_matrix_torch(lengths, angles)
+    lattice = _match_lattice_to_coords(lattice, cart_coords)
 
     #######
     # Calculate required number of unit cells in each direction.
@@ -522,7 +541,7 @@ def radius_graph_pbc(cart_coords, lattice, num_atoms,
     #     for rep in max_rep
     # ]
     # unit_cell = torch.cartesian_prod(*cells_per_dim)
-    unit_cell = torch.tensor(OFFSET_LIST, device=device).to(DTYPE)
+    unit_cell = torch.tensor(OFFSET_LIST, device=device, dtype=cart_coords.dtype)
     num_cells = len(unit_cell)
     unit_cell_per_atom = unit_cell.view(1, num_cells, 3).repeat(
         len(index2), 1, 1
@@ -690,7 +709,7 @@ def min_distance_sqr_pbc(cart_coords1, cart_coords2, lengths, angles,
     pos1 = cart_coords1
     pos2 = cart_coords2
 
-    unit_cell = torch.tensor(OFFSET_LIST, device=device).to(DTYPE)
+    unit_cell = torch.tensor(OFFSET_LIST, device=device, dtype=cart_coords1.dtype)
     num_cells = len(unit_cell)
     unit_cell_per_atom = unit_cell.view(1, num_cells, 3).repeat(
         len(cart_coords2), 1, 1
@@ -701,7 +720,9 @@ def min_distance_sqr_pbc(cart_coords1, cart_coords2, lengths, angles,
     )
 
     # lattice matrix
-    lattice = lattice_params_to_matrix_torch(lengths, angles)
+    lattice = _match_lattice_to_coords(
+        lattice_params_to_matrix_torch(lengths, angles), cart_coords1
+    )
 
     # Compute the x, y, z positional offsets for each cell in each image
     data_cell = torch.transpose(lattice, 1, 2)
