@@ -674,7 +674,7 @@ class EquiformerV2(BaseModel):
         angles = _match_module_float(self, angles)
         lat_mat = _match_module_float(self, lat_mat)
         if node_feats:
-            node_feats = [_match_module_float(self, feat) for feat in node_feats]
+            node_feats = [_match_module_float(self.extra_atom_embedding, feat) for feat in node_feats]
         self.batch_size = len(natoms)
         self.dtype = pos.dtype
         if lat_mat is None:
@@ -743,6 +743,7 @@ class EquiformerV2(BaseModel):
         h = self.sphere_embedding(atomic_numbers)
         # Merge z, time embedding, and atom embedding
         if node_feats:
+            h = _match_module_float(self.extra_atom_embedding, h)
             h = torch.cat([h, *node_feats], dim=1)
             h = self.extra_atom_embedding(h)
 
@@ -1179,7 +1180,7 @@ class BaseDynamics(nn.Module):
             if self.condition_time == "embed":
                 assert len(t.shape) == 1
                 time_emb = get_timestep_embedding(t, self.time_dim)
-                time_emb = _match_module_float(self, time_emb)
+                time_emb = _match_module_float(self.fc_time, time_emb)
 
                 # debug: time_emb中是否有nan
                 # if torch.isnan(time_emb).any(): 
@@ -1212,11 +1213,11 @@ class BaseDynamics(nn.Module):
             node_feats.append(time_emb)
 
         if self.embed_noisy_types:
-            noisy_atom_types = _match_module_float(self, noisy_atom_types)
+            noisy_atom_types = _match_module_float(self.noisy_atom_emb, noisy_atom_types)
             node_feats.append(self.noisy_atom_emb(noisy_atom_types))
 
         if self.embed_lattices:
-            noisy_lattices = _match_module_float(self, noisy_lattices)
+            noisy_lattices = _match_module_float(self.lattice_emb, noisy_lattices)
             lattice_feats = noisy_lattices.view(-1, 9)
             lattice_feats = self.lattice_emb(lattice_feats)
             node_feats.append(lattice_feats.repeat_interleave(natoms, dim=0))
@@ -1471,4 +1472,3 @@ class EquiformerV2Dynamics(BaseDynamics):
         #     outs["atom_types"] = torch.softmax(outs["atom_types"], dim=1)
         
         return outs
-
