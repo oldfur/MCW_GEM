@@ -113,6 +113,16 @@ class DTypeSafeSequential(nn.Sequential):
         return super().forward(_match_module_float(self, input))
 
 
+class DTypeSafeLayerNorm(nn.LayerNorm):
+    def forward(self, input):
+        return super().forward(_match_module_float(self, input))
+
+
+class DTypeSafeLinear(nn.Linear):
+    def forward(self, input):
+        return F.linear(_match_module_float(self, input), self.weight, self.bias)
+
+
 class LatticeDecoder(nn.Module):
     """
     将 9D 晶格矩阵 -> 6D 参数 (3长度 + 3角度)
@@ -121,13 +131,13 @@ class LatticeDecoder(nn.Module):
     def __init__(self, hidden_dim=128):
         super().__init__()
         self.net = DTypeSafeSequential(
-            nn.LayerNorm(9),
-            nn.Linear(9, hidden_dim),
+            DTypeSafeLayerNorm(9),
+            DTypeSafeLinear(9, hidden_dim),
             nn.SiLU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
+            DTypeSafeLayerNorm(hidden_dim),
+            DTypeSafeLinear(hidden_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim, 6)
+            DTypeSafeLinear(hidden_dim, 6)
         )
 
         # 初始化
@@ -444,9 +454,9 @@ class EquiformerV2(BaseModel):
 
         if total_emb_size_atom > self.sphere_channels_all:
             self.extra_atom_embedding = DTypeSafeSequential(
-                nn.Linear(total_emb_size_atom, total_emb_size_atom),
+                DTypeSafeLinear(total_emb_size_atom, total_emb_size_atom),
                 nn.ReLU(),
-                nn.Linear(total_emb_size_atom, self.sphere_channels_all)
+                DTypeSafeLinear(total_emb_size_atom, self.sphere_channels_all)
             )
         
         # Initialize the function used to measure the distances between atoms
@@ -1230,11 +1240,11 @@ class BaseDynamics(nn.Module):
         if self.embed_noisy_types:
             noisy_atom_dim = hidden_dim
             self.noisy_atom_emb = DTypeSafeSequential(
-                                            nn.LayerNorm(MAX_ATOMIC_NUM - 1),
-                                            nn.Linear(MAX_ATOMIC_NUM - 1, noisy_atom_dim * 4),
+                                            DTypeSafeLayerNorm(MAX_ATOMIC_NUM - 1),
+                                            DTypeSafeLinear(MAX_ATOMIC_NUM - 1, noisy_atom_dim * 4),
                                             nn.SiLU(),
-                                            nn.LayerNorm(noisy_atom_dim * 4),
-                                            nn.Linear(noisy_atom_dim * 4, noisy_atom_dim),
+                                            DTypeSafeLayerNorm(noisy_atom_dim * 4),
+                                            DTypeSafeLinear(noisy_atom_dim * 4, noisy_atom_dim),
                                             )
         else:
             noisy_atom_dim = 0
@@ -1242,11 +1252,11 @@ class BaseDynamics(nn.Module):
         if self.embed_lattices:
             lattice_dim = hidden_dim
             self.lattice_emb = DTypeSafeSequential(
-                                            nn.LayerNorm(9),
-                                            nn.Linear(9, lattice_dim),
+                                            DTypeSafeLayerNorm(9),
+                                            DTypeSafeLinear(9, lattice_dim),
                                             nn.SiLU(),
-                                            nn.LayerNorm(lattice_dim),
-                                            nn.Linear(lattice_dim, lattice_dim),
+                                            DTypeSafeLayerNorm(lattice_dim),
+                                            DTypeSafeLinear(lattice_dim, lattice_dim),
                                             )
 
         else:
@@ -1258,11 +1268,11 @@ class BaseDynamics(nn.Module):
             #                                nn.ReLU(),
             #                                nn.Linear(coord_dim, coord_dim))
             self.coord_emb = DTypeSafeSequential(
-                                            nn.LayerNorm(3),
-                                            nn.Linear(3, coord_dim),
+                                            DTypeSafeLayerNorm(3),
+                                            DTypeSafeLinear(3, coord_dim),
                                             nn.SiLU(),
-                                            nn.LayerNorm(coord_dim),
-                                            nn.Linear(coord_dim, coord_dim),
+                                            DTypeSafeLayerNorm(coord_dim),
+                                            DTypeSafeLinear(coord_dim, coord_dim),
                                             # nn.Tanh()
                                             )
         else:
