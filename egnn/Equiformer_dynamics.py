@@ -88,6 +88,11 @@ def _match_module_float(module, tensor):
     return tensor.to(device=ref.device, dtype=ref.dtype)
 
 
+class DTypeSafeSequential(nn.Sequential):
+    def forward(self, input):
+        return super().forward(_match_module_float(self, input))
+
+
 class LatticeDecoder(nn.Module):
     """
     将 9D 晶格矩阵 -> 6D 参数 (3长度 + 3角度)
@@ -95,7 +100,7 @@ class LatticeDecoder(nn.Module):
     """
     def __init__(self, hidden_dim=128):
         super().__init__()
-        self.net = nn.Sequential(
+        self.net = DTypeSafeSequential(
             nn.LayerNorm(9),
             nn.Linear(9, hidden_dim),
             nn.SiLU(),
@@ -413,7 +418,7 @@ class EquiformerV2(BaseModel):
         total_emb_size_atom = self.sphere_channels_all + latent_dim + time_dim + extra_dim
 
         if total_emb_size_atom > self.sphere_channels_all:
-            self.extra_atom_embedding = nn.Sequential(
+            self.extra_atom_embedding = DTypeSafeSequential(
                 nn.Linear(total_emb_size_atom, total_emb_size_atom),
                 nn.ReLU(),
                 nn.Linear(total_emb_size_atom, self.sphere_channels_all)
@@ -1115,7 +1120,7 @@ class BaseDynamics(nn.Module):
             # for i in [0, 2]:
             #     nn.init.xavier_uniform_(self.noisy_atom_emb[i].weight.data)
             #     nn.init.zeros_(self.noisy_atom_emb[i].bias)
-            self.noisy_atom_emb = nn.Sequential(
+            self.noisy_atom_emb = DTypeSafeSequential(
                                             nn.LayerNorm(MAX_ATOMIC_NUM - 1),
                                             nn.Linear(MAX_ATOMIC_NUM - 1, noisy_atom_dim * 4),
                                             nn.SiLU(),
@@ -1131,7 +1136,7 @@ class BaseDynamics(nn.Module):
             # self.lattice_emb = nn.Sequential(nn.Linear(9, lattice_dim),
             #                                  nn.ReLU(),
             #                                  nn.Linear(lattice_dim, lattice_dim))
-            self.lattice_emb = nn.Sequential(
+            self.lattice_emb = DTypeSafeSequential(
                                             nn.LayerNorm(9),
                                             nn.Linear(9, lattice_dim),
                                             nn.SiLU(),
@@ -1148,7 +1153,7 @@ class BaseDynamics(nn.Module):
             # self.coord_emb = nn.Sequential(nn.Linear(3, coord_dim),
             #                                nn.ReLU(),
             #                                nn.Linear(coord_dim, coord_dim))
-            self.coord_emb = nn.Sequential(
+            self.coord_emb = DTypeSafeSequential(
                                             nn.LayerNorm(3),
                                             nn.Linear(3, coord_dim),
                                             nn.SiLU(),
