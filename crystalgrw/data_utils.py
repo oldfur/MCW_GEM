@@ -602,9 +602,10 @@ def radius_graph_pbc(cart_coords, lattice, num_atoms,
     if topk_per_pair is not None:
         topk_mask = torch.masked_select(topk_mask, mask)
 
-    num_neighbors = torch.zeros(len(cart_coords), device=device)
-    num_neighbors.index_add_(0, index1, torch.ones(len(index1), device=device))
-    num_neighbors = num_neighbors.long()
+    num_neighbors = torch.zeros(len(cart_coords), device=device, dtype=torch.long)
+    num_neighbors.index_add_(
+        0, index1, torch.ones(len(index1), device=device, dtype=torch.long)
+    )
     max_num_neighbors = torch.max(num_neighbors).long()
 
     # Compute neighbors per image
@@ -635,7 +636,9 @@ def radius_graph_pbc(cart_coords, lattice, num_atoms,
     # Create a tensor of size [num_atoms, max_num_neighbors] to sort the distances of the neighbors.
     # Fill with values greater than radius*radius so we can easily remove unused distances later.
     distance_sort = torch.zeros(
-        len(cart_coords) * max_num_neighbors, device=device
+        len(cart_coords) * max_num_neighbors,
+        device=device,
+        dtype=atom_distance_sqr.dtype,
     ).fill_(radius * radius + 1.0)
 
     # Create an index map to map distances from atom_distance_sqr to distance_sort

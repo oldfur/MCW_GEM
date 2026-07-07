@@ -623,6 +623,7 @@ def sample_lattice_metric_noise(lattice_node: torch.Tensor, sigma=1.0) -> torch.
     """
     if lattice_node.shape[-2:] != (3, 3):
         raise ValueError(f"lattice_node must end with [3,3], got {tuple(lattice_node.shape)}")
+    lattice_node = lattice_node.contiguous()
     eps_cart = torch.randn(
         (*lattice_node.shape[:-2], 3),
         device=lattice_node.device,
@@ -647,6 +648,7 @@ def apply_metric_G(vec_frac: torch.Tensor, lattice_node: torch.Tensor) -> torch.
 def apply_metric_G_inv(vec_frac: torch.Tensor, lattice_node: torch.Tensor) -> torch.Tensor:
     lattice_node = _broadcast_lattice_to_vec(lattice_node, vec_frac)
     metric = lattice_node.transpose(-1, -2) @ lattice_node
+    metric = metric.contiguous()
     rhs = vec_frac.unsqueeze(-1)
     try:
         return torch.linalg.solve(metric, rhs).squeeze(-1)
