@@ -987,6 +987,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             disable_all_h_guard=False, all_h_guard_topk=DEFAULT_ATOM_TYPE_REPAIR_TOPK,
             all_h_guard_min_non_h=1,
             geometry_correction=True,
+            geometry_correction_mode="default",
+            zbl_correction_inner_steps=20,
+            zbl_correction_step_size=1e-3,
+            zbl_correction_r_cut=0.8,
+            zbl_correction_force_clip=100.0,
+            zbl_correction_max_step=0.02,
             atom_decode_mode="constrained_search",
             atom_type_repair_topk=DEFAULT_ATOM_TYPE_REPAIR_TOPK,
             atom_type_max_replace_atoms=2,
@@ -1174,6 +1180,15 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             raise ValueError(f"Unknown atom_decode_mode={atom_decode_mode!r}")
         self.atom_decode_mode = atom_decode_mode
         self.geometry_correction_enabled = bool(geometry_correction)
+        geometry_correction_mode = str(geometry_correction_mode).lower()
+        if geometry_correction_mode not in {"default", "zbl"}:
+            raise ValueError(f"Unknown geometry_correction_mode={geometry_correction_mode!r}")
+        self.geometry_correction_mode = geometry_correction_mode
+        self.zbl_correction_inner_steps = max(0, int(zbl_correction_inner_steps))
+        self.zbl_correction_step_size = max(0.0, float(zbl_correction_step_size))
+        self.zbl_correction_r_cut = max(0.0, float(zbl_correction_r_cut))
+        self.zbl_correction_force_clip = max(0.0, float(zbl_correction_force_clip))
+        self.zbl_correction_max_step = max(0.0, float(zbl_correction_max_step))
         self.h_class_idx = 1
         if self.atom_decoder is not None:
             for class_idx, symbol in enumerate(self.atom_decoder):
@@ -1205,6 +1220,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print("use lambda_type_adjust: ", lambda_type_adjust)
         print("adjust atom type during diffusion: ", adjust_atom_type)
         print("geometry correction enabled: ", self.geometry_correction_enabled)
+        print("geometry correction mode: ", self.geometry_correction_mode)
+        print("ZBL correction inner steps: ", self.zbl_correction_inner_steps)
+        print("ZBL correction step size: ", self.zbl_correction_step_size)
+        print("ZBL correction r_cut: ", self.zbl_correction_r_cut)
+        print("ZBL correction force clip: ", self.zbl_correction_force_clip)
+        print("ZBL correction max step: ", self.zbl_correction_max_step)
         print("atom decode mode: ", self.atom_decode_mode)
         print("disable_all_h_guard arg: ", self.disable_all_h_guard_arg)
         print("all-H guard enabled: ", self.all_h_guard_enabled)
@@ -1216,6 +1237,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         os.environ["MCW_ALL_H_GUARD_ENABLED"] = "1" if self.all_h_guard_enabled else "0"
         os.environ["MCW_ALL_H_GUARD_DISABLED_ARG"] = "1" if self.disable_all_h_guard_arg else "0"
         os.environ["MCW_ATOM_DECODE_MODE"] = self.atom_decode_mode
+        os.environ["MCW_GEOMETRY_CORRECTION_MODE"] = self.geometry_correction_mode
 
         if self.debug_atom_types:
             if not self.debug_atom_dir:
@@ -1239,6 +1261,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                     "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
                     "all_h_guard_enabled": bool(self.all_h_guard_enabled),
                     "geometry_correction_enabled": bool(self.geometry_correction_enabled),
+                    "geometry_correction_mode": self.geometry_correction_mode,
+                    "zbl_correction_inner_steps": int(self.zbl_correction_inner_steps),
+                    "zbl_correction_step_size": float(self.zbl_correction_step_size),
+                    "zbl_correction_r_cut": float(self.zbl_correction_r_cut),
+                    "zbl_correction_force_clip": float(self.zbl_correction_force_clip),
+                    "zbl_correction_max_step": float(self.zbl_correction_max_step),
                     "atom_decode_mode": self.atom_decode_mode,
                     "coord_noise_metric": self.coord_noise_metric,
                     "raw_coord_score_parameterization": self.raw_coord_score_parameterization,
@@ -1533,6 +1561,12 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             "disable_all_h_guard_arg": bool(self.disable_all_h_guard_arg),
             "all_h_guard_enabled": bool(self.all_h_guard_enabled),
             "geometry_correction_enabled": bool(self.geometry_correction_enabled),
+            "geometry_correction_mode": self.geometry_correction_mode,
+            "zbl_correction_inner_steps": int(self.zbl_correction_inner_steps),
+            "zbl_correction_step_size": float(self.zbl_correction_step_size),
+            "zbl_correction_r_cut": float(self.zbl_correction_r_cut),
+            "zbl_correction_force_clip": float(self.zbl_correction_force_clip),
+            "zbl_correction_max_step": float(self.zbl_correction_max_step),
             "atom_decode_mode": self.atom_decode_mode,
             "atom_type_repair_topk": int(self.atom_type_repair_topk),
             "atom_type_max_replace_atoms": int(self.atom_type_max_replace_atoms),
@@ -4356,6 +4390,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Coord score parameterization:', self.coord_score_parameterization)
         print('Corrector steps:', n_corrector_steps)
         print('Geometry correction enabled:', self.geometry_correction_enabled)
+        print('Geometry correction mode:', self.geometry_correction_mode)
         print('Atom decode mode:', self.atom_decode_mode)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
@@ -4364,7 +4399,6 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         final_window_logits = []
         final_window_step_indices = []
         pre_correction_frac = None
-        zbl_skip_logged = False
         geometry_correction_window_start = max(0, self.T - self.prediction_threshold_t)
         geometry_correction_disp_cart_sum = None
         geometry_correction_first_pre_min = None
@@ -4557,9 +4591,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 #     r_cut=0.5,   
                 # )
                 zx = z[:, :, :3]
-                if self.geometry_correction_enabled and collect_pre_correction and pre_correction_frac is None:
+                if (
+                    self.geometry_correction_enabled
+                    and self.geometry_correction_mode == "default"
+                    and collect_pre_correction
+                    and pre_correction_frac is None
+                ):
                     pre_correction_frac = zx.detach().clone()
-                if self.geometry_correction_enabled:
+                if self.geometry_correction_enabled and self.geometry_correction_mode == "default":
                     zx_before_correction = zx.detach().clone()
                     zx = self.local_repulsion_correction(
                             zx,
@@ -4602,6 +4641,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                             cutoff=0.5,
                             lambda_sym=lambda_sym,
                         )
+                elif self.geometry_correction_enabled and self.geometry_correction_mode == "zbl":
+                    if i == geometry_correction_window_start:
+                        print("[GeometryCorrection] mode=zbl; skipping reverse-loop hard local correction. Post-decode ZBL relaxation will run after atom finalization.")
                 elif i == geometry_correction_window_start:
                     print("[GeometryCorrection] disabled; skipping final-window local repulsion correction.")
                 z[:, :, :3] = zx
@@ -4641,6 +4683,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 d_min=geometry_correction_d_min,
                 move_tol=geometry_correction_move_tol,
                 num_correction_steps=geometry_correction_steps_applied,
+                correction_mode="default",
             )
 
         x = z[:, :, :self.n_dims]
@@ -4677,6 +4720,34 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 round_index=round_index,
                 stage="sample_score_sde_output_one_hot",
             )
+
+        if self.geometry_correction_enabled and self.geometry_correction_mode == "zbl":
+            zbl_pre_frac = x.detach().clone()
+            if collect_pre_correction and pre_correction_frac is None:
+                pre_correction_frac = zbl_pre_frac
+            x, zbl_disp_cart_sum, zbl_pre_min, zbl_post_min, zbl_steps_applied = (
+                self.post_decode_zbl_geometry_correction(
+                    frac=x,
+                    h_cat=h_cat,
+                    cell=cell,
+                    node_mask=node_mask,
+                    round_index=round_index,
+                    source_tag="sample_score_sde",
+                    d_min=geometry_correction_d_min,
+                )
+            )
+            if zbl_disp_cart_sum is not None:
+                self._record_geometry_correction_displacement_summary(
+                    round_index=round_index,
+                    node_mask=node_mask,
+                    displacement_cart_sum=zbl_disp_cart_sum,
+                    pre_min_distance=zbl_pre_min,
+                    post_min_distance=zbl_post_min,
+                    d_min=geometry_correction_d_min,
+                    move_tol=geometry_correction_move_tol,
+                    num_correction_steps=zbl_steps_applied,
+                    correction_mode="zbl",
+                )
 
         h_int = torch.round(h_int).long() * node_mask
 
@@ -4732,6 +4803,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         print('Coord score parameterization:', self.coord_score_parameterization)
         print('Corrector steps:', n_corrector_steps)
         print('Geometry correction enabled:', self.geometry_correction_enabled)
+        print('Geometry correction mode:', self.geometry_correction_mode)
         print('Atom decode mode:', self.atom_decode_mode)
         # 2) time grid, t in [1 → 0]
         t_grid = torch.linspace(1.0, 0.0, self.T+1).to(device)
@@ -4740,6 +4812,9 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         final_window_logits = []
         final_window_step_indices = []
         pre_correction_frac = None
+        zbl_skip_logged = False
+        geometry_correction_d_min = 0.5
+        geometry_correction_move_tol = 1e-4
 
         for i in tqdm(range(self.T), desc="Sampling SDE steps"):
             t      = float(t_grid[i].item())
@@ -4826,9 +4901,14 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             
             # 在 t 很小时加入 ZBL 排斥力
             if t < 0.01:
-                if self.geometry_correction_enabled and collect_pre_correction and pre_correction_frac is None:
+                if (
+                    self.geometry_correction_enabled
+                    and self.geometry_correction_mode == "default"
+                    and collect_pre_correction
+                    and pre_correction_frac is None
+                ):
                     pre_correction_frac = z[:, :, :3].detach().clone()
-                if self.geometry_correction_enabled:
+                if self.geometry_correction_enabled and self.geometry_correction_mode == "default":
                     zx = self.zbl_relax_step(
                         z, rl, ra,
                         node_mask=node_mask,
@@ -4837,6 +4917,10 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                         r_cut=0.5,
                     )
                     z[:, :, :3] = zx
+                elif self.geometry_correction_enabled and self.geometry_correction_mode == "zbl":
+                    if not zbl_skip_logged:
+                        print("[GeometryCorrection] mode=zbl; skipping in-loop legacy ZBL. Post-decode ZBL relaxation will run after atom finalization.")
+                        zbl_skip_logged = True
                 else:
                     if not zbl_skip_logged:
                         print("[GeometryCorrection] disabled; skipping final-window ZBL relaxation.")
@@ -4890,6 +4974,34 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             atom_decode_mode=self.atom_decode_mode,
         )
         # sample_score_sde_Lattice keeps its legacy raw decode path because apply_repair=False.
+        if self.geometry_correction_enabled and self.geometry_correction_mode == "zbl":
+            zbl_pre_frac = x.detach().clone()
+            if collect_pre_correction and pre_correction_frac is None:
+                pre_correction_frac = zbl_pre_frac
+            x, zbl_disp_cart_sum, zbl_pre_min, zbl_post_min, zbl_steps_applied = (
+                self.post_decode_zbl_geometry_correction(
+                    frac=x,
+                    h_cat=h_cat,
+                    cell=cell,
+                    node_mask=node_mask,
+                    round_index=round_index,
+                    source_tag="sample_score_sde_Lattice",
+                    d_min=geometry_correction_d_min,
+                )
+            )
+            if zbl_disp_cart_sum is not None:
+                self._record_geometry_correction_displacement_summary(
+                    round_index=round_index,
+                    node_mask=node_mask,
+                    displacement_cart_sum=zbl_disp_cart_sum,
+                    pre_min_distance=zbl_pre_min,
+                    post_min_distance=zbl_post_min,
+                    d_min=geometry_correction_d_min,
+                    move_tol=geometry_correction_move_tol,
+                    num_correction_steps=zbl_steps_applied,
+                    correction_mode="zbl",
+                )
+
         h_int = torch.round(h_int).long() * node_mask
 
         h = {'integer': h_int, 'categorical': h_cat}
@@ -5126,6 +5238,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
         d_min=0.5,
         move_tol=1e-4,
         num_correction_steps=0,
+        correction_mode="default",
     ):
         if not self.debug_atom_types:
             return
@@ -5143,6 +5256,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
             row = {
                 "sample_local_index": int(b),
                 "sample_global_index": int(round_index * B + b),
+                "correction_mode": str(correction_mode),
                 "num_atoms": num_atoms,
                 "num_atoms_moved": num_moved,
                 "any_correction": bool(num_moved > 0),
@@ -5177,6 +5291,7 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
                 "event": "geometry_correction_displacement_batch",
                 "source_tag": "sample_score_sde",
                 "round_index": int(round_index),
+                "correction_mode": str(correction_mode),
                 "d_min": float(d_min),
                 "move_tol": float(move_tol),
                 "num_correction_steps": int(num_correction_steps),
@@ -5227,7 +5342,187 @@ class EquiTransVariationalDiffusion_LF_wrap(torch.nn.Module):
 
         print(f"Batch {b}, atoms {i}-{j}, dist={dist_ij:.4f} Å, |F|={F_norm:.4f}, \
               cos(theta)={cos_theta:.4f}, direction={direction_ok}")
-        
+
+    def _post_decode_zbl_force_mag(self, dist, Z):
+        """ZBL force magnitude for post-decode relaxation, using finalized atomic numbers."""
+        eps = 1e-12
+        r_safe = dist.clamp(min=1e-8)
+        Zi = Z[:, :, None].float() + eps
+        Zj = Z[:, None, :].float() + eps
+        a0 = 0.529
+        a = 0.8854 * a0 / (Zi.pow(0.23) + Zj.pow(0.23) + eps)
+        x = r_safe / (a + eps)
+
+        phi = (
+            0.1818 * torch.exp(-3.2 * x)
+            + 0.5099 * torch.exp(-0.9423 * x)
+            + 0.2802 * torch.exp(-0.4029 * x)
+            + 0.02817 * torch.exp(-0.2016 * x)
+        )
+        dphi = (
+            -3.2 * 0.1818 * torch.exp(-3.2 * x)
+            -0.9423 * 0.5099 * torch.exp(-0.9423 * x)
+            -0.4029 * 0.2802 * torch.exp(-0.4029 * x)
+            -0.2016 * 0.02817 * torch.exp(-0.2016 * x)
+        )
+
+        ke = 14.3996
+        common = ke * Zi * Zj / (r_safe * r_safe + eps)
+        force = common * (phi - x * dphi)
+        return torch.clamp(force, max=1e6)
+
+    def _zbl_relax_fractional_step(
+        self,
+        frac,
+        h_cat,
+        cell,
+        node_mask,
+        r_cut=0.8,
+        step_size=1e-3,
+        force_clip=100.0,
+        max_step_cart=0.02,
+        eps=1e-12,
+    ):
+        """Apply one clipped ZBL repulsion step to finalized fractional coordinates."""
+        B, N, _ = frac.shape
+        device = frac.device
+        dtype = cell.dtype
+        frac = torch.remainder(frac.to(dtype=dtype), 1.0)
+        inv_cell = torch.linalg.pinv(cell)
+        x_cart = self._frac_to_cart(frac, cell)
+
+        dx = x_cart[:, :, None, :] - x_cart[:, None, :, :]
+        dx = self.pbc_minimum_image(dx, cell, inv_cell)
+        dist = torch.linalg.norm(dx, dim=-1)
+
+        mask = node_mask.squeeze(-1).bool()
+        pair_mask = mask[:, :, None] & mask[:, None, :]
+        eye = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)
+        pair_mask = pair_mask & (~eye)
+
+        class_idx = torch.argmax(h_cat, dim=-1).long()
+        Z = (class_idx.float() * mask.float()).to(dtype=dtype)
+        Z1Z2 = Z[:, :, None] * Z[:, None, :]
+        close_mask = (dist < float(r_cut)) & pair_mask & (Z1Z2 > 0)
+        upper = torch.triu(torch.ones(N, N, device=device, dtype=torch.bool), diagonal=1).unsqueeze(0)
+        close_pair_count = (close_mask & upper).sum(dim=(1, 2))
+        if not close_mask.any() or step_size <= 0.0:
+            return frac, {
+                "close_pair_count": [int(v) for v in close_pair_count.detach().cpu().tolist()],
+                "max_force_norm": 0.0,
+                "max_step_cart": 0.0,
+            }
+
+        # If two atoms are exactly coincident, use a deterministic antisymmetric
+        # fallback direction so the repulsive update can separate them.
+        atom_ids = torch.arange(N, device=device, dtype=dtype)
+        pair_sign = torch.sign(atom_ids.view(1, N, 1) - atom_ids.view(1, 1, N))
+        fallback = torch.zeros(B, N, N, 3, device=device, dtype=dtype)
+        fallback[..., 0] = torch.where(
+            pair_sign == 0,
+            torch.ones_like(pair_sign),
+            pair_sign,
+        ).expand(B, -1, -1)
+        r_hat = torch.where(
+            dist[..., None] > 1e-8,
+            dx / (dist[..., None] + eps),
+            fallback,
+        )
+
+        force_mag = self._post_decode_zbl_force_mag(dist, Z).to(dtype=dtype)
+        force_mag = torch.where(close_mask, force_mag, torch.zeros_like(force_mag))
+        force_pair = force_mag[..., None] * r_hat
+        force_cart = force_pair.sum(dim=2) * node_mask.to(dtype=dtype)
+
+        force_norm = torch.linalg.norm(force_cart, dim=-1, keepdim=True)
+        if force_clip > 0.0:
+            force_scale = torch.clamp(float(force_clip) / (force_norm + eps), max=1.0)
+            force_cart = force_cart * force_scale
+
+        step_cart = float(step_size) * force_cart
+        step_norm = torch.linalg.norm(step_cart, dim=-1, keepdim=True)
+        if max_step_cart > 0.0:
+            step_scale = torch.clamp(float(max_step_cart) / (step_norm + eps), max=1.0)
+            step_cart = step_cart * step_scale
+            step_norm = torch.linalg.norm(step_cart, dim=-1, keepdim=True)
+
+        step_frac = self._cart_to_frac(step_cart, inv_cell)
+        frac_new = torch.remainder(frac + step_frac, 1.0)
+        if torch.isnan(frac_new).any():
+            print("[GeometryCorrection:ZBL] NaN detected; keeping coordinates from before this inner step.")
+            frac_new = frac
+
+        return frac_new, {
+            "close_pair_count": [int(v) for v in close_pair_count.detach().cpu().tolist()],
+            "max_force_norm": float(force_norm.detach().max().cpu().item()),
+            "max_step_cart": float(step_norm.detach().max().cpu().item()),
+        }
+
+    def post_decode_zbl_geometry_correction(
+        self,
+        frac,
+        h_cat,
+        cell,
+        node_mask,
+        round_index=0,
+        source_tag="sample_score_sde",
+        d_min=0.5,
+    ):
+        """Run local ZBL relaxation after final-window atom logits have been decoded."""
+        frac_start = torch.remainder(frac.detach().clone(), 1.0)
+        frac_current = frac_start.clone()
+        displacement_cart_sum = torch.zeros_like(frac_current)
+        pre_min_distance, _, _, _ = self._pbc_pair_distance_stats(
+            frac_current, cell, node_mask, cutoff=d_min
+        )
+
+        inner_stats = []
+        steps_applied = 0
+        for inner_idx in range(int(self.zbl_correction_inner_steps)):
+            frac_next, step_stats = self._zbl_relax_fractional_step(
+                frac_current,
+                h_cat,
+                cell,
+                node_mask,
+                r_cut=self.zbl_correction_r_cut,
+                step_size=self.zbl_correction_step_size,
+                force_clip=self.zbl_correction_force_clip,
+                max_step_cart=self.zbl_correction_max_step,
+            )
+            delta_frac = frac_next.detach() - frac_current.detach()
+            delta_frac = delta_frac - torch.round(delta_frac)
+            delta_cart = self._frac_to_cart(delta_frac, cell) * node_mask
+            displacement_cart_sum = displacement_cart_sum + delta_cart
+            frac_current = frac_next.detach()
+            step_stats["inner_step"] = int(inner_idx)
+            inner_stats.append(step_stats)
+            if max(step_stats["close_pair_count"], default=0) == 0:
+                break
+            steps_applied += 1
+
+        post_min_distance, _, _, _ = self._pbc_pair_distance_stats(
+            frac_current, cell, node_mask, cutoff=d_min
+        )
+        self._write_atom_debug_line(
+            "geometry_zbl_correction.jsonl",
+            {
+                "event": "post_decode_zbl_geometry_correction",
+                "source_tag": source_tag,
+                "round_index": int(round_index),
+                "r_cut": float(self.zbl_correction_r_cut),
+                "d_min": float(d_min),
+                "inner_steps_requested": int(self.zbl_correction_inner_steps),
+                "inner_steps_applied": int(steps_applied),
+                "step_size": float(self.zbl_correction_step_size),
+                "force_clip": float(self.zbl_correction_force_clip),
+                "max_step_cart": float(self.zbl_correction_max_step),
+                "pre_min_distance": [float(v) for v in pre_min_distance.detach().cpu().tolist()],
+                "post_min_distance": [float(v) for v in post_min_distance.detach().cpu().tolist()],
+                "inner_stats": inner_stats,
+            },
+        )
+
+        return frac_current, displacement_cart_sum, pre_min_distance, post_min_distance, steps_applied
 
     def local_repulsion_correction(
         self,

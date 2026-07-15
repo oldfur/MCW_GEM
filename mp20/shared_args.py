@@ -290,6 +290,19 @@ def setup_shared_args(parser):
     parser.add_argument('--disable-geometry-correction', dest='geometry_correction',
                         action='store_false',
                         help='Disable final low-noise geometry correction; diagnostic ablation only.')
+    parser.add_argument('--geometry-correction-mode', type=str, default='default',
+                        choices=('default', 'zbl'),
+                        help='Final geometry correction strategy. default preserves the existing sampler; zbl applies post-decode ZBL relaxation.')
+    parser.add_argument('--zbl-correction-inner-steps', type=int, default=20,
+                        help='Number of small ZBL relaxation steps used when --geometry-correction-mode zbl.')
+    parser.add_argument('--zbl-correction-step-size', type=float, default=1e-3,
+                        help='ZBL relaxation step size in Cartesian space scaling units.')
+    parser.add_argument('--zbl-correction-r-cut', type=float, default=0.8,
+                        help='Pair-distance cutoff in Angstrom for post-decode ZBL relaxation.')
+    parser.add_argument('--zbl-correction-force-clip', type=float, default=100.0,
+                        help='Maximum per-atom ZBL force norm before applying a relaxation step.')
+    parser.add_argument('--zbl-correction-max-step', type=float, default=0.02,
+                        help='Maximum Cartesian displacement per atom per ZBL inner step in Angstrom.')
     parser.add_argument('--component-config-name', type=str, default='',
                         help='Optional component ablation config name written to run_config.json/metrics.json.')
     parser.add_argument('--sampling-config-path', type=str, default='',
