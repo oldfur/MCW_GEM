@@ -12,7 +12,10 @@ Examples:
       --render-metadata outputs/visualization/generated_samples_mace_relaxed_100/renders/render_metadata.csv \
       --output-dir outputs/visualization/generated_samples_mace_relaxed_100/panels \
       --final-ids sample_003 sample_018 sample_021 sample_034 sample_047 sample_052 sample_071 sample_096 \
-      --final-output-prefix ~/papers/stage_decoupled_crystal_aaai/figures/fig5_generated_samples_mace_relaxed
+      --final-output-prefix ~/papers/stage_decoupled_crystal_aaai/figures/fig5_generated_samples_mace_relaxed \
+      --output-scale 3 \
+      --png-dpi 600 \
+      --pdf-dpi 600
 """
 
 from __future__ import annotations
@@ -34,6 +37,20 @@ except ImportError as exc:  # pragma: no cover
 
 LOGGER = logging.getLogger("make_generated_samples_overview_panels")
 CHECK = "✓"
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 def now_iso() -> str:
@@ -78,6 +95,10 @@ def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFo
 def text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
     bbox = draw.textbbox((0, 0), text, font=font)
     return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+
+
+def scaled(value: int, scale: float) -> int:
+    return max(1, int(round(value * scale)))
 
 
 def draw_centered_text(
@@ -132,6 +153,7 @@ def paste_sample_tile(
     formula_font: ImageFont.ImageFont,
     tag_font: ImageFont.ImageFont,
     final_style: bool,
+    output_scale: float,
 ) -> dict[str, Any] | None:
     render_path = Path(str(row.get("render_path", ""))).expanduser()
     if not render_path.exists():
@@ -142,9 +164,14 @@ def paste_sample_tile(
         }
     try:
         image = Image.open(render_path).convert("RGB")
-        image = ImageOps.contain(image, (tile_w - 24, image_h - 16), method=Image.Resampling.LANCZOS)
+        resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+        image = ImageOps.contain(
+            image,
+            (max(1, tile_w - scaled(24, output_scale)), max(1, image_h - scaled(16, output_scale))),
+            method=resample,
+        )
         px = x0 + (tile_w - image.width) // 2
-        py = y0 + 8
+        py = y0 + scaled(8, output_scale)
         canvas.paste(image, (px, py))
     except Exception as exc:
         return {
@@ -156,9 +183,9 @@ def paste_sample_tile(
 
     formula = str(row.get("reduced_formula", "") or row.get("sample_id", ""))
     tags = final_tags(row) if final_style else overview_tags(row)
-    label_y = y0 + image_h + 4
+    label_y = y0 + image_h + scaled(4, output_scale)
     draw_centered_text(draw, (x0, label_y), tile_w, formula, formula_font)
-    draw_centered_text(draw, (x0, label_y + 30), tile_w, tags, tag_font, fill=(48, 48, 48))
+    draw_centered_text(draw, (x0, label_y + scaled(30, output_scale)), tile_w, tags, tag_font, fill=(48, 48, 48))
     return None
 
 
@@ -171,35 +198,41 @@ def make_panel(
     tile_width: int,
     tile_height: int,
     final_style: bool = False,
+    output_scale: float = 1.0,
+    png_dpi: int = 300,
+    pdf_dpi: int = 300,
 ) -> list[dict[str, Any]]:
-    margin = 30
+    margin = scaled(30, output_scale)
     title_gap = 0
-    image_h = tile_height - 72
-    canvas_w = panel_cols * tile_width + 2 * margin
-    canvas_h = panel_rows * tile_height + 2 * margin + title_gap
+    tile_width_px = scaled(tile_width, output_scale)
+    tile_height_px = scaled(tile_height, output_scale)
+    image_h = tile_height_px - scaled(72, output_scale)
+    canvas_w = panel_cols * tile_width_px + 2 * margin
+    canvas_h = panel_rows * tile_height_px + 2 * margin + title_gap
     canvas = Image.new("RGB", (canvas_w, canvas_h), "white")
     draw = ImageDraw.Draw(canvas)
-    formula_font = load_font(24 if final_style else 22, bold=True)
-    tag_font = load_font(18 if final_style else 17, bold=False)
+    formula_font = load_font(scaled(24 if final_style else 22, output_scale), bold=True)
+    tag_font = load_font(scaled(18 if final_style else 17, output_scale), bold=False)
 
     failures: list[dict[str, Any]] = []
     for idx, row in enumerate(rows):
         r = idx // panel_cols
         c = idx % panel_cols
-        x0 = margin + c * tile_width
-        y0 = margin + title_gap + r * tile_height
+        x0 = margin + c * tile_width_px
+        y0 = margin + title_gap + r * tile_height_px
         failure = paste_sample_tile(
             canvas,
             draw,
             row,
             x0=x0,
             y0=y0,
-            tile_w=tile_width,
-            tile_h=tile_height,
+            tile_w=tile_width_px,
+            tile_h=tile_height_px,
             image_h=image_h,
             formula_font=formula_font,
             tag_font=tag_font,
             final_style=final_style,
+            output_scale=output_scale,
         )
         if failure:
             failures.append(failure)
@@ -207,8 +240,8 @@ def make_panel(
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
     png_path = output_prefix.with_suffix(".png")
     pdf_path = output_prefix.with_suffix(".pdf")
-    canvas.save(png_path)
-    canvas.save(pdf_path, "PDF", resolution=300.0)
+    canvas.save(png_path, dpi=(png_dpi, png_dpi))
+    canvas.save(pdf_path, "PDF", resolution=float(pdf_dpi))
     return failures
 
 
@@ -220,10 +253,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--render-metadata", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/visualization/generated_samples_mace_relaxed_100/panels"))
-    parser.add_argument("--panel-rows", type=int, default=4)
-    parser.add_argument("--panel-cols", type=int, default=5)
-    parser.add_argument("--tile-width", type=int, default=320)
-    parser.add_argument("--tile-height", type=int, default=380)
+    parser.add_argument("--panel-rows", type=positive_int, default=4)
+    parser.add_argument("--panel-cols", type=positive_int, default=5)
+    parser.add_argument("--tile-width", type=positive_int, default=320)
+    parser.add_argument("--tile-height", type=positive_int, default=380)
+    parser.add_argument(
+        "--output-scale",
+        type=positive_float,
+        default=1.0,
+        help="Multiply output pixel dimensions while keeping the same logical layout.",
+    )
+    parser.add_argument("--png-dpi", type=positive_int, default=300)
+    parser.add_argument("--pdf-dpi", type=positive_int, default=300)
     parser.add_argument("--final-ids", nargs="*", default=[])
     parser.add_argument("--final-output-prefix", type=Path, default=Path("~/papers/stage_decoupled_crystal_aaai/figures/fig5_generated_samples_mace_relaxed"))
     parser.add_argument("--log-level", default="INFO")
@@ -252,6 +293,9 @@ def main() -> None:
                 tile_width=args.tile_width,
                 tile_height=args.tile_height,
                 final_style=False,
+                output_scale=args.output_scale,
+                png_dpi=args.png_dpi,
+                pdf_dpi=args.pdf_dpi,
             )
         )
         LOGGER.info("Wrote %s.png/.pdf", prefix)
@@ -275,6 +319,9 @@ def main() -> None:
                 tile_width=args.tile_width + 40,
                 tile_height=args.tile_height,
                 final_style=True,
+                output_scale=args.output_scale,
+                png_dpi=args.png_dpi,
+                pdf_dpi=args.pdf_dpi,
             )
         )
         final_outputs = {
@@ -292,6 +339,11 @@ def main() -> None:
         "overview_panel_count": len(chunk_rows(rows, per_panel)),
         "panel_rows": args.panel_rows,
         "panel_cols": args.panel_cols,
+        "tile_width": args.tile_width,
+        "tile_height": args.tile_height,
+        "output_scale": args.output_scale,
+        "png_dpi": args.png_dpi,
+        "pdf_dpi": args.pdf_dpi,
         "final_ids": args.final_ids,
         "final_outputs": final_outputs,
         "failure_count": len(failures),

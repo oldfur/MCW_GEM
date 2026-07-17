@@ -7,7 +7,9 @@ Example:
       --output-dir outputs/visualization/generated_samples_mace_relaxed_100/renders \
       --backend auto \
       --supercell auto \
-      --image-size 1000
+      --image-size 2400 \
+      --supersample 2 \
+      --png-dpi 600
 """
 
 from __future__ import annotations
@@ -21,18 +23,27 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-try:
+if TYPE_CHECKING:
     from pymatgen.core import Structure
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "Missing pymatgen. Use the project environment before rendering. "
-        f"Original error: {exc}"
-    )
 
 
 LOGGER = logging.getLogger("render_crystal_cifs_batch")
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
 
 
 def now_iso() -> str:
@@ -70,6 +81,17 @@ def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> 
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
+def load_structure(path: Path) -> "Structure":
+    try:
+        from pymatgen.core import Structure
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Missing pymatgen. Use the project environment before rendering. "
+            f"Original error: {exc}"
+        ) from exc
+    return Structure.from_file(str(path))
 
 
 def resolve_path(path_text: Any) -> Path:
@@ -141,14 +163,15 @@ def render_with_povray(atoms: Any, out_png: Path, args: argparse.Namespace) -> s
         raise RuntimeError(f"ASE writer unavailable: {exc}") from exc
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
+    render_size = args.image_size * args.supersample
     with tempfile.TemporaryDirectory(prefix="crystal_pov_") as tmp:
         pov_path = Path(tmp) / (out_png.stem + ".pov")
         kwargs = {
             "rotation": args.rotation,
             "show_unit_cell": 2,
             "radii": args.radius_scale,
-            "canvas_width": args.image_size,
-            "canvas_height": args.image_size,
+            "canvas_width": render_size,
+            "canvas_height": render_size,
             "transparent": False,
             "run_povray": True,
         }
@@ -171,8 +194,9 @@ def render_with_matplotlib(atoms: Any, out_png: Path, args: argparse.Namespace) 
         raise RuntimeError(f"ASE matplotlib rendering unavailable: {exc}") from exc
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    dpi = 200
-    size_inches = args.image_size / dpi
+    render_size = args.image_size * args.supersample
+    dpi = args.matplotlib_dpi
+    size_inches = render_size / dpi
     fig, ax = plt.subplots(figsize=(size_inches, size_inches), dpi=dpi)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
@@ -198,12 +222,13 @@ def render_with_simple_projection(structure: Structure, out_png: Path, args: arg
         raise RuntimeError(f"PIL fallback unavailable: {exc}") from exc
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGB", (args.image_size, args.image_size), "white")
+    render_size = args.image_size * args.supersample
+    image = Image.new("RGB", (render_size, render_size), "white")
     draw = ImageDraw.Draw(image)
     coords = structure.frac_coords[:, :2] if len(structure) else []
-    margin = int(args.image_size * 0.12)
-    box = [margin, margin, args.image_size - margin, args.image_size - margin]
-    draw.rectangle(box, outline=(40, 40, 40), width=max(2, args.image_size // 250))
+    margin = int(render_size * 0.12)
+    box = [margin, margin, render_size - margin, render_size - margin]
+    draw.rectangle(box, outline=(40, 40, 40), width=max(2, render_size // 250))
     palette = [
         (67, 115, 191),
         (218, 82, 69),
@@ -215,36 +240,43 @@ def render_with_simple_projection(structure: Structure, out_png: Path, args: arg
     ]
     elements = sorted({str(site.specie) for site in structure})
     color_by_el = {el: palette[idx % len(palette)] for idx, el in enumerate(elements)}
-    radius = max(8, args.image_size // 55)
-    span = args.image_size - 2 * margin
+    radius = max(8, render_size // 55)
+    span = render_size - 2 * margin
     for site, frac in zip(structure, coords):
         x = margin + int(float(frac[0] % 1.0) * span)
         y = margin + int(float(frac[1] % 1.0) * span)
         color = color_by_el[str(site.specie)]
-        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color, outline=(20, 20, 20), width=2)
+        draw.ellipse(
+            [x - radius, y - radius, x + radius, y + radius],
+            fill=color,
+            outline=(20, 20, 20),
+            width=max(2, render_size // 500),
+        )
     image.save(out_png)
     return "pymatgen_pil_projection"
 
 
-def normalize_png_canvas(path: Path, image_size: int) -> None:
-    """Place a rendered PNG on a square white canvas of the requested size."""
+def normalize_png_canvas(path: Path, render_size: int, output_size: int, png_dpi: int) -> None:
+    """Place a rendered PNG on a square white canvas and save at output size."""
     try:
         from PIL import Image, ImageOps
     except ImportError:
         return
+
+    resample = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
     image = Image.open(path).convert("RGBA")
-    if image.size == (image_size, image_size):
-        image.convert("RGB").save(path)
-        return
-    image = ImageOps.contain(image, (image_size, image_size), method=Image.Resampling.LANCZOS)
-    canvas = Image.new("RGB", (image_size, image_size), "white")
+    if image.size != (render_size, render_size):
+        image = ImageOps.contain(image, (render_size, render_size), method=resample)
+    canvas = Image.new("RGB", (render_size, render_size), "white")
     if image.mode == "RGBA":
         background = Image.new("RGBA", image.size, "white")
         image = Image.alpha_composite(background, image).convert("RGB")
     else:
         image = image.convert("RGB")
-    canvas.paste(image, ((image_size - image.width) // 2, (image_size - image.height) // 2))
-    canvas.save(path)
+    canvas.paste(image, ((render_size - image.width) // 2, (render_size - image.height) // 2))
+    if output_size != render_size:
+        canvas = canvas.resize((output_size, output_size), resample=resample)
+    canvas.save(path, dpi=(png_dpi, png_dpi))
 
 
 def render_one(record: dict[str, Any], args: argparse.Namespace) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -252,7 +284,7 @@ def render_one(record: dict[str, Any], args: argparse.Namespace) -> tuple[dict[s
     cif_path = resolve_path(record["render_input_cif_path"])
     out_png = args.output_dir / f"{sample_id}.png"
     try:
-        structure = Structure.from_file(str(cif_path))
+        structure = load_structure(cif_path)
         supercell = parse_supercell(args.supercell, len(structure))
         backend_used = ""
         if args.backend in {"auto", "povray"}:
@@ -273,7 +305,8 @@ def render_one(record: dict[str, Any], args: argparse.Namespace) -> tuple[dict[s
                 LOGGER.warning("Matplotlib fallback for %s: %s", sample_id, exc)
         if not backend_used:
             backend_used = render_with_simple_projection(structure, out_png, args)
-        normalize_png_canvas(out_png, args.image_size)
+        render_size = args.image_size * args.supersample
+        normalize_png_canvas(out_png, render_size, args.image_size, args.png_dpi)
 
         meta = {
             "sample_id": sample_id,
@@ -282,6 +315,10 @@ def render_one(record: dict[str, Any], args: argparse.Namespace) -> tuple[dict[s
             "copied_cif_path": record.get("copied_cif_path", str(cif_path)),
             "render_path": str(out_png.resolve(strict=False)),
             "render_backend": backend_used,
+            "image_size": args.image_size,
+            "render_size": render_size,
+            "supersample": args.supersample,
+            "png_dpi": args.png_dpi,
             "supercell": ",".join(str(v) for v in supercell),
             "struct_valid": record.get("struct_valid", ""),
             "comp_valid": record.get("comp_valid", ""),
@@ -310,10 +347,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/visualization/generated_samples_mace_relaxed_100/renders"))
     parser.add_argument("--backend", choices=["auto", "povray", "matplotlib", "simple"], default="auto")
     parser.add_argument("--supercell", default="auto")
-    parser.add_argument("--image-size", type=int, default=1000)
+    parser.add_argument("--image-size", type=positive_int, default=1000, help="Final square PNG side length in pixels.")
+    parser.add_argument(
+        "--supersample",
+        type=positive_int,
+        default=1,
+        help="Render internally at image-size * supersample, then downsample with Lanczos for cleaner edges.",
+    )
+    parser.add_argument("--matplotlib-dpi", type=positive_int, default=300)
+    parser.add_argument("--png-dpi", type=positive_int, default=300, help="DPI metadata embedded in rendered PNG files.")
     parser.add_argument("--rotation", default="15x,25y,0z")
     parser.add_argument("--radius-scale", type=float, default=0.65)
-    parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--max-samples", type=nonnegative_int, default=None)
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
 
@@ -346,6 +391,10 @@ def main() -> None:
         "copied_cif_path",
         "render_path",
         "render_backend",
+        "image_size",
+        "render_size",
+        "supersample",
+        "png_dpi",
         "supercell",
         "struct_valid",
         "comp_valid",

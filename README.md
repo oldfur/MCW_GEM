@@ -654,7 +654,7 @@ PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/select_mace_relaxed_
 
 当前 `outputs/20260601_mace_relax_final_256/relaxed_cifs_success_only/` 中严格排除 H 后只能得到 36 个满足条件的样本；如果需要选满 100 个 MACE-success 样本，可将上面的 `--exclude-hydrogen` 改为 `--no-exclude-hydrogen`。如果坚持 H-free，则把 `--target-count` 设为不超过 36。
 
-批量渲染选中的 CIF：
+批量渲染选中的 CIF。论文作图建议先输出高像素单图；如果只做快速预览，可把 `--image-size` 改回 `1000`、`--supersample` 改为 `1`：
 ```
 cd ~/MCW_GEM
 PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/render_crystal_cifs_batch.py \
@@ -662,7 +662,9 @@ PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/render_crystal_cifs_
   --output-dir outputs/visualization/generated_samples_mace_relaxed_100/renders \
   --backend auto \
   --supercell auto \
-  --image-size 1000
+  --image-size 2400 \
+  --supersample 2 \
+  --png-dpi 600
 ```
 
 拼接 4 x 5 overview panels，方便人工挑选 Figure 5 样本：
@@ -672,17 +674,23 @@ PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/make_generated_sampl
   --render-metadata outputs/visualization/generated_samples_mace_relaxed_100/renders/render_metadata.csv \
   --output-dir outputs/visualization/generated_samples_mace_relaxed_100/panels \
   --panel-rows 4 \
-  --panel-cols 5
+  --panel-cols 5 \
+  --output-scale 2 \
+  --png-dpi 600 \
+  --pdf-dpi 600
 ```
 
-生成论文 Figure 5 的 2 x 4 final panel：
+生成论文 Figure 5 的 2 x 4 final panel。`--output-scale 3` 会把默认 final panel 从约 `1500 x 820 px` 提升到约 `4500 x 2460 px`，更适合论文排版：
 ```
 cd ~/MCW_GEM
 PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/make_generated_samples_overview_panels.py \
   --render-metadata outputs/visualization/generated_samples_mace_relaxed_100/renders/render_metadata.csv \
   --output-dir outputs/visualization/generated_samples_mace_relaxed_100/panels \
   --final-ids sample_003 sample_018 sample_021 sample_034 sample_047 sample_052 sample_071 sample_096 \
-  --final-output-prefix ~/papers/stage_decoupled_crystal_aaai/figures/fig5_generated_samples_mace_relaxed
+  --final-output-prefix ~/papers/stage_decoupled_crystal_aaai/figures/fig5_generated_samples_mace_relaxed \
+  --output-scale 3 \
+  --png-dpi 600 \
+  --pdf-dpi 600
 ```
 
 ```
