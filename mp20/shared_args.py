@@ -291,8 +291,8 @@ def setup_shared_args(parser):
                         action='store_false',
                         help='Disable final low-noise geometry correction; diagnostic ablation only.')
     parser.add_argument('--geometry-correction-mode', type=str, default='default',
-                        choices=('default', 'zbl'),
-                        help='Final geometry correction strategy. default preserves the existing sampler; zbl applies post-decode ZBL relaxation.')
+                        choices=('default', 'zbl', 'interleaved_zbl_softZ', 'interleaved_zbl_softz'),
+                        help='Final geometry correction strategy. default preserves the existing sampler; zbl applies post-decode ZBL relaxation; interleaved_zbl_softZ applies soft-Z ZBL during the last reverse steps.')
     parser.add_argument('--zbl-correction-inner-steps', type=int, default=20,
                         help='Number of small ZBL relaxation steps used when --geometry-correction-mode zbl.')
     parser.add_argument('--zbl-correction-step-size', type=float, default=1e-3,
@@ -303,6 +303,16 @@ def setup_shared_args(parser):
                         help='Maximum per-atom ZBL force norm before applying a relaxation step.')
     parser.add_argument('--zbl-correction-max-step', type=float, default=0.02,
                         help='Maximum Cartesian displacement per atom per ZBL inner step in Angstrom.')
+    parser.add_argument('--interleaved-zbl-steps', type=int, default=10,
+                        help='Number of final reverse steps using interleaved soft-Z ZBL when --geometry-correction-mode interleaved_zbl_softZ.')
+    parser.add_argument('--interleaved-zbl-step-size', type=float, default=1e-3,
+                        help='Soft-Z interleaved ZBL relaxation step-size scaling.')
+    parser.add_argument('--interleaved-zbl-r-cut', type=float, default=0.8,
+                        help='Pair-distance cutoff in Angstrom for interleaved soft-Z ZBL.')
+    parser.add_argument('--interleaved-zbl-force-clip', type=float, default=100.0,
+                        help='Maximum per-atom force norm for interleaved soft-Z ZBL.')
+    parser.add_argument('--interleaved-zbl-max-step', type=float, default=0.02,
+                        help='Maximum Cartesian displacement per atom per interleaved soft-Z ZBL step in Angstrom.')
     parser.add_argument('--component-config-name', type=str, default='',
                         help='Optional component ablation config name written to run_config.json/metrics.json.')
     parser.add_argument('--sampling-config-path', type=str, default='',
