@@ -37,6 +37,19 @@ DEBUG_ATOM_TYPES=${DEBUG_ATOM_TYPES:-True}
 DIAGNOSE_GEOMETRY_BEFORE_CORRECTION=${DIAGNOSE_GEOMETRY_BEFORE_CORRECTION:-True}
 SAVE_PRE_CORRECTION_GEOMETRY_NPZ=${SAVE_PRE_CORRECTION_GEOMETRY_NPZ:-True}
 SUMMARIZE_AFTER=${SUMMARIZE_AFTER:-True}
+RUN_CONFIGS=${RUN_CONFIGS:-raw_geometry_raw_logits,raw_geometry_constrained_decode,corrected_geometry_raw_logits,full_pipeline}
+GEOMETRY_CORRECTION_MODE=${GEOMETRY_CORRECTION_MODE:-default}
+ZBL_CORRECTION_INNER_STEPS=${ZBL_CORRECTION_INNER_STEPS:-20}
+ZBL_CORRECTION_STEP_SIZE=${ZBL_CORRECTION_STEP_SIZE:-1e-3}
+ZBL_CORRECTION_R_CUT=${ZBL_CORRECTION_R_CUT:-0.8}
+ZBL_CORRECTION_FORCE_CLIP=${ZBL_CORRECTION_FORCE_CLIP:-100.0}
+ZBL_CORRECTION_MAX_STEP=${ZBL_CORRECTION_MAX_STEP:-0.02}
+INTERLEAVED_ZBL_STEPS=${INTERLEAVED_ZBL_STEPS:-10}
+INTERLEAVED_ZBL_STEP_SIZE=${INTERLEAVED_ZBL_STEP_SIZE:-1e-3}
+INTERLEAVED_ZBL_R_CUT=${INTERLEAVED_ZBL_R_CUT:-0.8}
+INTERLEAVED_ZBL_FORCE_CLIP=${INTERLEAVED_ZBL_FORCE_CLIP:-100.0}
+INTERLEAVED_ZBL_MAX_STEP=${INTERLEAVED_ZBL_MAX_STEP:-0.02}
+SUMMARY_PRESET=${SUMMARY_PRESET:-auto}
 
 if (( NUM_SAMPLES % BATCH_SIZE != 0 )); then
   echo "NUM_SAMPLES (${NUM_SAMPLES}) must be divisible by BATCH_SIZE (${BATCH_SIZE})." >&2
@@ -74,6 +87,17 @@ COMMON_ARGS=(
   --diagnose-geometry-before-correction "${DIAGNOSE_GEOMETRY_BEFORE_CORRECTION}"
   --save-pre-correction-geometry-npz "${SAVE_PRE_CORRECTION_GEOMETRY_NPZ}"
   --debug-atom-types "${DEBUG_ATOM_TYPES}"
+  --geometry-correction-mode "${GEOMETRY_CORRECTION_MODE}"
+  --zbl-correction-inner-steps "${ZBL_CORRECTION_INNER_STEPS}"
+  --zbl-correction-step-size "${ZBL_CORRECTION_STEP_SIZE}"
+  --zbl-correction-r-cut "${ZBL_CORRECTION_R_CUT}"
+  --zbl-correction-force-clip "${ZBL_CORRECTION_FORCE_CLIP}"
+  --zbl-correction-max-step "${ZBL_CORRECTION_MAX_STEP}"
+  --interleaved-zbl-steps "${INTERLEAVED_ZBL_STEPS}"
+  --interleaved-zbl-step-size "${INTERLEAVED_ZBL_STEP_SIZE}"
+  --interleaved-zbl-r-cut "${INTERLEAVED_ZBL_R_CUT}"
+  --interleaved-zbl-force-clip "${INTERLEAVED_ZBL_FORCE_CLIP}"
+  --interleaved-zbl-max-step "${INTERLEAVED_ZBL_MAX_STEP}"
 )
 
 if [[ -n "${CONFIG}" ]]; then
@@ -87,7 +111,7 @@ run_one() {
   local out_dir="${OUT_ROOT}/${config_name}"
 
   mkdir -p "${out_dir}"
-  echo "[ComponentAblation] ${config_name}: geometry_correction=${geometry_correction}, atom_decode_mode=${atom_decode_mode}"
+  echo "[ComponentAblation] ${config_name}: geometry_correction=${geometry_correction}, geometry_correction_mode=${GEOMETRY_CORRECTION_MODE}, atom_decode_mode=${atom_decode_mode}"
   if [[ -n "${GPUS}" ]]; then
     "${PYTHON_CMD[@]}" -u "${SAMPLE_MULTI_GPU_SCRIPT}" \
       --gpus "${GPUS}" \
@@ -117,13 +141,45 @@ run_one() {
   fi
 }
 
-run_one raw_geometry_raw_logits False raw_argmax
-run_one raw_geometry_constrained_decode False constrained_search
-run_one corrected_geometry_raw_logits True raw_argmax
-run_one full_pipeline True constrained_search
+run_config() {
+  local config_name=$1
+  case "${config_name}" in
+    raw_geometry_raw_logits)
+      run_one raw_geometry_raw_logits False raw_argmax
+      ;;
+    raw_geometry_constrained_decode)
+      run_one raw_geometry_constrained_decode False constrained_search
+      ;;
+    corrected_geometry_raw_logits)
+      run_one corrected_geometry_raw_logits True raw_argmax
+      ;;
+    softz_geometry_raw_logits)
+      run_one softz_geometry_raw_logits True raw_argmax
+      ;;
+    full_pipeline|full_pipeline_softz_zbl)
+      run_one "${config_name}" True constrained_search
+      ;;
+    *)
+      echo "Unknown RUN_CONFIGS entry: ${config_name}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+IFS=',' read -r -a REQUESTED_CONFIGS <<< "${RUN_CONFIGS}"
+for config_name in "${REQUESTED_CONFIGS[@]}"; do
+  run_config "${config_name}"
+done
 
 if [[ "${SUMMARIZE_AFTER}" == "True" || "${SUMMARIZE_AFTER}" == "true" || "${SUMMARIZE_AFTER}" == "1" ]]; then
-  "${PYTHON_CMD[@]}" "${SUMMARY_SCRIPT}" --root "${OUT_ROOT}" > "${OUT_ROOT}/component_ablation_table.log" 2>&1 || {
+  if [[ "${SUMMARY_PRESET}" == "auto" ]]; then
+    if [[ "${RUN_CONFIGS}" == *"softz_geometry_raw_logits"* ]]; then
+      SUMMARY_PRESET=softz_zbl
+    else
+      SUMMARY_PRESET=default
+    fi
+  fi
+  "${PYTHON_CMD[@]}" "${SUMMARY_SCRIPT}" --root "${OUT_ROOT}" --preset "${SUMMARY_PRESET}" > "${OUT_ROOT}/component_ablation_table.log" 2>&1 || {
     echo "[ComponentAblation] warning: table summarization failed; see ${OUT_ROOT}/component_ablation_table.log" >&2
   }
 fi

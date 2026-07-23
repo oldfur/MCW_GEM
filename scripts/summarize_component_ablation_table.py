@@ -38,6 +38,26 @@ CONFIGS = [
     ),
 ]
 
+SOFTZ_ZBL_CONFIGS = [
+    (
+        "softz_geometry_raw_logits",
+        "Soft-Z + raw logits",
+        "Soft-Z ZBL",
+        "Raw argmax",
+    ),
+    (
+        "full_pipeline",
+        "Full pipeline",
+        "Soft-Z ZBL",
+        "Constrained search",
+    ),
+]
+
+CONFIG_PRESETS = {
+    "default": CONFIGS,
+    "softz_zbl": SOFTZ_ZBL_CONFIGS,
+}
+
 
 def load_metrics(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
@@ -78,9 +98,9 @@ def search_fail(metrics: dict[str, Any], config_name: str) -> str:
     return f"{100.0 * float(value):.2f}"
 
 
-def build_rows(root: Path) -> list[dict[str, str]]:
+def build_rows(root: Path, configs: list[tuple[str, str, str, str]]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for config_name, label, geometry, decoding in CONFIGS:
+    for config_name, label, geometry, decoding in configs:
         metrics_path = root / config_name / "metrics.json"
         if not metrics_path.exists():
             warn(f"{config_name}: metrics.json not found at {metrics_path}")
@@ -157,12 +177,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="LaTeX output path. Defaults to <root>/component_ablation_table.tex.",
     )
+    parser.add_argument(
+        "--preset",
+        choices=tuple(CONFIG_PRESETS.keys()),
+        default="default",
+        help="Ablation table preset. Use softz_zbl for the two-row soft-Z ZBL diagnostic.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    rows = build_rows(args.root)
+    rows = build_rows(args.root, CONFIG_PRESETS[args.preset])
     output_csv = args.output_csv or args.root / "component_ablation_summary.csv"
     output_tex = args.output_tex or args.root / "component_ablation_table.tex"
     write_csv(output_csv, rows)

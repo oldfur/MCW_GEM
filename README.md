@@ -513,7 +513,31 @@ mkdir -p ~/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics && cd ~/data
 - 每个 config 根目录会保存 `metrics.json`、`summary.csv` / `metrics.csv`、`run_config.json`、`sampling.log`、`multi_gpu_manifest.json`、`multi_gpu_summary.json`。
 - `raw_argmax` 组会显式跳过 constrained composition search / all-H guard / emergency repair；`constrained_search` 组保持 full pipeline 的 atom decoding。
 - `--geometry-correction False` 组会跳过 final-window geometry correction，最终 CIF 使用 raw learned anonymous geometry。
-- 四组跑完后会生成 `component_ablation_summary.csv` 和 `component_ablation_table.tex`。如需单独重跑某一组，只保留对应的 `run_one ...` 行。
+- 四组跑完后会生成 `component_ablation_summary.csv` 和 `component_ablation_table.tex`。如需单独重跑某一组，设置 `RUN_CONFIGS=<config_name>` 即可。
+
+#### Soft-Z ZBL ablation，两组必要诊断（Soft-Z+logits / Full pipeline）
+
+当前 interleaved soft-Z ZBL 版本只需要重跑后两组：
+
+- `softz_geometry_raw_logits`：开启 soft-Z ZBL geometry correction，atom decoding 使用 `raw_argmax`，对应论文表里的 `Soft-Z+logits`。
+- `full_pipeline`：开启 soft-Z ZBL geometry correction，atom decoding 使用 `constrained_search`。
+
+输出根目录建议单独放在：
+
+- `/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics_softz_zbl/softz_geometry_raw_logits`
+- `/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics_softz_zbl/full_pipeline`
+
+一行服务器命令（GPU 4,5，每组 1024 个结构）：
+
+```
+mkdir -p /home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics_softz_zbl && cd /home/mcw/data1/mcw/MCW_GEM && nohup env PYTHON='conda run --no-capture-output -n mpgem python' GPUS=4,5 NUM_SAMPLES=1024 BATCH_SIZE=32 SEED=2026 OUT_ROOT=/home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics_softz_zbl RUN_CONFIGS=softz_geometry_raw_logits,full_pipeline GEOMETRY_CORRECTION_MODE=interleaved_zbl_softZ INTERLEAVED_ZBL_STEPS=10 INTERLEAVED_ZBL_STEP_SIZE=1e-3 INTERLEAVED_ZBL_R_CUT=0.8 INTERLEAVED_ZBL_FORCE_CLIP=100.0 INTERLEAVED_ZBL_MAX_STEP=0.02 SUMMARY_PRESET=softz_zbl CHECKPOINT=/home/mcw/data1/mcw/MCW_GEM/outputs/train_LF_mp20_emptygraph_atomtypefix_20260521/diffusion_LF_wrap/generative_model_ema_epoch100.npy LATTICE_CHECKPOINT=/home/mcw/data1/mcw/MCW_GEM/outputs/lattice_cond_n/diffusion_L/generative_model_ema_epoch220.npy CONFIG=/home/mcw/mcw/MCW_GEM/configs/lattice_train_cond_n.yaml DATADIR=/home/mcw/mcw/MCW_GEM/mp20 DATASET_FOLDER_PATH=/home/mcw/mcw/MCW_GEM/mp20/raw CONDITION_LATTICE_ON_N=True LAMBDA_SYM=0.0 DEBUG_ATOM_TYPES=True bash /home/mcw/mcw/MCW_GEM/scripts/run_component_ablation_mp20.sh > /home/mcw/data1/mcw/MCW_GEM/outputs/ablation_component_diagnostics_softz_zbl/softz_zbl_component_ablation_1024_gpus45.log 2>&1 &
+```
+
+采样末端几何修正 args 对照：
+
+- 当前 soft-Z ZBL：`--geometry-correction True --geometry-correction-mode interleaved_zbl_softZ --interleaved-zbl-steps 10 --interleaved-zbl-step-size 1e-3 --interleaved-zbl-r-cut 0.8 --interleaved-zbl-force-clip 100.0 --interleaved-zbl-max-step 0.02`
+- 首版 post-decode hard-Z ZBL：`--geometry-correction True --geometry-correction-mode zbl --zbl-correction-inner-steps 20 --zbl-correction-step-size 1e-3 --zbl-correction-r-cut 0.8 --zbl-correction-force-clip 100.0 --zbl-correction-max-step 0.02`
+- 原始 default correction 版本：`--geometry-correction True --geometry-correction-mode default`
 
 #### 比较无条件 p(L) 与条件 p(L|n) 的 volume / V/N
 
@@ -563,6 +587,40 @@ cd ~/mcw/MCW_GEM && conda run -n mpgem python scripts/diagnose_geometry_validity
 - `geometry_diagnostics_summary.json`
 
 若你的 lattice checkpoint 文件名是 `generative_model.npy` 而不是 `generative_model_ema.npy`，把上面命令中的对应路径替换掉即可。
+
+### Offline Unified CIF Evaluation
+对单个目录下已经保存的所有 `.cif` 递归统一评估 structural validity、composition validity、total validity、Unique Rate、Novel Rate 和 UN Rate：
+```
+cd ~/MCW_GEM
+PYTHONDONTWRITEBYTECODE=1 conda run -n mpgem python scripts/evaluate_all_metrics_from_cifs.py \
+  --sample-dir "./outputs/sample_LF_mp20_2026" \
+  --mp20-root "./mp20" \
+  --processed-dir "./mp20/precessed" \
+  --output-dir "./outputs/all_metrics_eval_$(date +%Y%m%d_%H%M%S)" \
+  --num-workers 8 \
+  --valid-only True
+```
+当激活 conda mpgem 时候：
+```
+PYTHONDONTWRITEBYTECODE=1 python scripts/evaluate_all_metrics_from_cifs.py \
+  --sample-dir "./outputs/sample_LF_mp20_2026" \
+  --mp20-root "./mp20" \
+  --processed-dir "./mp20/precessed" \
+  --output-dir "./outputs/all_metrics_eval_$(date +%Y%m%d_%H%M%S)" \
+  --num-workers 8 \
+  --valid-only True
+```
+
+输出文件：
+- `all_metrics_summary.json`：汇总的 struct/comp/total valid、Unique Rate、Novel Rate、UN Rate、reference 信息和 matcher 参数。
+- `all_metrics_per_sample.csv`：每个 CIF 的 parse/valid/unique/novel/unique_and_novel 标记。
+- `unique_clusters.jsonl`：generated samples 内部 StructureMatcher unique cluster 及成员列表。
+- `matched_pairs.jsonl`：非 novel unique group 匹配到的 MP20 reference。
+- `un_structures.jsonl`：所有 `unique_and_novel=True` 的样本清单。
+- `unique_novel_cifs/`：默认复制保存所有 Unique and Novel 的 CIF，并写 `manifest.csv`。
+- `all_metrics_failures.jsonl`：parse、validity、matcher 或 reference 失败记录。
+
+该脚本复用当前采样评估口径：validity 来自 `mp20.crystal.array_dict_to_crystal(...).valid/comp_valid/struct_valid`；unique 使用 `StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3).group_structures`；novelty 只对每个 unique valid group 的代表结构与 MP20 reference CIF 比较。`Novel Rate = novel unique group 数 / unique group 数`，`UN Rate = unique_and_novel 数 / evaluated valid CIF 数`。
 
 ### Offline Novelty Evaluation
 对已经采样保存的 CIF 递归计算 novelty：
